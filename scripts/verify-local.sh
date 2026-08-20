@@ -1,0 +1,371 @@
+#!/bin/zsh
+set -euo pipefail
+
+script_dir="${0:A:h}"
+project_dir="${script_dir:h}"
+module_cache="${project_dir}/build/ModuleCache"
+
+mkdir -p "${module_cache}"
+
+swiftc \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -typecheck \
+  "${project_dir}"/RepoDeskApp/**/*.swift
+
+swiftc -parse "${project_dir}"/RepoDeskTests/**/*.swift
+
+swiftc \
+  -parse-as-library \
+  -emit-library \
+  -emit-module \
+  -enable-testing \
+  -module-name RepoDesk \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}"/RepoDeskApp/**/*.swift \
+  -emit-module-path "${project_dir}/build/RepoDesk.swiftmodule" \
+  -o "${project_dir}/build/libRepoDesk.dylib"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-commit-execution.swift" \
+  -o "${project_dir}/build/verify-commit-execution"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-commit-execution"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-commit-execution-rendering.swift" \
+  -o "${project_dir}/build/verify-commit-execution-rendering"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-commit-execution-rendering"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-settings.swift" \
+  -o "${project_dir}/build/verify-settings"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-settings"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-interaction-restoration.swift" \
+  -o "${project_dir}/build/verify-interaction-restoration"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-interaction-restoration"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-interaction-rendering.swift" \
+  -o "${project_dir}/build/verify-interaction-rendering"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-interaction-rendering"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-performance-suite.swift" \
+  -o "${project_dir}/build/verify-performance-suite"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-performance-suite"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-qa-integration.swift" \
+  -o "${project_dir}/build/verify-qa-integration"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-qa-integration"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-settings-rendering.swift" \
+  -o "${project_dir}/build/verify-settings-rendering"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-settings-rendering"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-changes-repository-rendering.swift" \
+  -o "${project_dir}/build/verify-changes-repository-rendering"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-changes-repository-rendering"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Features/ChangesOutline.swift" \
+  "${project_dir}/scripts/verify-changes-outline.swift" \
+  -o "${project_dir}/build/verify-changes-outline"
+
+"${project_dir}/build/verify-changes-outline"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
+  "${project_dir}/scripts/verify-git-diff-layout.swift" \
+  -o "${project_dir}/build/verify-git-diff-layout"
+
+"${project_dir}/build/verify-git-diff-layout"
+
+swiftc \
+  -parse-as-library \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitDiffParser.swift" \
+  "${project_dir}/scripts/verify-git-diff-crlf.swift" \
+  -o "${project_dir}/build/verify-git-diff-crlf"
+
+"${project_dir}/build/verify-git-diff-crlf"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
+  "${project_dir}/scripts/verify-git-diff-performance.swift" \
+  -o "${project_dir}/build/verify-git-diff-performance"
+
+"${project_dir}/build/verify-git-diff-performance"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Features/GitDiffComparisonWindow.swift" \
+  "${project_dir}/scripts/verify-git-diff-window.swift" \
+  -o "${project_dir}/build/verify-git-diff-window"
+
+"${project_dir}/build/verify-git-diff-window"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Files/MarkdownPreviewParser.swift" \
+  "${project_dir}/scripts/verify-markdown-preview.swift" \
+  -o "${project_dir}/build/verify-markdown-preview"
+
+"${project_dir}/build/verify-markdown-preview"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
+  "${project_dir}/RepoDeskApp/Features/StreamingOutputView.swift" \
+  "${project_dir}/scripts/verify-output-follow.swift" \
+  -o "${project_dir}/build/verify-output-follow"
+
+"${project_dir}/build/verify-output-follow"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Files/WorkspaceChangeMonitor.swift" \
+  "${project_dir}/scripts/verify-file-monitor.swift" \
+  -framework CoreServices \
+  -o "${project_dir}/build/verify-file-monitor"
+
+"${project_dir}/build/verify-file-monitor"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Files/WorkspaceChangeMonitor.swift" \
+  "${project_dir}/scripts/verify-workspace-change-stress.swift" \
+  -framework CoreServices \
+  -o "${project_dir}/build/verify-workspace-change-stress"
+
+"${project_dir}/build/verify-workspace-change-stress"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Diagnostics/AppDiagnosticLogger.swift" \
+  "${project_dir}/scripts/verify-diagnostics.swift" \
+  -o "${project_dir}/build/verify-diagnostics"
+
+"${project_dir}/build/verify-diagnostics"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Process/CommandRunner.swift" \
+  "${project_dir}/scripts/verify-command-runner.swift" \
+  -o "${project_dir}/build/verify-command-runner"
+
+"${project_dir}/build/verify-command-runner"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Tasks/TaskModels.swift" \
+  "${project_dir}/RepoDeskApp/Tasks/SystemTaskRunner.swift" \
+  "${project_dir}/scripts/verify-task-runner.swift" \
+  -o "${project_dir}/build/verify-task-runner"
+
+"${project_dir}/build/verify-task-runner"
+
+swiftc \
+  -parse-as-library \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitBlameParser.swift" \
+  "${project_dir}/scripts/verify-git-blame.swift" \
+  -o "${project_dir}/build/verify-git-blame"
+
+"${project_dir}/build/verify-git-blame"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Process/CommandRunner.swift" \
+  "${project_dir}/RepoDeskApp/Diagnostics/AppDiagnosticLogger.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitBlameParser.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitDiffParser.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitHistoryParser.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitStatusParser.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitRepositoryReader.swift" \
+  "${project_dir}/scripts/verify-git-review.swift" \
+  -o "${project_dir}/build/verify-git-review"
+
+"${project_dir}/build/verify-git-review"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Maven/MavenRunHistory.swift" \
+  "${project_dir}/RepoDeskApp/Maven/MavenModels.swift" \
+  "${project_dir}/RepoDeskApp/Maven/MavenRunHistoryStore.swift" \
+  "${project_dir}/RepoDeskApp/Maven/MavenHomeValidator.swift" \
+  "${project_dir}/RepoDeskApp/Maven/JavaHomeValidator.swift" \
+  "${project_dir}/RepoDeskApp/Maven/MavenPathValidator.swift" \
+  "${project_dir}/RepoDeskApp/Files/WorkspaceChangeMonitor.swift" \
+  "${project_dir}/RepoDeskApp/Maven/MavenProjectRefreshPlanner.swift" \
+  "${project_dir}/RepoDeskApp/Process/CommandRunner.swift" \
+  "${project_dir}/RepoDeskApp/Maven/MavenCommandBuilder.swift" \
+  "${project_dir}/RepoDeskApp/Maven/MavenProjectScanner.swift" \
+  "${project_dir}/scripts/verify-maven.swift" \
+  -framework CoreServices \
+  -o "${project_dir}/build/verify-maven"
+
+"${project_dir}/build/verify-maven"
+
+"${script_dir}/build-local.sh"
+
+app_bundle="${project_dir}/build/RepoDesk.app"
+app_info="${app_bundle}/Contents/Info.plist"
+app_icon="${app_bundle}/Contents/Resources/RepoDesk.icns"
+
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "${app_info}")" == "0.1.0" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "${app_info}")" == "2" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${app_info}")" == "RepoDesk.icns" ]]
+[[ -s "${app_icon}" ]]
+codesign --verify --deep --strict "${app_bundle}"
+
+echo "Local verification passed (including QA integration replacement checks)"

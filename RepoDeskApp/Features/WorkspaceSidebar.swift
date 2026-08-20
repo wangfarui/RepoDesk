@@ -1,0 +1,287 @@
+import SwiftUI
+
+@MainActor
+struct WorkspaceSidebar: View {
+    @Bindable var appState: AppState
+    @State private var repositoryToRename: RegisteredRepository?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SidebarSectionTitle("Git仓库")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    repositoryRows
+                    discoveryProgress
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+            }
+
+            Divider()
+
+            HStack {
+                SidebarSectionTitle("工作区")
+                Spacer()
+                Button("新增工作区", systemImage: "plus") {
+                    appState.chooseWorkspace()
+                }
+                .buttonStyle(.borderless)
+                .labelStyle(.iconOnly)
+                .help("新增工作区")
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    workspaceRows
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+            }
+            .frame(minHeight: 56, idealHeight: 112, maxHeight: 180)
+        }
+        .sheet(item: $repositoryToRename) { repository in
+            RenameRepositorySheet(repository: repository) { name in
+                appState.renameRepository(repository.id, displayName: name)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var repositoryRows: some View {
+        if appState.repositories.isEmpty {
+            Text(appState.workspace == nil ? "请先打开工作区" : "尚未发现 Git 仓库")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+        } else {
+            ForEach(appState.repositories) { repository in
+                Button {
+                    appState.selectRepositoryContext(repository.id)
+                } label: {
+                    RepositoryRow(
+                        repository: repository,
+                        snapshot: appState.repositorySnapshots[repository.id],
+                        unavailableMessage: appState.repositoryUnavailableMessage(for: repository),
+                        isRefreshing: appState.refreshingRepositoryIDs.contains(repository.id)
+                    )
+                    .contentShape(.rect)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .focusEffectDisabled()
+                .background(
+                    !appState.isWorkspaceContext && appState.selectedRepositoryID == repository.id
+                        ? Color.accentColor.opacity(0.14)
+                        : Color.clear,
+                    in: .rect(cornerRadius: 6)
+                )
+                .accessibilityValue(
+                    !appState.isWorkspaceContext && appState.selectedRepositoryID == repository.id ? "已选择" : ""
+                )
+                .contextMenu {
+                    Button("重命名 Repository", systemImage: "pencil") {
+                        repositoryToRename = repository
+                    }
+                    Button("重新定位 Repository…", systemImage: "folder.badge.questionmark") {
+                        appState.relocateRepository(repository.id)
+                    }
+                    Button(
+                        repository.isPinned ? "取消固定 Repository" : "固定 Repository",
+                        systemImage: repository.isPinned ? "pin.slash" : "pin"
+                    ) {
+                        appState.toggleRepositoryPin(repository.id)
+                    }
+                    Button("上移", systemImage: "arrow.up") {
+                        appState.moveRepository(repository.id, by: -1)
+                    }
+                    .disabled(!appState.canMoveRepository(repository.id, by: -1))
+                    Button("下移", systemImage: "arrow.down") {
+                        appState.moveRepository(repository.id, by: 1)
+                    }
+                    .disabled(!appState.canMoveRepository(repository.id, by: 1))
+                    Divider()
+                    Button("移除注册", systemImage: "minus.circle", role: .destructive) {
+                        appState.removeRepository(repository.id)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var discoveryProgress: some View {
+        if appState.isDiscoveringRepositories {
+            HStack(spacing: 6) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在发现 Repository…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+    }
+
+    @ViewBuilder
+    private var workspaceRows: some View {
+        ForEach(sidebarWorkspaces) { workspace in
+            Button {
+                if appState.workspace?.path == workspace.path {
+                    appState.selectWorkspaceContext()
+                } else {
+                    appState.openRecentWorkspace(workspace)
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: workspaceIcon(for: workspace))
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(workspace.name)
+                            .lineLimit(1)
+                        Text(workspace.path)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 4)
+                }
+                .contentShape(.rect)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+            }
+            .buttonStyle(.plain)
+            .background(
+                isSelectedWorkspace(workspace) ? Color.accentColor.opacity(0.14) : Color.clear,
+                in: .rect(cornerRadius: 6)
+            )
+            .help(workspace.path)
+            .accessibilityValue(isSelectedWorkspace(workspace) ? "已选择" : "")
+        }
+
+        if sidebarWorkspaces.isEmpty {
+            Text("尚未添加工作区")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+        }
+    }
+
+    private func isSelectedWorkspace(_ workspace: RecentWorkspace) -> Bool {
+        appState.isWorkspaceContext && appState.workspace?.path == workspace.path
+    }
+
+    private var sidebarWorkspaces: [RecentWorkspace] {
+        guard let current = appState.workspace,
+              !appState.recentWorkspaces.contains(where: { $0.path == current.path }) else {
+            return appState.recentWorkspaces
+        }
+        return [
+            RecentWorkspace(path: current.path, bookmark: nil, lastOpenedAt: .now)
+        ] + appState.recentWorkspaces
+    }
+
+    private func workspaceIcon(for workspace: RecentWorkspace) -> String {
+        guard appState.workspace?.path == workspace.path else { return "folder" }
+        return appState.workspace?.isAvailable == true ? "folder.fill" : "folder.badge.questionmark"
+    }
+}
+
+private struct RenameRepositorySheet: View {
+    let repository: RegisteredRepository
+    let rename: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+
+    init(repository: RegisteredRepository, rename: @escaping (String) -> Void) {
+        self.repository = repository
+        self.rename = rename
+        _name = State(initialValue: repository.displayName)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("重命名 Repository").font(.title2.weight(.semibold))
+            TextField("显示名称", text: $name)
+            Text(repository.relativePath)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("重命名") {
+                    rename(name)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+
+private struct SidebarSectionTitle: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title.uppercased())
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+    }
+}
+
+private struct RepositoryRow: View {
+    let repository: RegisteredRepository
+    let snapshot: GitRepositorySnapshot?
+    let unavailableMessage: String?
+    let isRefreshing: Bool
+
+    var body: some View {
+        HStack {
+            Image(
+                systemName: unavailableMessage == nil
+                    ? "point.3.connected.trianglepath.dotted"
+                    : "externaldrive.badge.exclamationmark"
+            )
+                .foregroundStyle(unavailableMessage == nil ? Color.accentColor : Color.red)
+            VStack(alignment: .leading) {
+                Text(repository.name)
+                Text(unavailableMessage == nil ? (snapshot?.branch ?? repository.relativePath) : "不可用")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isRefreshing {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let snapshot, !snapshot.changes.isEmpty {
+                Text("\(snapshot.changes.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            if repository.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}

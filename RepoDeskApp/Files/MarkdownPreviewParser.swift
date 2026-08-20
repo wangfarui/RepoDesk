@@ -1,0 +1,223 @@
+import Foundation
+
+struct MarkdownPreviewListItem: Equatable, Sendable {
+    enum Marker: Equatable, Sendable {
+        case unordered
+        case ordered(Int)
+        case task(isChecked: Bool)
+    }
+
+    let marker: Marker
+    let depth: Int
+    let text: String
+}
+
+enum MarkdownPreviewBlock: Equatable, Sendable {
+    case heading(level: Int, text: String)
+    case paragraph(String)
+    case listItem(MarkdownPreviewListItem)
+    case blockQuote(String)
+    case codeBlock(language: String?, code: String)
+    case thematicBreak
+    case table(headers: [String], rows: [[String]])
+}
+
+enum MarkdownPreviewParser {
+    static func parse(_ source: String) -> [MarkdownPreviewBlock] {
+        let normalizedSource = source.replacingOccurrences(of: "\r\n", with: "\n")
+        let lines = normalizedSource.components(separatedBy: "\n")
+        var blocks: [MarkdownPreviewBlock] = []
+        var paragraphLines: [String] = []
+        var index = 0
+
+        func flushParagraph() {
+            guard !paragraphLines.isEmpty else { return }
+            blocks.append(.paragraph(paragraphLines.joined(separator: " ")))
+            paragraphLines = []
+        }
+
+        while index < lines.count {
+            let line = lines[index]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.isEmpty {
+                flushParagraph()
+                index += 1
+                continue
+            }
+
+            if let fence = codeFence(in: trimmed) {
+                flushParagraph()
+                let language = String(trimmed.dropFirst(fence.count))
+                    .trimmingCharacters(in: .whitespaces)
+                var codeLines: [String] = []
+                index += 1
+                while index < lines.count,
+                      !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(fence) {
+                    codeLines.append(lines[index])
+                    index += 1
+                }
+                if index < lines.count { index += 1 }
+                blocks.append(
+                    .codeBlock(
+                        language: language.isEmpty ? nil : language,
+                        code: codeLines.joined(separator: "\n")
+                    )
+                )
+                continue
+            }
+
+            if let heading = atxHeading(in: trimmed) {
+                flushParagraph()
+                blocks.append(.heading(level: heading.level, text: heading.text))
+                index += 1
+                continue
+            }
+
+            if index + 1 < lines.count,
+               let level = setextHeadingLevel(in: lines[index + 1]),
+               !trimmed.isEmpty {
+                flushParagraph()
+                blocks.append(.heading(level: level, text: trimmed))
+                index += 2
+                continue
+            }
+
+            if isThematicBreak(trimmed) {
+                flushParagraph()
+                blocks.append(.thematicBreak)
+                index += 1
+                continue
+            }
+
+            if isTableHeader(line, separatorLine: index + 1 < lines.count ? lines[index + 1] : nil) {
+                flushParagraph()
+                let headers = tableCells(in: line)
+                var rows: [[String]] = []
+                index += 2
+                while index < lines.count {
+                    let row = lines[index]
+                    guard !row.trimmingCharacters(in: .whitespaces).isEmpty,
+                          row.contains("|") else { break }
+                    rows.append(tableCells(in: row))
+                    index += 1
+                }
+                blocks.append(.table(headers: headers, rows: rows))
+                continue
+            }
+
+            if trimmed.hasPrefix(">") {
+                flushParagraph()
+                var quoteLines: [String] = []
+                while index < lines.count {
+                    let quoteLine = lines[index].trimmingCharacters(in: .whitespaces)
+                    guard quoteLine.hasPrefix(">") else { break }
+                    quoteLines.append(
+                        String(quoteLine.dropFirst())
+                            .trimmingCharacters(in: .whitespaces)
+                    )
+                    index += 1
+                }
+                blocks.append(.blockQuote(quoteLines.joined(separator: "\n")))
+                continue
+            }
+
+            if let listItem = listItem(in: line) {
+                flushParagraph()
+                blocks.append(.listItem(listItem))
+                index += 1
+                continue
+            }
+
+            paragraphLines.append(trimmed)
+            index += 1
+        }
+
+        flushParagraph()
+        return blocks
+    }
+
+    private static func codeFence(in line: String) -> String? {
+        if line.hasPrefix("```") { return "```" }
+        if line.hasPrefix("~~~") { return "~~~" }
+        return nil
+    }
+
+    private static func atxHeading(in line: String) -> (level: Int, text: String)? {
+        let level = line.prefix { $0 == "#" }.count
+        guard (1...6).contains(level),
+              line.dropFirst(level).first?.isWhitespace == true else { return nil }
+        var text = String(line.dropFirst(level)).trimmingCharacters(in: .whitespaces)
+        while text.last == "#" {
+            text.removeLast()
+            text = text.trimmingCharacters(in: .whitespaces)
+        }
+        return (level, text)
+    }
+
+    private static func setextHeadingLevel(in line: String) -> Int? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.count >= 3 else { return nil }
+        if trimmed.allSatisfy({ $0 == "=" }) { return 1 }
+        if trimmed.allSatisfy({ $0 == "-" }) { return 2 }
+        return nil
+    }
+
+    private static func isThematicBreak(_ line: String) -> Bool {
+        let characters = line.filter { !$0.isWhitespace }
+        guard characters.count >= 3, let first = characters.first,
+              first == "-" || first == "*" || first == "_" else { return false }
+        return characters.allSatisfy { $0 == first }
+    }
+
+    private static func listItem(in line: String) -> MarkdownPreviewListItem? {
+        let leadingSpaces = line.prefix { $0 == " " || $0 == "\t" }.reduce(into: 0) { count, character in
+            count += character == "\t" ? 4 : 1
+        }
+        let depth = leadingSpaces / 2
+        let content = line.dropFirst(line.prefix { $0 == " " || $0 == "\t" }.count)
+
+        if let first = content.first, first == "-" || first == "*" || first == "+",
+           content.dropFirst().first?.isWhitespace == true {
+            var text = String(content.dropFirst()).trimmingCharacters(in: .whitespaces)
+            var marker: MarkdownPreviewListItem.Marker = .unordered
+            if text.count >= 3, text.first == "[", text.dropFirst(2).first == "]" {
+                let state = text[text.index(after: text.startIndex)]
+                if state == " " || state == "x" || state == "X" {
+                    marker = .task(isChecked: state == "x" || state == "X")
+                    text = String(text.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                }
+            }
+            return MarkdownPreviewListItem(marker: marker, depth: depth, text: text)
+        }
+
+        let digits = content.prefix { $0.isNumber }
+        guard !digits.isEmpty,
+              let number = Int(digits),
+              let delimiter = content.dropFirst(digits.count).first,
+              delimiter == "." || delimiter == ")",
+              content.dropFirst(digits.count + 1).first?.isWhitespace == true else { return nil }
+        let text = String(content.dropFirst(digits.count + 1)).trimmingCharacters(in: .whitespaces)
+        return MarkdownPreviewListItem(marker: .ordered(number), depth: depth, text: text)
+    }
+
+    private static func isTableHeader(_ line: String, separatorLine: String?) -> Bool {
+        guard line.contains("|"), let separatorLine else { return false }
+        let cells = tableCells(in: separatorLine)
+        guard !cells.isEmpty else { return false }
+        return cells.allSatisfy { cell in
+            let value = cell.trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+            return value.count >= 3 && value.allSatisfy { $0 == "-" }
+        }
+    }
+
+    private static func tableCells(in line: String) -> [String] {
+        var value = line.trimmingCharacters(in: .whitespaces)
+        if value.hasPrefix("|") { value.removeFirst() }
+        if value.hasSuffix("|") { value.removeLast() }
+        return value.split(separator: "|", omittingEmptySubsequences: false).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+    }
+}

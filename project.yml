@@ -1,0 +1,48 @@
+name: RepoDesk
+options:
+  bundleIdPrefix: com.wangfarui
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Automatic
+targets:
+  RepoDesk:
+    type: application
+    platform: macOS
+    sources:
+      - path: RepoDeskApp
+    resources:
+      - path: Support/Resources/RepoDesk.icns
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wangfarui.RepoDesk
+        PRODUCT_NAME: RepoDesk
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 2
+        ENABLE_APP_SANDBOX: NO
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleIconFile: RepoDesk.icns
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+  RepoDeskTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: RepoDeskTests
+    dependencies:
+      - target: RepoDesk
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  RepoDesk:
+    build:
+      targets:
+        RepoDesk: all
+        RepoDeskTests: [test]
+    test:
+      targets:
+        - RepoDeskTests

@@ -1,0 +1,10 @@
+# Xcode user state and build output
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# XcodeGen local artifacts
+RepoDesk.xcodeproj/
+
+.DS_Store
