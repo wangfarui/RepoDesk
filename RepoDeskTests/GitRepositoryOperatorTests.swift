@@ -94,8 +94,113 @@ struct GitRepositoryOperatorTests {
         #expect(requests.map(\.arguments) == [
             ["fetch", "--all", "--prune"],
             ["pull"],
-            ["push"]
+            ["push", "--porcelain"]
         ])
+    }
+
+    @Test func stashCommandsIncludeUntrackedFilesAndParseEntries() async throws {
+        let runner = SequencedGitCommandRunner(
+            results: [
+                commandResult(),
+                commandResult(output: "1111111111111111111111111111111111111111\0stash@{0}\0On main: WIP\n2222222222222222222222222222222222222222\0stash@{1}\0On main: Older\n"),
+                commandResult(),
+                commandResult()
+            ]
+        )
+        let operatorUnderTest = SystemGitRepositoryOperator(commandRunner: runner)
+        let repositoryURL = URL(fileURLWithPath: "/tmp/repo")
+
+        try await operatorUnderTest.stashChanges(repositoryURL: repositoryURL, message: "WIP")
+        let stashes = try await operatorUnderTest.listStashes(repositoryURL: repositoryURL)
+        try await operatorUnderTest.unstashChanges(
+            repositoryURL: repositoryURL,
+            stash: stashes[0]
+        )
+        try await operatorUnderTest.dropStash(
+            repositoryURL: repositoryURL,
+            stash: stashes[1]
+        )
+
+        #expect(stashes == [
+            GitStash(reference: "stash@{0}", message: "On main: WIP", hash: "1111111111111111111111111111111111111111"),
+            GitStash(reference: "stash@{1}", message: "On main: Older", hash: "2222222222222222222222222222222222222222")
+        ])
+        let requests = await runner.recordedRequests()
+        #expect(requests.map(\.arguments) == [
+            ["stash", "push", "--include-untracked", "--message", "WIP"],
+            ["stash", "list", "--format=%H%x00%gd%x00%gs"],
+            ["stash", "pop", "stash@{0}"],
+            ["stash", "drop", "stash@{1}"]
+        ])
+    }
+
+    @Test func rollbackRestoresTrackedPathsAndHandlesUntrackedPathsSeparately() async throws {
+        let runner = SequencedGitCommandRunner(results: [commandResult()])
+        let operatorUnderTest = SystemGitRepositoryOperator(commandRunner: runner)
+        let repositoryURL = URL(fileURLWithPath: "/tmp/repo")
+
+        try await operatorUnderTest.rollbackChanges(
+            repositoryURL: repositoryURL,
+            changes: [
+                GitChangeSelection(path: "Sources/App.swift", kind: .changes),
+                GitChangeSelection(path: "Scratch.txt", kind: .unversioned)
+            ]
+        )
+
+        let requests = await runner.recordedRequests()
+        #expect(requests.map(\.arguments) == [
+            ["restore", "--source=HEAD", "--staged", "--worktree", "--", "Sources/App.swift"]
+        ])
+    }
+
+    @Test func pushOutcomeDistinguishesUpToDateFromPublishedCommits() async throws {
+        let runner = SequencedGitCommandRunner(
+            results: [
+                commandResult(output: "=\trefs/heads/main:refs/heads/main\t[up to date]\nDone\n"),
+                commandResult(output: " \trefs/heads/main:refs/heads/main\tabc123..def456\nDone\n")
+            ]
+        )
+        let operatorUnderTest = SystemGitRepositoryOperator(commandRunner: runner)
+        let repositoryURL = URL(fileURLWithPath: "/tmp/repo")
+
+        let upToDate = try await operatorUnderTest.pushCurrentBranchOutcome(
+            repositoryURL: repositoryURL
+        )
+        let pushed = try await operatorUnderTest.pushCurrentBranchOutcome(
+            repositoryURL: repositoryURL
+        )
+
+        #expect(upToDate == .upToDate)
+        #expect(pushed == .pushed)
+    }
+
+    @Test func explicitPushCreatesRemoteBranchAndSetsUpstreamWithoutSwitching() async throws {
+        let runner = SequencedGitCommandRunner(
+            results: [
+                commandResult(),
+                commandResult(output: "*\trefs/heads/feature/local:refs/heads/review/remote\t[new branch]\nDone\n")
+            ]
+        )
+        let operatorUnderTest = SystemGitRepositoryOperator(commandRunner: runner)
+
+        let outcome = try await operatorUnderTest.push(
+            repositoryURL: URL(fileURLWithPath: "/tmp/repo"),
+            localBranch: "feature/local",
+            remote: "origin",
+            remoteBranch: "review/remote",
+            setUpstream: true
+        )
+
+        let requests = await runner.recordedRequests()
+        #expect(outcome == .pushed)
+        #expect(requests.map(\.arguments) == [
+            ["check-ref-format", "--branch", "review/remote"],
+            [
+                "push", "--porcelain", "--set-upstream", "origin",
+                "refs/heads/feature/local:refs/heads/review/remote"
+            ]
+        ])
+        #expect(!requests.flatMap(\.arguments).contains("switch"))
     }
 
     @Test func remoteBranchCreatesTrackingBranchWhenLocalBranchIsMissing() async throws {

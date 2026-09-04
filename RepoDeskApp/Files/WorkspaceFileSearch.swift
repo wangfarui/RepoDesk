@@ -11,7 +11,10 @@ struct FileSystemWorkspaceSearch: WorkspaceFileSearching {
 
     func search(in workspaceURL: URL, query: String, limit: Int = 100) async -> [WorkspaceFileEntry] {
         await Task.detached(priority: .userInitiated) {
-            guard !query.isEmpty,
+            let normalizedQuery = query
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedQuery.isEmpty,
+                  limit > 0,
                   let enumerator = FileManager.default.enumerator(
                     at: workspaceURL,
                     includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
@@ -20,7 +23,7 @@ struct FileSystemWorkspaceSearch: WorkspaceFileSearching {
                   ) else {
                 return []
             }
-            var matches: [WorkspaceFileEntry] = []
+            var matches: [(entry: WorkspaceFileEntry, score: Int)] = []
             for case let url as URL in enumerator {
                 guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey]) else {
                     continue
@@ -33,15 +36,52 @@ struct FileSystemWorkspaceSearch: WorkspaceFileSearching {
                     continue
                 }
                 guard values.isRegularFile == true,
-                      url.lastPathComponent.localizedCaseInsensitiveContains(query) else { continue }
-                matches.append(
-                    WorkspaceFileEntry(url: url, name: url.lastPathComponent, isDirectory: false)
-                )
-                if matches.count >= limit { break }
+                      !url.lastPathComponent.hasPrefix("."),
+                      let score = Self.fuzzyScore(
+                          query: normalizedQuery,
+                          candidate: url.lastPathComponent
+                      ) else { continue }
+                matches.append((
+                    WorkspaceFileEntry(url: url, name: url.lastPathComponent, isDirectory: false),
+                    score
+                ))
             }
-            return matches.sorted {
-                $0.name.localizedStandardCompare($1.name) == .orderedAscending
-            }
+            return matches
+                .sorted {
+                    if $0.score != $1.score { return $0.score > $1.score }
+                    let nameOrder = $0.entry.name.localizedStandardCompare($1.entry.name)
+                    if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                    return $0.entry.url.path < $1.entry.url.path
+                }
+                .prefix(limit)
+                .map(\.entry)
         }.value
+    }
+
+    /// Returns a relevance score when every query character appears in order.
+    /// Prefix and contiguous matches rank ahead of loose subsequence matches.
+    private static func fuzzyScore(query: String, candidate: String) -> Int? {
+        let query = Array(query.lowercased())
+        let candidate = Array(candidate.lowercased())
+        guard !query.isEmpty, !candidate.isEmpty else { return nil }
+
+        var queryIndex = 0
+        var previousMatchIndex: Int?
+        var score = 0
+        var matchedCount = 0
+        for (candidateIndex, character) in candidate.enumerated() {
+            guard queryIndex < query.count else { break }
+            guard character == query[queryIndex] else { continue }
+
+            matchedCount += 1
+            score += 10
+            if candidateIndex == queryIndex { score += 20 }
+            if let previousMatchIndex, candidateIndex == previousMatchIndex + 1 { score += 8 }
+            if candidateIndex == 0 { score += 15 }
+            previousMatchIndex = candidateIndex
+            queryIndex += 1
+        }
+        guard matchedCount == query.count else { return nil }
+        return score - (candidate.count - query.count)
     }
 }

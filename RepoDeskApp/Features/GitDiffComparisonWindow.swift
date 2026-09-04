@@ -2,8 +2,14 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class GitDiffComparisonWindowController: NSObject, NSWindowDelegate {
+final class GitDiffWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
+    private let frameAutosaveName: String
+
+    init(frameAutosaveName: String = "RepoDesk.GitDiffComparison") {
+        self.frameAutosaveName = frameAutosaveName
+        super.init()
+    }
 
     func present<Content: View>(
         title: String,
@@ -11,6 +17,8 @@ final class GitDiffComparisonWindowController: NSObject, NSWindowDelegate {
     ) {
         let hostingController = NSHostingController(rootView: AnyView(content()))
         if let window {
+            // Replacing the hosting controller also cancels any task owned by the old content.
+            window.contentViewController = nil
             window.title = title
             window.contentViewController = hostingController
             window.makeKeyAndOrderFront(nil)
@@ -37,7 +45,6 @@ final class GitDiffComparisonWindowController: NSObject, NSWindowDelegate {
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 1_050, height: 680)
-        let frameAutosaveName = "RepoDesk.GitDiffComparison"
         if !window.setFrameUsingName(frameAutosaveName) {
             window.setContentSize(NSSize(width: 1_200, height: 760))
             window.center()
@@ -55,6 +62,7 @@ final class GitDiffComparisonWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        window?.contentViewController = nil
         window = nil
     }
 }

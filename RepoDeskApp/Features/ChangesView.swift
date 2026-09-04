@@ -1,11 +1,26 @@
 import SwiftUI
 
+private struct ChangesRollbackRequest: Identifiable {
+    let id = UUID()
+    let repository: RegisteredRepository
+    let selections: [GitChangeSelection]
+    let title: String
+
+    var includesUntracked: Bool {
+        selections.contains { $0.kind == .unversioned }
+    }
+}
+
 @MainActor
 struct ChangesView: View {
     @Bindable var appState: AppState
     @State private var collapsedRepositoryIDs: Set<String> = []
     @State private var expandedNodeIDs: Set<String> = []
-    @State private var diffComparisonWindow = GitDiffComparisonWindowController()
+    @State private var contextMenuOutlineRowID: String?
+    @State private var diffComparisonWindow = GitDiffWindowController(
+        frameAutosaveName: "RepoDesk.GitDiffComparison"
+    )
+    @State private var rollbackRequest: ChangesRollbackRequest?
 
     var body: some View {
         Group {
@@ -55,6 +70,27 @@ struct ChangesView: View {
         .onChange(of: appState.currentDiff) { _, diff in
             if diff == nil { resetDiffComparison() }
         }
+        .alert(item: $rollbackRequest) { request in
+            Alert(
+                title: Text("Rollback \(request.title)?"),
+                message: Text(
+                    request.includesUntracked
+                        ? "将回滚 \(request.selections.count) 项改动，并从磁盘删除其中的未跟踪文件。此操作无法撤销。"
+                        : "将回滚 \(request.selections.count) 项改动，包括已暂存和未暂存内容。此操作无法撤销。"
+                ),
+                primaryButton: .cancel(Text("取消")),
+                secondaryButton: .destructive(Text("Rollback")) {
+                    let request = request
+                    rollbackRequest = nil
+                    Task {
+                        await appState.rollbackChanges(
+                            request.selections,
+                            repositoryID: request.repository.id
+                        )
+                    }
+                }
+            )
+        }
     }
 
     private var changeBrowser: some View {
@@ -99,27 +135,25 @@ struct ChangesView: View {
                 .contentShape(.rect)
                 .help("Group By")
 
-                if !appState.changesGrouping.isEmpty {
-                    Button("展开全部", systemImage: "arrow.up.left.and.arrow.down.right") {
-                        expandAllChanges()
-                    }
-                    .buttonStyle(.borderless)
-                    .labelStyle(.iconOnly)
-                    .frame(width: 24, height: 24)
-                    .contentShape(.rect)
-                    .disabled(visibleRepositories.isEmpty)
-                    .help("Expand All")
-
-                    Button("折叠全部", systemImage: "arrow.down.right.and.arrow.up.left") {
-                        collapseAllChanges()
-                    }
-                    .buttonStyle(.borderless)
-                    .labelStyle(.iconOnly)
-                    .frame(width: 24, height: 24)
-                    .contentShape(.rect)
-                    .disabled(visibleRepositories.isEmpty)
-                    .help("Collapse All")
+                Button("展开全部", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    expandAllChanges()
                 }
+                .buttonStyle(.borderless)
+                .labelStyle(.iconOnly)
+                .frame(width: 24, height: 24)
+                .contentShape(.rect)
+                .disabled(visibleRepositories.isEmpty)
+                .help("Expand All")
+
+                Button("折叠全部", systemImage: "arrow.down.right.and.arrow.up.left") {
+                    collapseAllChanges()
+                }
+                .buttonStyle(.borderless)
+                .labelStyle(.iconOnly)
+                .frame(width: 24, height: 24)
+                .contentShape(.rect)
+                .disabled(visibleRepositories.isEmpty)
+                .help("Collapse All")
 
                 Spacer(minLength: 0)
             }
@@ -278,7 +312,7 @@ struct ChangesView: View {
                     Image(systemName: "point.3.connected.trianglepath.dotted")
                         .foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(repository.name).font(.callout.weight(.semibold))
+                        Text(repository.name).fontWeight(.semibold)
                         Text(repository.relativePath)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -363,7 +397,7 @@ struct ChangesView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .font(.callout.weight(.semibold))
+            .fontWeight(.semibold)
             .padding(.vertical, 2)
             .help(isExpanded ? "折叠 \(section.kind.rawValue)" : "展开 \(section.kind.rawValue)")
             .accessibilityValue(isExpanded ? "已展开" : "已折叠")
@@ -377,6 +411,17 @@ struct ChangesView: View {
             }
         }
         .padding(.leading, leadingInset)
+        .fileSystemPathCopyMenu(
+            nil,
+            rollbackItem: {
+                requestRollback(
+                    title: section.kind.rawValue,
+                    repository: repository,
+                    selections: section.selections
+                )
+            },
+            isContextMenuPresented: contextMenuPresentationBinding(for: statusID)
+        )
     }
 
     private func outlineRows(
@@ -456,11 +501,17 @@ struct ChangesView: View {
                 count: count,
                 depth: depth,
                 icon: "folder",
-                selections: directorySelections(
+                selections: ChangesCommitSelectionScope.directorySelections(
                     path: path,
                     modulePath: modulePath,
-                    selections: statusSections(for: repository).first(where: { $0.kind == kind })?.selections ?? [],
-                    repository: repository
+                    selections: statusSections(for: repository).first(where: { $0.kind == kind })?.selections ?? []
+                ),
+                pathCopyValues: pathCopyValues(
+                    repository: repository,
+                    relativePath: FileSystemPathCopyValues.repositoryDirectoryPath(
+                        path: path,
+                        modulePath: modulePath
+                    )
                 ),
                 repository: repository
             )
@@ -477,6 +528,7 @@ struct ChangesView: View {
                     selections: statusSections(for: repository).first(where: { $0.kind == kind })?.selections ?? [],
                     repository: repository
                 ),
+                pathCopyValues: nil,
                 repository: repository
             )
         case .file(_, let selection, let depth, let modulePath, let operationCode):
@@ -499,6 +551,7 @@ struct ChangesView: View {
         depth: Int,
         icon: String,
         selections: [GitChangeSelection],
+        pathCopyValues: FileSystemPathCopyValues?,
         repository: RegisteredRepository
     ) -> some View {
         let isExpanded = expandedNodeIDs.contains(id)
@@ -535,8 +588,16 @@ struct ChangesView: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .padding(.leading, 12 + CGFloat(depth) * 14)
+        .background(contextMenuBackground(for: id), in: .rect(cornerRadius: 5))
         .help(isExpanded ? "折叠 \(title)" : "展开 \(title)")
         .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+        .fileSystemPathCopyMenu(
+            pathCopyValues,
+            rollbackItem: {
+                requestRollback(title: title, repository: repository, selections: selections)
+            },
+            isContextMenuPresented: contextMenuPresentationBinding(for: id)
+        )
     }
 
     private func outlineFileRow(
@@ -547,7 +608,8 @@ struct ChangesView: View {
         repository: RegisteredRepository,
         kind: GitChangeKind
     ) -> some View {
-        HStack(spacing: 7) {
+        let rowID = "file:\(repository.id):\(selection.id)"
+        return HStack(spacing: 7) {
             commitCheckbox(selections: [selection], repository: repository)
             Button {
                 appState.selectChange(selection, repositoryID: repository.id)
@@ -586,9 +648,19 @@ struct ChangesView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .background(selectionBackground(selection, repository: repository), in: .rect(cornerRadius: 5))
+        .background(
+            selectionBackground(selection, repository: repository, rowID: rowID),
+            in: .rect(cornerRadius: 5)
+        )
         .padding(.leading, 18 + CGFloat(depth) * 14)
         .help(selection.path)
+        .fileSystemPathCopyMenu(
+            pathCopyValues(repository: repository, relativePath: selection.path),
+            rollbackItem: {
+                requestRollback(title: fileName(selection.path), repository: repository, selections: [selection])
+            },
+            isContextMenuPresented: contextMenuPresentationBinding(for: rowID)
+        )
     }
 
     @ViewBuilder
@@ -599,7 +671,7 @@ struct ChangesView: View {
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
                     FileTypeIcon(path: selection.path)
-                    Text(repository.name).font(.callout.weight(.semibold))
+                    Text(repository.name).fontWeight(.semibold)
                     Text(selection.kind.rawValue).font(.caption).foregroundStyle(color(for: selection.kind))
                     Spacer()
                 }
@@ -622,7 +694,8 @@ struct ChangesView: View {
                             diff: diff,
                             renderModel: renderModel
                         )
-                    }
+                    },
+                    fontSize: CGFloat(appState.fileContentFontSize)
                 )
                 .id("\(repository.id):\(selection.id)")
             }
@@ -692,17 +765,14 @@ struct ChangesView: View {
         selections: [GitChangeSelection],
         repository: RegisteredRepository
     ) -> some View {
-        let includedCount = selections.filter {
+        let state = CommitCheckboxState.resolve(selections: selections) {
             appState.isIncludedInCommit($0, repositoryID: repository.id)
-        }.count
-        let state: CommitCheckboxState = includedCount == 0
-            ? .unchecked
-            : (includedCount == selections.count ? .checked : .mixed)
+        }
         return Button {
             appState.setCommitInclusion(
                 selections,
                 repositoryID: repository.id,
-                included: includedCount != selections.count
+                included: state.includesSelectionsAfterToggle
             )
         } label: {
             Image(systemName: state.systemImage)
@@ -723,21 +793,6 @@ struct ChangesView: View {
     ) -> [GitChangeSelection] {
         guard var resolver = changeModulePathResolver(for: repository) else { return selections }
         return selections.filter { resolver.modulePath(for: $0.path) == path }
-    }
-
-    private func directorySelections(
-        path: String,
-        modulePath: String?,
-        selections: [GitChangeSelection],
-        repository: RegisteredRepository
-    ) -> [GitChangeSelection] {
-        selections.filter { selection in
-            var candidate = selection.path
-            if let modulePath, modulePath != ".", candidate.hasPrefix(modulePath + "/") {
-                candidate.removeFirst(modulePath.count + 1)
-            }
-            return candidate.hasPrefix(path + "/")
-        }
     }
 
     private var visibleRepositories: [RegisteredRepository] {
@@ -878,12 +933,27 @@ struct ChangesView: View {
     }
 
     private func changeModulePathResolver(for repository: RegisteredRepository) -> ChangeModulePathResolver? {
+        guard let repositoryURL = repositoryURL(for: repository) else { return nil }
+        return ChangeModulePathResolver(repositoryURL: repositoryURL)
+    }
+
+    private func pathCopyValues(
+        repository: RegisteredRepository,
+        relativePath: String
+    ) -> FileSystemPathCopyValues? {
+        guard let repositoryURL = repositoryURL(for: repository) else { return nil }
+        return FileSystemPathCopyValues(
+            relativePath: relativePath,
+            rootURL: repositoryURL
+        )
+    }
+
+    private func repositoryURL(for repository: RegisteredRepository) -> URL? {
         guard let workspace = appState.workspace else { return nil }
         let workspaceURL = URL(fileURLWithPath: workspace.path, isDirectory: true)
-        let repositoryURL = repository.relativePath == "."
+        return repository.relativePath == "."
             ? workspaceURL
             : workspaceURL.appendingPathComponent(repository.relativePath, isDirectory: true)
-        return ChangeModulePathResolver(repositoryURL: repositoryURL)
     }
 
     private func moduleRelativePackage(_ path: String, modulePath: String) -> String {
@@ -923,9 +993,45 @@ struct ChangesView: View {
         return "·"
     }
 
-    private func selectionBackground(_ selection: GitChangeSelection, repository: RegisteredRepository) -> Color {
-        appState.selectedChangeRepositoryID == repository.id && appState.selectedChange == selection
-            ? Color.accentColor.opacity(0.14) : .clear
+    private func selectionBackground(
+        _ selection: GitChangeSelection,
+        repository: RegisteredRepository,
+        rowID: String
+    ) -> Color {
+        if appState.selectedChangeRepositoryID == repository.id && appState.selectedChange == selection {
+            return Color.accentColor.opacity(0.14)
+        }
+        return contextMenuBackground(for: rowID)
+    }
+
+    private func contextMenuBackground(for rowID: String) -> Color {
+        contextMenuOutlineRowID == rowID ? Color.accentColor.opacity(0.06) : .clear
+    }
+
+    private func contextMenuPresentationBinding(for rowID: String) -> Binding<Bool> {
+        Binding(
+            get: { contextMenuOutlineRowID == rowID },
+            set: { isPresented in
+                if isPresented {
+                    contextMenuOutlineRowID = rowID
+                } else if contextMenuOutlineRowID == rowID {
+                    contextMenuOutlineRowID = nil
+                }
+            }
+        )
+    }
+
+    private func requestRollback(
+        title: String,
+        repository: RegisteredRepository,
+        selections: [GitChangeSelection]
+    ) {
+        guard !selections.isEmpty, !appState.isGitWriteOperationRunning else { return }
+        rollbackRequest = ChangesRollbackRequest(
+            repository: repository,
+            selections: selections,
+            title: title
+        )
     }
 
     private func color(for kind: GitChangeKind) -> Color {
@@ -1131,7 +1237,7 @@ private struct GitDiffComparisonContent: View {
                 Image(systemName: "rectangle.split.2x1")
                     .foregroundStyle(.secondary)
                 Text("对比 \(fileName)")
-                    .font(.headline)
+                    .fontWeight(.semibold)
                     .lineLimit(1)
                 Spacer()
                 if !loadingBlameSides.isEmpty {
@@ -1175,9 +1281,11 @@ private struct GitDiffComparisonContent: View {
                 newBlame: visibleBlameSides.contains(.new) ? (newBlameCache ?? [:]) : nil,
                 toggleOldBlame: { toggleBlame(.old) },
                 toggleNewBlame: { toggleBlame(.new) },
+                fontSize: CGFloat(appState.fileContentFontSize),
                 renderModel: renderModel
             )
         }
+        .repoDeskFontSize(appState.interfaceFontSize)
         .frame(minWidth: 1_050, minHeight: 680)
         .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: appState.currentDiff) { _, updatedDiff in
@@ -1232,11 +1340,7 @@ private struct ChangeStatusSection: Identifiable {
     var id: GitChangeKind { kind }
 }
 
-private enum CommitCheckboxState {
-    case checked
-    case unchecked
-    case mixed
-
+private extension CommitCheckboxState {
     var systemImage: String {
         switch self {
         case .checked: "checkmark.square.fill"

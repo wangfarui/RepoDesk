@@ -15,22 +15,38 @@ struct WorkspaceMonitorTaskID: Equatable {
 struct RootView: View {
     @Bindable var appState: AppState
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showsQuickOpen = false
+    @State private var showsFileSearch = false
+    @State private var showsFullTextSearch = false
+    @State private var showsPushSheet = false
     @State private var showsBranchPicker = false
     @State private var branchQuery = ""
     @State private var branchToRename: GitBranch?
     @State private var branchToDelete: GitBranch?
     @State private var branchWithOpenActions: GitBranch?
     @State private var renamedBranchName = ""
+    @State private var showsStashMessagePrompt = false
+    @State private var stashMessage = ""
+    @State private var stashToDelete: GitStash?
 
     var body: some View {
         NavigationSplitView {
             WorkspaceSidebar(appState: appState)
+                .repoDeskFontSize(appState.sidebarFontSize)
         } detail: {
             VStack(spacing: 0) {
                 if appState.workspace != nil {
                     sectionNavigationBar
                     Divider()
+                    if appState.gitRemoteOperationState != .idle {
+                        GitRemoteOperationStatusView(
+                            state: appState.gitRemoteOperationState,
+                            retry: {
+                                Task { await appState.retryGitRemoteOperation() }
+                            },
+                            dismiss: appState.dismissGitRemoteOperationResult
+                        )
+                        Divider()
+                    }
                 }
 
                 Group {
@@ -47,9 +63,11 @@ struct RootView: View {
                                     appState.chooseWorkspace()
                                 }
                                 .buttonStyle(.borderedProminent)
+                                .disabled(appState.isGitWriteOperationRunning)
                                 Button("关闭 Workspace") {
                                     appState.closeWorkspace()
                                 }
+                                .disabled(appState.isGitWriteOperationRunning)
                             }
                         }
                     } else {
@@ -58,6 +76,7 @@ struct RootView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .repoDeskFontSize(appState.interfaceFontSize)
         }
         .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $appState.isShowingDiscoveryResults) {
@@ -66,8 +85,14 @@ struct RootView: View {
                 register: appState.registerDiscoveredRepositories
             )
         }
-        .sheet(isPresented: $showsQuickOpen) {
-            FileQuickOpenSheet(appState: appState)
+        .sheet(isPresented: $showsFileSearch) {
+            FileNameSearchSheet(appState: appState)
+        }
+        .sheet(isPresented: $showsFullTextSearch) {
+            FullTextSearchSheet(appState: appState)
+        }
+        .sheet(isPresented: $showsPushSheet) {
+            GitPushSheet(appState: appState)
         }
         .sheet(isPresented: branchComparisonPresented) {
             if let comparison = appState.branchComparison {
@@ -97,6 +122,27 @@ struct RootView: View {
             }
         } message: {
             Text(branchToDelete.map { "安全删除 '\($0.name)'。未合并的 Branch 不会被删除。" } ?? "")
+        }
+        .alert("暂存改动", isPresented: $showsStashMessagePrompt) {
+            TextField("备注（可选）", text: $stashMessage)
+            Button("取消", role: .cancel) { stashMessage = "" }
+            Button("暂存") {
+                let message = stashMessage
+                stashMessage = ""
+                Task { await appState.stashChanges(message: message) }
+            }
+        } message: {
+            Text("当前 Repository 的已跟踪和未跟踪改动都会被暂存。")
+        }
+        .alert("删除暂存？", isPresented: stashDeletePresented) {
+            Button("取消", role: .cancel) { stashToDelete = nil }
+            Button("删除", role: .destructive) {
+                guard let stash = stashToDelete else { return }
+                stashToDelete = nil
+                Task { await appState.dropStash(stash) }
+            }
+        } message: {
+            Text(stashToDelete.map { "将删除 \($0.reference) · \($0.message)，此操作无法撤销。" } ?? "")
         }
         .alert(item: $appState.presentedRepositoryError) { error in
             Alert(
@@ -184,18 +230,26 @@ struct RootView: View {
                     }
                 }
                 .labelStyle(.iconOnly)
-                .disabled(appState.workspace == nil)
+                .disabled(appState.workspace == nil || appState.isGitWriteOperationRunning)
                 .keyboardShortcut("r", modifiers: .command)
                 .help("刷新 Repository 和文件状态")
             }
             ToolbarItem(placement: .primaryAction) {
-                Button("快速打开", systemImage: "doc.text.magnifyingglass") {
-                    showsQuickOpen = true
+                Button("文件名搜索", systemImage: "doc.text.magnifyingglass") {
+                    showsFileSearch = true
                 }
-                .keyboardShortcut("p", modifiers: .command)
                 .labelStyle(.iconOnly)
                 .disabled(appState.workspace == nil)
-                .help("快速打开")
+                .help("文件名搜索（双击 Shift）")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("全文检索", systemImage: "text.magnifyingglass") {
+                    showsFullTextSearch = true
+                }
+                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .labelStyle(.iconOnly)
+                .disabled(appState.workspace == nil)
+                .help("全文检索（Command+Shift+F）")
             }
             ToolbarItem(placement: .primaryAction) {
                 SettingsLink {
@@ -209,11 +263,12 @@ struct RootView: View {
                     Button("打开 Workspace…", systemImage: "folder.badge.plus") {
                         appState.chooseWorkspace()
                     }
+                    .disabled(appState.isGitWriteOperationRunning)
 
                     Button("关闭 Workspace", systemImage: "xmark.circle") {
                         appState.closeWorkspace()
                     }
-                    .disabled(appState.workspace == nil)
+                    .disabled(appState.workspace == nil || appState.isGitWriteOperationRunning)
 
                     Button("查看诊断日志", systemImage: "doc.text.magnifyingglass") {
                         revealDiagnosticLog()
@@ -226,6 +281,7 @@ struct RootView: View {
                                 Button(workspace.name) {
                                     appState.openRecentWorkspace(workspace)
                                 }
+                                .disabled(appState.isGitWriteOperationRunning)
                             }
                         }
                     }
@@ -237,7 +293,8 @@ struct RootView: View {
         .task(id: appState.selectedRepositoryID) {
             async let snapshot: Void = appState.monitorCurrentRepository()
             async let branches: Void = appState.loadBranches()
-            _ = await (snapshot, branches)
+            async let stashes: Void = appState.loadStashes()
+            _ = await (snapshot, branches, stashes)
         }
         .task(id: workspaceMonitorTaskID) {
             guard appState.automaticallyRefreshesWorkspace else { return }
@@ -251,31 +308,109 @@ struct RootView: View {
                 appState.refreshAfterReturningToForeground()
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .repoDeskFileSearchRequested)) { _ in
+            guard appState.workspace != nil else { return }
+            showsFullTextSearch = false
+            showsFileSearch = true
+        }
     }
 
     private var gitOperationsButton: some View {
-        Menu("Git", systemImage: "point.3.connected.trianglepath.dotted") {
-            Button("Fetch") {
-                Task { await appState.fetchCurrentRepository() }
+        Menu {
+            Button {
+                Task { await appState.performGitRemoteOperation(.fetch) }
+            } label: {
+                Label("Fetch", systemImage: "arrow.triangle.2.circlepath")
             }
-            Button("Pull") {
-                Task { await appState.pullCurrentRepository() }
+            Button {
+                Task { await appState.performGitRemoteOperation(.pull) }
+            } label: {
+                Label("Pull", systemImage: "arrow.down.circle")
             }
-            Button("Push") {
-                Task { await appState.pushCurrentRepository() }
+            Button {
+                showsPushSheet = true
+            } label: {
+                Label("Push", systemImage: "arrow.up.circle")
             }
+            Divider()
+            Button {
+                showsStashMessagePrompt = true
+            } label: {
+                Label("暂存改动…", systemImage: "archivebox")
+            }
+            Menu {
+                if appState.gitStashes.isEmpty {
+                    Text(appState.stashesErrorMessage ?? "没有可恢复的暂存")
+                } else {
+                    ForEach(appState.gitStashes) { stash in
+                        Menu {
+                            Button {
+                                Task { await appState.unstashChanges(stash) }
+                            } label: {
+                                Label("恢复暂存", systemImage: "tray.and.arrow.down")
+                            }
+                            Button(role: .destructive) {
+                                stashToDelete = stash
+                            } label: {
+                                Label("删除暂存", systemImage: "trash")
+                            }
+                        } label: {
+                            Text("\(stash.reference)  \(stash.message)")
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    Task { await appState.loadStashes() }
+                } label: {
+                    Label("刷新暂存列表", systemImage: "arrow.clockwise")
+                }
+            } label: {
+                Label("恢复暂存", systemImage: "tray.and.arrow.down")
+            }
+        } label: {
+            Group {
+                if appState.gitRemoteOperationState.isRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if case .requiresConflictResolution = appState.gitRemoteOperationState {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                } else {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                }
+            }
+            .frame(width: 18, height: 18)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .labelStyle(.iconOnly)
         .disabled(appState.selectedRepository == nil || appState.isGitWriteOperationRunning)
-        .help("Git 操作")
+        .help(gitOperationsHelp)
+        .accessibilityLabel("Git 操作")
+    }
+
+    private var gitOperationsHelp: String {
+        switch appState.gitRemoteOperationState {
+        case .running(let context):
+            "正在 \(context.kind.rawValue) \(context.repositoryName)"
+        case .requiresConflictResolution:
+            "Pull 需要解决冲突"
+        default:
+            "Git 操作"
+        }
     }
 
     private var gitOperationErrorAlertBinding: Binding<Bool> {
         Binding(
             get: { appState.branchOperationErrorMessage != nil },
             set: { if !$0 { appState.branchOperationErrorMessage = nil } }
+        )
+    }
+
+    private var stashDeletePresented: Binding<Bool> {
+        Binding(
+            get: { stashToDelete != nil },
+            set: { if !$0 { stashToDelete = nil } }
         )
     }
 
@@ -315,7 +450,7 @@ struct RootView: View {
             appState.selectSection(section)
         } label: {
             Text(section.displayName)
-                .font(.callout.weight(isSelected ? .semibold : .regular))
+                .fontWeight(isSelected ? .semibold : .regular)
                 .foregroundStyle(isSelected ? Color.accentColor : .primary)
                 .padding(.horizontal, 11)
                 .frame(height: 28)
@@ -436,7 +571,7 @@ struct RootView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            .font(.callout.weight(.semibold))
+            .fontWeight(.semibold)
             .frame(maxWidth: 280)
             .contentShape(.rect)
         }
@@ -470,7 +605,6 @@ struct RootView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            .font(.callout)
             .frame(maxWidth: 220)
             .contentShape(.rect)
         }
@@ -520,7 +654,6 @@ struct RootView: View {
                filteredRemoteBranches.isEmpty,
                appState.branchesErrorMessage == nil {
                 Text("没有匹配的 Branch")
-                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
                     .padding(16)
@@ -548,10 +681,9 @@ struct RootView: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            .font(.callout)
             .padding(.leading, 24)
             .padding(.trailing, 8)
-            .frame(height: 27)
+            .frame(height: max(27, appState.interfaceFontSize + 12))
             .background(
                 branchWithOpenActions?.id == branch.id
                     ? Color.accentColor.opacity(0.16)
@@ -680,7 +812,10 @@ struct RootView: View {
             Image(systemName: systemImage)
                 .font(.caption)
             Text(title)
-                .font(.caption.weight(.semibold))
+                .font(.system(
+                    size: max(9, appState.interfaceFontSize - 2),
+                    weight: .semibold
+                ))
             Spacer()
         }
         .foregroundStyle(.secondary)

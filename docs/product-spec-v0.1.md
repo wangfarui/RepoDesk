@@ -113,7 +113,7 @@ Window
 
 ### 4.3 浏览文件和历史
 
-1. 用户通过 Files 树或 `Cmd+P` 查找文件。
+1. 用户通过 Files 树、双击 Shift 的文件名搜索或 `Command+Shift+F` 全文检索查找文件。
 2. 应用只读展示代码、XML、YAML、JSON 或 Markdown。
 3. 用户可以切换 Markdown 源码和预览。
 4. 用户可以从文件菜单进入 File History。
@@ -158,7 +158,8 @@ Window
 
 - 浏览整个 Workspace，而非仅当前仓库。
 - 支持按目录懒加载，避免一次枚举全部文件。
-- 支持 `Cmd+P` 按文件名快速打开。
+- 支持双击 Shift 按文件名模糊匹配并快速打开所有类型的文件（排除隐藏文件和常见构建/缓存目录）。
+- 支持 `Command+Shift+F` 在当前 Workspace 或 Repository 根目录内进行全文检索。
 - 支持文本编码检测和二进制文件提示。
 - 支持 Java、Kotlin、XML、YAML、JSON、Properties、Shell 和 Markdown 高亮。
 - Markdown 支持源码与预览切换。
@@ -336,7 +337,7 @@ v0.1 完成时，应当能够连续完成以下流程：
 4. 查看 Codex 产生的所有未暂存与已暂存 Diff。
 5. Codex 再次修改文件后，界面自动刷新。
 6. 查看当前仓库提交历史、分支和任一提交详情。
-7. 从整个 Workspace 中快速打开 Java 或 Markdown 文件。
+7. 在当前 Workspace 或 Repository 根目录中按文件名搜索并打开任意类型文件，或通过全文检索定位任意文本文件中的匹配行。
 8. 为某个仓库配置带公司 Maven settings 和模块参数的 Deploy 任务。
 9. 执行任务、实时查看日志、获取退出码并可以停止任务。
 10. 关闭并重新打开应用后恢复工作区、当前仓库和页面。

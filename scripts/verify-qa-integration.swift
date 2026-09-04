@@ -42,6 +42,36 @@ enum QAIntegrationVerification {
         try require(committedBlame.count == 1, "Committed Blame did not return the committed line.")
         try require(workingBlame.count == 2 && workingBlame[1].isUncommitted, "Working-tree Blame did not identify the new line.")
 
+        let repository = RegisteredRepository(
+            displayName: "qa-repository",
+            relativePath: ".",
+            isPinned: true
+        )
+        let fileBlameState = AppState(
+            workspace: WorkspaceSummary(url: fixture.url),
+            repositories: [repository],
+            selectedRepositoryID: repository.id,
+            gitRepositoryReader: reader,
+            restoresWorkspaceOnLaunch: false
+        )
+        fileBlameState.selectedFileURL = fixture.url.appendingPathComponent("tracked.txt")
+        fileBlameState.loadedDocument = .text(
+            LoadedTextDocument(
+                text: "initial\nworking tree\n",
+                isLarge: false,
+                encoding: .utf8,
+                revision: DocumentRevision(byteCount: 0, contentDigest: 0)
+            )
+        )
+        fileBlameState.documentText = "initial\neditor line\n"
+        fileBlameState.documentOriginalText = "initial\nworking tree\n"
+        fileBlameState.repositorySnapshots[repository.id] = snapshot
+        let fileViewBlame = try await fileBlameState.blameForSelectedFile()
+        try require(
+            fileViewBlame.count == 2 && fileViewBlame[1].isUncommitted,
+            "Files Blame did not annotate the current editor contents."
+        )
+
         _ = try await gitOperator.createCommit(
             repositoryURL: fixture.url,
             message: "QA real commit",
@@ -54,6 +84,57 @@ enum QAIntegrationVerification {
         let committedSubject = try await fixture.gitOutput(["log", "-1", "--format=%s"])
         try require(committedStatus.isEmpty, "Real Commit left working-tree changes.")
         try require(committedSubject == "QA real commit", "Real Commit subject was not persisted.")
+
+        try Data("stashed tracked change\n".utf8).write(
+            to: fixture.url.appendingPathComponent("tracked.txt")
+        )
+        try Data("stashed untracked change\n".utf8).write(
+            to: fixture.url.appendingPathComponent("stash-untracked.txt")
+        )
+        try await gitOperator.stashChanges(repositoryURL: fixture.url, message: "QA stash")
+        let stashes = try await gitOperator.listStashes(repositoryURL: fixture.url)
+        let stash = try value(stashes.first, "Real Stash was not listed.")
+        try require(stash.reference == "stash@{0}", "Real Stash reference was not preserved.")
+        let stashedStatus = try await fixture.gitOutput(["status", "--porcelain"])
+        try require(
+            stashedStatus.isEmpty,
+            "Real Stash left working-tree changes."
+        )
+
+        try await gitOperator.unstashChanges(repositoryURL: fixture.url, stash: stash)
+        let restoredTrackedContents = try String(
+            contentsOf: fixture.url.appendingPathComponent("tracked.txt"),
+            encoding: .utf8
+        )
+        let restoredUntrackedContents = try String(
+            contentsOf: fixture.url.appendingPathComponent("stash-untracked.txt"),
+            encoding: .utf8
+        )
+        try require(
+            restoredTrackedContents == "stashed tracked change\n",
+            "Real Unstash did not restore the tracked change."
+        )
+        try require(
+            restoredUntrackedContents == "stashed untracked change\n",
+            "Real Unstash did not restore the untracked change."
+        )
+        let stashesAfterRestore = try await gitOperator.listStashes(repositoryURL: fixture.url)
+        try require(
+            stashesAfterRestore.isEmpty,
+            "Real Unstash did not remove the restored Stash."
+        )
+
+        try await gitOperator.stashChanges(repositoryURL: fixture.url, message: "QA dropped stash")
+        let stashToDrop = try value(
+            try await gitOperator.listStashes(repositoryURL: fixture.url).first,
+            "Real Stash for deletion was not listed."
+        )
+        try await gitOperator.dropStash(repositoryURL: fixture.url, stash: stashToDrop)
+        let stashesAfterDrop = try await gitOperator.listStashes(repositoryURL: fixture.url)
+        try require(
+            stashesAfterDrop.isEmpty,
+            "Real Stash deletion did not remove the selected Stash."
+        )
 
         let remoteURL = try await fixture.makeBareRemote()
         defer { try? FileManager.default.removeItem(at: remoteURL) }

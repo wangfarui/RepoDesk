@@ -59,6 +59,20 @@ struct GitBranch: Equatable, Identifiable, Sendable {
     var id: String { name }
 }
 
+struct GitStash: Equatable, Identifiable, Sendable {
+    let reference: String
+    let message: String
+    let hash: String
+
+    init(reference: String, message: String, hash: String? = nil) {
+        self.reference = reference
+        self.message = message
+        self.hash = hash ?? reference
+    }
+
+    var id: String { hash }
+}
+
 struct GitBranchComparison: Equatable, Sendable {
     let baseBranch: String
     let comparedBranch: String
@@ -100,11 +114,25 @@ struct GitCommitFile: Equatable, Identifiable, Sendable {
 struct GitCommitDetail: Equatable, Sendable {
     let summary: GitCommitSummary
     let files: [GitCommitFile]
+    let parentHashes: [String]
+
+    init(
+        summary: GitCommitSummary,
+        files: [GitCommitFile],
+        parentHashes: [String] = []
+    ) {
+        self.summary = summary
+        self.files = files
+        self.parentHashes = parentHashes
+    }
+
+    var isTwoParentMerge: Bool { parentHashes.count == 2 }
 }
 
 enum GitDiffTarget: Equatable, Sendable {
     case change(GitChangeSelection)
     case commit(hash: String, file: GitCommitFile)
+    case revisionRange(base: String?, head: String, file: GitCommitFile)
 }
 
 enum GitPatchLineKind: Equatable, Sendable {
@@ -135,8 +163,43 @@ struct GitFileDiff: Equatable, Sendable {
     let newLabel: String
     let oldLines: [String]
     let newLines: [String]
+    let oldLineCount: Int
+    let newLineCount: Int
     let hunks: [GitDiffHunk]
     let isBinary: Bool
+
+    init(
+        path: String,
+        originalPath: String?,
+        oldLabel: String,
+        newLabel: String,
+        oldLines: [String],
+        newLines: [String],
+        oldLineCount: Int? = nil,
+        newLineCount: Int? = nil,
+        hunks: [GitDiffHunk],
+        isBinary: Bool
+    ) {
+        self.path = path
+        self.originalPath = originalPath
+        self.oldLabel = oldLabel
+        self.newLabel = newLabel
+        self.oldLines = oldLines
+        self.newLines = newLines
+        self.oldLineCount = max(oldLines.count, oldLineCount ?? oldLines.count)
+        self.newLineCount = max(newLines.count, newLineCount ?? newLines.count)
+        self.hunks = hunks
+        self.isBinary = isBinary
+    }
+}
+
+struct GitMergeFileDiff: Equatable, Sendable {
+    let target: GitFileDiff
+    let source: GitFileDiff
+
+    var path: String { target.path }
+    var resultLines: [String] { target.newLines }
+    var isBinary: Bool { target.isBinary || source.isBinary }
 }
 
 enum GitBlameSide: Hashable, Sendable {

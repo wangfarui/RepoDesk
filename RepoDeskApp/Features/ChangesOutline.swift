@@ -8,6 +8,39 @@ enum ChangesAutoExpansionPolicy {
     }
 }
 
+enum CommitCheckboxState: Equatable, Sendable {
+    case checked
+    case unchecked
+    case mixed
+
+    static func resolve(
+        selections: [GitChangeSelection],
+        isIncluded: (GitChangeSelection) -> Bool
+    ) -> CommitCheckboxState {
+        let includedCount = selections.lazy.filter(isIncluded).count
+        if includedCount == 0 { return .unchecked }
+        return includedCount == selections.count ? .checked : .mixed
+    }
+
+    var includesSelectionsAfterToggle: Bool { self != .checked }
+}
+
+enum ChangesCommitSelectionScope {
+    static func directorySelections(
+        path: String,
+        modulePath: String?,
+        selections: [GitChangeSelection]
+    ) -> [GitChangeSelection] {
+        selections.filter { selection in
+            var candidate = selection.path
+            if let modulePath, modulePath != ".", candidate.hasPrefix(modulePath + "/") {
+                candidate.removeFirst(modulePath.count + 1)
+            }
+            return candidate.hasPrefix(path + "/")
+        }
+    }
+}
+
 enum ChangeOutlineRow: Equatable, Identifiable, Sendable {
     case directory(
         id: String,
@@ -205,6 +238,7 @@ enum ChangesOutlineBuilder {
                     statusIsExpanded: true,
                     expandedNodeIDs: expandedNodeIDs,
                     baseDepth: 1,
+                    modulePath: path,
                     directoryPath: { relativePath($0.path, withinModule: path) },
                     operationCode: operationCode
                 ))

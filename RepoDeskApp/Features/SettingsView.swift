@@ -2,6 +2,7 @@ import SwiftUI
 
 enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
     case general
+    case appearance
     case files
     case diff
     case maven
@@ -11,6 +12,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
     var title: String {
         switch self {
         case .general: "通用"
+        case .appearance: "外观"
         case .files: "Files"
         case .diff: "Diff"
         case .maven: "Maven"
@@ -20,6 +22,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
     var subtitle: String {
         switch self {
         case .general: "刷新、Workspace 与版本"
+        case .appearance: "分区域字体大小"
         case .files: "文件树与编辑器"
         case .diff: "差异显示偏好"
         case .maven: "运行环境与记录"
@@ -29,6 +32,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
     var systemImage: String {
         switch self {
         case .general: "gearshape"
+        case .appearance: "textformat.size"
         case .files: "folder"
         case .diff: "rectangle.split.2x1"
         case .maven: "shippingbox"
@@ -205,6 +209,59 @@ struct RepoDeskSettingsView: View {
                 }
             }
 
+        case .appearance:
+            settingsPage(
+                title: "外观",
+                description: "分别调整主窗口左侧栏、右侧功能区和文件内容的字体大小。"
+            ) {
+                SettingsSection(title: "字体大小", systemImage: "textformat.size") {
+                    SettingsRow(
+                        title: "左侧栏",
+                        description: "Git 仓库、工作区及其列表项。"
+                    ) {
+                        FontSizeStepper(
+                            value: Binding(
+                                get: { appState.sidebarFontSize },
+                                set: appState.setSidebarFontSize
+                            )
+                        )
+                    }
+
+                    SettingsRow(
+                        title: "右侧功能区",
+                        description: "按钮、页签、文件名、分组标题和其他功能项名称。"
+                    ) {
+                        FontSizeStepper(
+                            value: Binding(
+                                get: { appState.interfaceFontSize },
+                                set: appState.setInterfaceFontSize
+                            )
+                        )
+                    }
+
+                    SettingsRow(
+                        title: "文件内容",
+                        description: "源码编辑器、Markdown 预览和 Git Diff 内容。"
+                    ) {
+                        FontSizeStepper(
+                            value: Binding(
+                                get: { appState.fileContentFontSize },
+                                set: appState.setFileContentFontSize
+                            )
+                        )
+                    }
+
+                    SettingsRow(
+                        title: "字体默认值",
+                        description: "将三个区域恢复为 13 pt。"
+                    ) {
+                        Button("恢复", systemImage: "arrow.counterclockwise") {
+                            appState.resetFontSizes()
+                        }
+                    }
+                }
+            }
+
         case .files:
             settingsPage(
                 title: "Files",
@@ -213,7 +270,7 @@ struct RepoDeskSettingsView: View {
                 SettingsSection(title: "文件树", systemImage: "folder") {
                     SettingsRow(
                         title: "显示隐藏文件",
-                        description: "在文件树与快速打开结果中包含点文件。"
+                        description: "在文件树中包含点文件；文件名搜索仍会排除点文件。"
                     ) {
                         Toggle(
                             "显示隐藏文件",
@@ -241,6 +298,22 @@ struct RepoDeskSettingsView: View {
 
                 SettingsSection(title: "编辑器", systemImage: "doc.text") {
                     SettingsRow(
+                        title: "最多打开文件 Tab",
+                        description: "超过数量时自动关闭最早打开的文件。"
+                    ) {
+                        Stepper(
+                            value: Binding(
+                                get: { appState.maximumOpenFileTabs },
+                                set: appState.setMaximumOpenFileTabs
+                            ),
+                            in: 1...50
+                        ) {
+                            Text("\(appState.maximumOpenFileTabs)")
+                                .monospacedDigit()
+                                .frame(minWidth: 24, alignment: .trailing)
+                        }
+                    }
+                    SettingsRow(
                         title: "Markdown 默认打开预览",
                         description: "选择 Markdown 文件时优先显示块级预览。"
                     ) {
@@ -255,12 +328,13 @@ struct RepoDeskSettingsView: View {
                     }
                     SettingsRow(
                         title: "Files 默认值",
-                        description: "隐藏点文件、折叠单子目录并默认打开编辑器。"
+                        description: "隐藏点文件、折叠单子目录、默认打开编辑器并保留 5 个 Tab。"
                     ) {
                         Button("恢复", systemImage: "arrow.counterclockwise") {
                             appState.setShowsHiddenFiles(false)
                             appState.setCompactsSingleChildDirectories(true)
                             appState.setOpensMarkdownInPreview(false)
+                            appState.setMaximumOpenFileTabs(5)
                         }
                     }
                 }
@@ -389,6 +463,23 @@ struct RepoDeskSettingsView: View {
             get: { appState.mavenSettingsErrorMessage != nil },
             set: { if !$0 { appState.mavenSettingsErrorMessage = nil } }
         )
+    }
+}
+
+private struct FontSizeStepper: View {
+    @Binding var value: Double
+
+    var body: some View {
+        Stepper(
+            value: $value,
+            in: RepoDeskFontSize.minimum...RepoDeskFontSize.maximum,
+            step: 1
+        ) {
+            Text("\(Int(value)) pt")
+                .monospacedDigit()
+                .frame(width: 42, alignment: .trailing)
+        }
+        .accessibilityValue("\(Int(value)) pt")
     }
 }
 

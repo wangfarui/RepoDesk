@@ -315,13 +315,47 @@ struct ChangesOutlineTests {
             "\(serviceModuleID):file:\(service.id)"
         ])
         #expect(rows.contains { row in
-            if case .directory(_, _, _, let depth, _, _) = row { return depth == 1 }
+            if case .directory(_, _, _, let depth, _, let modulePath) = row {
+                return depth == 1 && modulePath != nil
+            }
             return false
         })
         #expect(rows.contains { row in
             if case .file(_, _, let depth, _, _) = row { return depth == 2 }
             return false
         })
+    }
+
+    @Test func moduleDirectoryCommitScopeIncludesOnlyDirectoryDescendants() {
+        let clientDirect = GitChangeSelection(path: "client/src/App.swift", kind: .changes)
+        let clientNested = GitChangeSelection(path: "client/src/feature/Feature.swift", kind: .changes)
+        let clientDocs = GitChangeSelection(path: "client/docs/README.md", kind: .changes)
+        let serviceSource = GitChangeSelection(path: "service/src/API.swift", kind: .changes)
+
+        let selections = ChangesCommitSelectionScope.directorySelections(
+            path: "src",
+            modulePath: "client",
+            selections: [clientDirect, clientNested, clientDocs, serviceSource]
+        )
+
+        #expect(Set(selections) == [clientDirect, clientNested])
+    }
+
+    @Test func commitCheckboxStateAggregatesDescendantsAndDefinesToggleTarget() {
+        let first = GitChangeSelection(path: "src/First.swift", kind: .changes)
+        let second = GitChangeSelection(path: "src/Second.swift", kind: .changes)
+        let selections = [first, second]
+
+        let checked = CommitCheckboxState.resolve(selections: selections) { _ in true }
+        let unchecked = CommitCheckboxState.resolve(selections: selections) { _ in false }
+        let mixed = CommitCheckboxState.resolve(selections: selections) { $0 == first }
+
+        #expect(checked == .checked)
+        #expect(unchecked == .unchecked)
+        #expect(mixed == .mixed)
+        #expect(!checked.includesSelectionsAfterToggle)
+        #expect(unchecked.includesSelectionsAfterToggle)
+        #expect(mixed.includesSelectionsAfterToggle)
     }
 
     @Test func combinedGroupingExpansionIncludesModuleAndNestedDirectoryNodes() {

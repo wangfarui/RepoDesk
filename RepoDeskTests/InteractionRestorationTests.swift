@@ -23,7 +23,8 @@ struct InteractionRestorationTests {
                     selectedFilePath: nil,
                     selectedChangesByRepository: [repository.id: change],
                     selectedChangeRepositoryID: repository.id,
-                    mavenSelectionsByRepository: [repository.id: mavenSelection]
+                    mavenSelectionsByRepository: [repository.id: mavenSelection],
+                    historyGrouping: .module
                 )
             ),
             restoresWorkspaceOnLaunch: true
@@ -34,6 +35,7 @@ struct InteractionRestorationTests {
         #expect(state.selectedChangeRepositoryID == repository.id)
         #expect(state.selectedChange == change)
         #expect(state.mavenSelection(for: repository.id) == mavenSelection)
+        #expect(state.historyGrouping == .module)
     }
 
     @Test func restoresSelectedCommitFileAfterCommitLoads() async {

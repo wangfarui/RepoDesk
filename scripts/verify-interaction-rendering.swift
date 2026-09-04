@@ -43,6 +43,45 @@ enum VerifyInteractionRendering {
             appearance: .darkAqua,
             outputName: "interaction-wide-dark.png"
         )
+        state.setSidebarFontSize(16)
+        state.setInterfaceFontSize(16)
+        state.setFileContentFontSize(16)
+        try render(
+            state: state,
+            width: 1_000,
+            height: 650,
+            colorScheme: .light,
+            appearance: .aqua,
+            outputName: "interaction-compact-large-fonts.png"
+        )
+        let sourceURL = URL(fileURLWithPath: "/tmp/FontSizePreview.swift")
+        let source = """
+        struct FontSizePreview {
+            let sidebar = 16
+            let interface = 16
+            let fileContent = 16
+        }
+        """
+        state.selectedSection = .files
+        state.selectedFileURL = sourceURL
+        state.documentText = source
+        state.documentOriginalText = source
+        state.loadedDocument = .text(
+            LoadedTextDocument(
+                text: source,
+                isLarge: false,
+                encoding: .utf8,
+                revision: DocumentRevision(byteCount: source.utf8.count, contentDigest: 1)
+            )
+        )
+        try render(
+            state: state,
+            width: 1_000,
+            height: 650,
+            colorScheme: .light,
+            appearance: .aqua,
+            outputName: "interaction-files-large-fonts.png"
+        )
         print("Interaction rendering verification passed")
     }
 

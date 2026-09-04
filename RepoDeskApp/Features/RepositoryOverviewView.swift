@@ -60,7 +60,7 @@ private struct RepositoryOverviewCard: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(repository.name)
-                            .font(.headline)
+                            .fontWeight(.semibold)
                         Text(repository.relativePath)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -88,7 +88,6 @@ private struct RepositoryOverviewCard: View {
                             Label("\(snapshot.behindCount)", systemImage: "arrow.down")
                         }
                     }
-                    .font(.callout)
 
                     HStack(spacing: 14) {
                         ChangeMetric(value: snapshot.trackedChangeCount, label: "Changes")

@@ -27,6 +27,7 @@ enum VerifySettingsRendering {
         state.setIgnoresWhitespaceInDiff(true)
 
         try render(tab: .general, state: state, name: "settings-general.png")
+        try render(tab: .appearance, state: state, name: "settings-appearance.png")
         try render(tab: .files, state: state, name: "settings-files.png")
         try render(tab: .diff, state: state, name: "settings-diff.png")
         try render(tab: .maven, state: state, name: "settings-maven.png")

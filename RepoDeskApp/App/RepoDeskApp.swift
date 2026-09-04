@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    static let repoDeskFileSearchRequested = Notification.Name("RepoDesk.FileSearchRequested")
+}
+
 @main
 @MainActor
 struct RepoDeskApp: App {
@@ -52,6 +56,64 @@ private final class WindowTitleHidingView: NSView {
 @MainActor
 final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
     weak var appState: AppState?
+    private var shiftMonitor: Any?
+    private var contentFindMonitor: Any?
+    private var lastShiftPressTimestamp: TimeInterval?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        shiftMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self,
+                  (event.keyCode == 56 || event.keyCode == 60),
+                  event.modifierFlags.contains(.shift),
+                  event.modifierFlags.intersection([.command, .option, .control, .function]).isEmpty else {
+                return event
+            }
+            if let lastShiftPressTimestamp = self.lastShiftPressTimestamp,
+               event.timestamp - lastShiftPressTimestamp <= 0.45 {
+                NotificationCenter.default.post(name: .repoDeskFileSearchRequested, object: nil)
+                self.lastShiftPressTimestamp = nil
+            } else {
+                self.lastShiftPressTimestamp = event.timestamp
+            }
+            return event
+        }
+        contentFindMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            guard let key = event.charactersIgnoringModifiers?.lowercased(),
+                  let window = event.window ?? NSApp.keyWindow,
+                  ContentFindWindowRegistry.shared.contains(window) else {
+                return event
+            }
+            if modifiers == .command, key == "f" {
+                NotificationCenter.default.post(
+                    name: .repoDeskContentFindRequested,
+                    object: window
+                )
+                return nil
+            }
+            if key == "g", modifiers == .command || modifiers == [.command, .shift] {
+                NotificationCenter.default.post(
+                    name: .repoDeskContentFindNavigationRequested,
+                    object: window,
+                    userInfo: ["offset": modifiers.contains(.shift) ? -1 : 1]
+                )
+                return nil
+            }
+            return event
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        appState?.persistStateBeforeTermination()
+        if let shiftMonitor {
+            NSEvent.removeMonitor(shiftMonitor)
+        }
+        if let contentFindMonitor {
+            NSEvent.removeMonitor(contentFindMonitor)
+        }
+        shiftMonitor = nil
+        contentFindMonitor = nil
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let appState, appState.hasUnsavedDocumentChanges else { return .terminateNow }

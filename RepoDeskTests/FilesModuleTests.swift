@@ -3,6 +3,41 @@ import Testing
 @testable import RepoDesk
 
 struct FilesModuleTests {
+    @Test func fileBlameTargetUsesDeepestContainingRepository() {
+        let workspaceURL = URL(fileURLWithPath: "/tmp/workspace", isDirectory: true)
+        let repositories = [
+            RegisteredRepository(displayName: "root", relativePath: ".", isPinned: true),
+            RegisteredRepository(displayName: "nested", relativePath: "services/nested", isPinned: true)
+        ]
+        let fileURL = workspaceURL.appendingPathComponent("services/nested/Sources/App.swift")
+
+        let target = GitFileBlameTarget.resolve(
+            fileURL: fileURL,
+            workspaceURL: workspaceURL,
+            repositories: repositories
+        )
+
+        #expect(target?.repositoryID == "services/nested")
+        #expect(
+            target?.repositoryURL
+                == workspaceURL.appendingPathComponent("services/nested", isDirectory: true)
+        )
+        #expect(target?.path == "Sources/App.swift")
+    }
+
+    @Test func fileBlameTargetRejectsFilesOutsideRegisteredRepositories() {
+        let workspaceURL = URL(fileURLWithPath: "/tmp/workspace", isDirectory: true)
+        let target = GitFileBlameTarget.resolve(
+            fileURL: workspaceURL.appendingPathComponent("unregistered/file.txt"),
+            workspaceURL: workspaceURL,
+            repositories: [
+                RegisteredRepository(displayName: "service", relativePath: "service", isPinned: true)
+            ]
+        )
+
+        #expect(target == nil)
+    }
+
     @Test func browserSortsDirectoriesBeforeFiles() async throws {
         let fixture = try FileFixture()
         defer { fixture.remove() }

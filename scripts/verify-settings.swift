@@ -34,6 +34,9 @@ enum VerifySettings {
         state.setOpensMarkdownInPreview(true)
         state.setDiffPresentation(.sideBySide)
         state.setIgnoresWhitespaceInDiff(true)
+        state.setSidebarFontSize(10)
+        state.setInterfaceFontSize(15)
+        state.setFileContentFontSize(16)
 
         let restored = AppState(
             appPreferencesStore: store,
@@ -46,10 +49,18 @@ enum VerifySettings {
         try require(restored.opensMarkdownInPreview, "Markdown preference was not restored")
         try require(restored.diffPresentation == .sideBySide, "Diff presentation was not restored")
         try require(restored.ignoresWhitespaceInDiff, "Whitespace preference was not restored")
+        try require(restored.sidebarFontSize == 10, "Sidebar font size was not restored")
+        try require(restored.interfaceFontSize == 15, "Interface font size was not restored")
+        try require(restored.fileContentFontSize == 16, "File content font size was not restored")
         try require(
             !RootView(appState: restored).workspaceMonitorTaskID.isEnabled,
             "Disabled automatic refresh did not stop the monitor task"
         )
+
+        restored.resetFontSizes()
+        try require(restored.sidebarFontSize == 13, "Sidebar font size was not reset")
+        try require(restored.interfaceFontSize == 13, "Interface font size was not reset")
+        try require(restored.fileContentFontSize == 13, "File content font size was not reset")
 
         print("Settings persistence verification passed")
     }

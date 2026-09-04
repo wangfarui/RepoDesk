@@ -17,7 +17,10 @@ struct AppPreferencesTests {
             compactsSingleChildDirectories: false,
             opensMarkdownInPreview: true,
             diffPresentation: .sideBySide,
-            ignoresWhitespaceInDiff: true
+            ignoresWhitespaceInDiff: true,
+            sidebarFontSize: 10,
+            interfaceFontSize: 15,
+            fileContentFontSize: 16
         )
 
         store.save(preferences)
@@ -58,6 +61,10 @@ struct AppPreferencesTests {
         #expect(!preferences.opensMarkdownInPreview)
         #expect(preferences.diffPresentation == .unified)
         #expect(!preferences.ignoresWhitespaceInDiff)
+        #expect(preferences.sidebarFontSize == RepoDeskFontSize.default)
+        #expect(preferences.interfaceFontSize == RepoDeskFontSize.default)
+        #expect(preferences.fileContentFontSize == RepoDeskFontSize.default)
+        #expect(preferences.maximumOpenFileTabs == 5)
     }
 
     @Test func appStateLoadsAndPersistsCentralSettings() throws {
@@ -78,6 +85,10 @@ struct AppPreferencesTests {
         state.setOpensMarkdownInPreview(true)
         state.setDiffPresentation(.sideBySide)
         state.setIgnoresWhitespaceInDiff(true)
+        state.setSidebarFontSize(10)
+        state.setInterfaceFontSize(15)
+        state.setFileContentFontSize(16)
+        state.setMaximumOpenFileTabs(8)
 
         let restored = AppState(
             appPreferencesStore: store,
@@ -90,6 +101,28 @@ struct AppPreferencesTests {
         #expect(restored.opensMarkdownInPreview)
         #expect(restored.diffPresentation == .sideBySide)
         #expect(restored.ignoresWhitespaceInDiff)
+        #expect(restored.sidebarFontSize == 10)
+        #expect(restored.interfaceFontSize == 15)
+        #expect(restored.fileContentFontSize == 16)
+        #expect(restored.maximumOpenFileTabs == 8)
+    }
+
+    @Test func fontSizesAreRoundedAndClampedBeforePersistence() {
+        let state = AppState(restoresWorkspaceOnLaunch: false)
+
+        state.setSidebarFontSize(9)
+        state.setInterfaceFontSize(14.6)
+        state.setFileContentFontSize(30)
+
+        #expect(state.sidebarFontSize == RepoDeskFontSize.minimum)
+        #expect(state.interfaceFontSize == 15)
+        #expect(state.fileContentFontSize == RepoDeskFontSize.maximum)
+
+        state.resetFontSizes()
+
+        #expect(state.sidebarFontSize == RepoDeskFontSize.default)
+        #expect(state.interfaceFontSize == RepoDeskFontSize.default)
+        #expect(state.fileContentFontSize == RepoDeskFontSize.default)
     }
 
     @Test func workspaceMonitorTaskIdentityChangesWithAutomaticRefresh() {

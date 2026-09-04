@@ -7,7 +7,7 @@ struct WorkspaceSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SidebarSectionTitle("Git仓库")
+            SidebarSectionTitle("Git仓库", fontSize: appState.sidebarFontSize)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 8)
                 .padding(.bottom, 4)
@@ -24,13 +24,14 @@ struct WorkspaceSidebar: View {
             Divider()
 
             HStack {
-                SidebarSectionTitle("工作区")
+                SidebarSectionTitle("工作区", fontSize: appState.sidebarFontSize)
                 Spacer()
                 Button("新增工作区", systemImage: "plus") {
                     appState.chooseWorkspace()
                 }
                 .buttonStyle(.borderless)
                 .labelStyle(.iconOnly)
+                .disabled(appState.isGitWriteOperationRunning)
                 .help("新增工作区")
             }
             .padding(.horizontal, 8)
@@ -57,7 +58,6 @@ struct WorkspaceSidebar: View {
     private var repositoryRows: some View {
         if appState.repositories.isEmpty {
             Text(appState.workspace == nil ? "请先打开工作区" : "尚未发现 Git 仓库")
-                .font(.callout)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
@@ -70,7 +70,8 @@ struct WorkspaceSidebar: View {
                         repository: repository,
                         snapshot: appState.repositorySnapshots[repository.id],
                         unavailableMessage: appState.repositoryUnavailableMessage(for: repository),
-                        isRefreshing: appState.refreshingRepositoryIDs.contains(repository.id)
+                        isRefreshing: appState.refreshingRepositoryIDs.contains(repository.id),
+                        fontSize: appState.sidebarFontSize
                     )
                     .contentShape(.rect)
                     .padding(.horizontal, 8)
@@ -88,14 +89,14 @@ struct WorkspaceSidebar: View {
                     !appState.isWorkspaceContext && appState.selectedRepositoryID == repository.id ? "已选择" : ""
                 )
                 .contextMenu {
-                    Button("重命名 Repository", systemImage: "pencil") {
+                    Button("重命名", systemImage: "pencil") {
                         repositoryToRename = repository
                     }
-                    Button("重新定位 Repository…", systemImage: "folder.badge.questionmark") {
+                    Button("重新定位…", systemImage: "folder.badge.questionmark") {
                         appState.relocateRepository(repository.id)
                     }
                     Button(
-                        repository.isPinned ? "取消固定 Repository" : "固定 Repository",
+                        repository.isPinned ? "取消置顶" : "置顶",
                         systemImage: repository.isPinned ? "pin.slash" : "pin"
                     ) {
                         appState.toggleRepositoryPin(repository.id)
@@ -124,7 +125,7 @@ struct WorkspaceSidebar: View {
                 ProgressView()
                     .controlSize(.small)
                 Text("正在发现 Repository…")
-                    .font(.caption)
+                    .font(.system(size: max(9, appState.sidebarFontSize - 2)))
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 8)
@@ -149,7 +150,7 @@ struct WorkspaceSidebar: View {
                         Text(workspace.name)
                             .lineLimit(1)
                         Text(workspace.path)
-                            .font(.caption2)
+                            .font(.system(size: max(8, appState.sidebarFontSize - 3)))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -161,6 +162,10 @@ struct WorkspaceSidebar: View {
                 .padding(.vertical, 6)
             }
             .buttonStyle(.plain)
+            .disabled(
+                appState.workspace?.path != workspace.path
+                    && appState.isGitWriteOperationRunning
+            )
             .background(
                 isSelectedWorkspace(workspace) ? Color.accentColor.opacity(0.14) : Color.clear,
                 in: .rect(cornerRadius: 6)
@@ -171,7 +176,6 @@ struct WorkspaceSidebar: View {
 
         if sidebarWorkspaces.isEmpty {
             Text("尚未添加工作区")
-                .font(.callout)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
@@ -235,14 +239,16 @@ private struct RenameRepositorySheet: View {
 
 private struct SidebarSectionTitle: View {
     let title: String
+    let fontSize: Double
 
-    init(_ title: String) {
+    init(_ title: String, fontSize: Double) {
         self.title = title
+        self.fontSize = fontSize
     }
 
     var body: some View {
         Text(title.uppercased())
-            .font(.caption.weight(.semibold))
+            .font(.system(size: max(9, fontSize - 2), weight: .semibold))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8)
     }
@@ -253,6 +259,7 @@ private struct RepositoryRow: View {
     let snapshot: GitRepositorySnapshot?
     let unavailableMessage: String?
     let isRefreshing: Bool
+    let fontSize: Double
 
     var body: some View {
         HStack {
@@ -265,7 +272,7 @@ private struct RepositoryRow: View {
             VStack(alignment: .leading) {
                 Text(repository.name)
                 Text(unavailableMessage == nil ? (snapshot?.branch ?? repository.relativePath) : "不可用")
-                    .font(.caption)
+                    .font(.system(size: max(9, fontSize - 2)))
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -274,7 +281,7 @@ private struct RepositoryRow: View {
                     .controlSize(.small)
             } else if let snapshot, !snapshot.changes.isEmpty {
                 Text("\(snapshot.changes.count)")
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: max(9, fontSize - 2), weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             if repository.isPinned {

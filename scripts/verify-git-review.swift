@@ -188,8 +188,71 @@ struct GitReviewVerifier {
 
         try await verifySnapshotDiagnostics(in: repositoryURL)
         try await verifyUnbornRepositoryDiff(runner: runner)
+        try await verifyCombinedMergeHistory(runner: runner)
 
         print("Git review verification passed")
+    }
+
+    private static func verifyCombinedMergeHistory(runner: SystemCommandRunner) async throws {
+        let repositoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDeskMergeHistory-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: repositoryURL) }
+
+        try await git(["init", "-b", "main"], runner: runner, at: repositoryURL)
+        try await git(["config", "user.email", "repodesk@example.invalid"], runner: runner, at: repositoryURL)
+        try await git(["config", "user.name", "RepoDesk Verification"], runner: runner, at: repositoryURL)
+        try write("base\n", to: repositoryURL.appendingPathComponent("resolved.txt"))
+        try write("base\n", to: repositoryURL.appendingPathComponent("source-only.txt"))
+        try await git(["add", "--all"], runner: runner, at: repositoryURL)
+        try await git(["commit", "-m", "Base"], runner: runner, at: repositoryURL)
+
+        try await git(["checkout", "-b", "source"], runner: runner, at: repositoryURL)
+        try write("source\n", to: repositoryURL.appendingPathComponent("resolved.txt"))
+        try write("source\n", to: repositoryURL.appendingPathComponent("source-only.txt"))
+        try await git(["add", "--all"], runner: runner, at: repositoryURL)
+        try await git(["commit", "-m", "Source"], runner: runner, at: repositoryURL)
+
+        try await git(["checkout", "main"], runner: runner, at: repositoryURL)
+        try write("target\n", to: repositoryURL.appendingPathComponent("resolved.txt"))
+        try await git(["add", "resolved.txt"], runner: runner, at: repositoryURL)
+        try await git(["commit", "-m", "Target"], runner: runner, at: repositoryURL)
+        try await git(
+            ["merge", "--no-ff", "source", "-m", "Merge source"],
+            runner: runner,
+            at: repositoryURL,
+            allowedStatuses: [0, 1]
+        )
+        try write("resolved\n", to: repositoryURL.appendingPathComponent("resolved.txt"))
+        try await git(["add", "resolved.txt"], runner: runner, at: repositoryURL)
+        try await git(["commit", "--no-edit"], runner: runner, at: repositoryURL)
+
+        let mergeHash = try await gitOutput(["rev-parse", "HEAD"], runner: runner, at: repositoryURL)
+        let detail = try await SystemGitRepositoryReader().commit(
+            repositoryURL: repositoryURL,
+            hash: mergeHash
+        )
+
+        try require(
+            detail.files.map(\.path) == ["resolved.txt"],
+            "Merge History should expose only files changed from every parent"
+        )
+        try require(detail.parentHashes.count == 2, "Merge parent hashes were not exposed")
+        let resolvedFile = try value(detail.files.first, "Combined merge file was unavailable")
+        let mergeDiff = try await SystemGitRepositoryReader().mergeFileDiff(
+            repositoryURL: repositoryURL,
+            hash: mergeHash,
+            parentHashes: detail.parentHashes,
+            file: resolvedFile,
+            ignoringWhitespace: false
+        )
+        try require(mergeDiff.target.oldLines == ["target"], "Target parent content was not loaded")
+        try require(mergeDiff.source.oldLines == ["source"], "Source parent content was not loaded")
+        try require(mergeDiff.resultLines == ["resolved"], "Merge result content was not loaded")
+        try require(
+            !mergeDiff.target.hunks.isEmpty && !mergeDiff.source.hunks.isEmpty,
+            "Three-way Merge Diff did not parse both parent comparisons"
+        )
     }
 
     private static func verifyUnbornRepositoryDiff(runner: SystemCommandRunner) async throws {

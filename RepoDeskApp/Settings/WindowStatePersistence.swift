@@ -5,19 +5,56 @@ struct HistoryCommitFileSelection: Codable, Equatable, Sendable {
     let path: String
 }
 
+struct PersistedFileTab: Codable, Equatable, Sendable {
+    let path: String
+    var showsMarkdownPreview: Bool
+    var visibleLine: Int
+
+    init(path: String, showsMarkdownPreview: Bool = false, visibleLine: Int = 1) {
+        self.path = path
+        self.showsMarkdownPreview = showsMarkdownPreview
+        self.visibleLine = max(1, visibleLine)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case path
+        case showsMarkdownPreview
+        case visibleLine
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        path = try container.decode(String.self, forKey: .path)
+        showsMarkdownPreview = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .showsMarkdownPreview
+        ) ?? false
+        visibleLine = max(1, try container.decodeIfPresent(Int.self, forKey: .visibleLine) ?? 1)
+    }
+}
+
+struct FileTabSessionState: Codable, Equatable, Sendable {
+    var tabs: [PersistedFileTab]
+    var selectedFilePath: String?
+
+    static let empty = FileTabSessionState(tabs: [], selectedFilePath: nil)
+}
+
 struct WorkspaceWindowState: Codable, Equatable {
     var selectedSection: AppSection
     var selectedFilePath: String?
     var selectedFileShowsMarkdownPreview: Bool
+    var fileTabSessionsByContext: [String: FileTabSessionState]
     var selectedChangesByRepository: [String: GitChangeSelection]
     var selectedChangeRepositoryID: String?
     var historyBranchFiltersByRepository: [String: GitHistoryBranchFilter]
-    var historyAuthorFiltersByRepository: [String: String]
+    var historyAuthorFiltersByRepository: [String: GitHistoryAuthorFilter]
     var selectedCommitHashesByRepository: [String: String]
     var selectedCommitFilesByRepository: [String: HistoryCommitFileSelection]
     var mavenSelectionsByRepository: [String: MavenWindowSelection]
     var changesRepositoryScopeID: String?
     var changesGrouping: GitChangesGrouping
+    var historyGrouping: GitChangesGrouping
     var navigationRepositoryID: String?
     var historyVerticalSplitFraction: Double
     var historyHorizontalSplitFraction: Double
@@ -26,6 +63,7 @@ struct WorkspaceWindowState: Codable, Equatable {
         selectedSection: .overview,
         selectedFilePath: nil,
         selectedFileShowsMarkdownPreview: false,
+        fileTabSessionsByContext: [:],
         selectedChangesByRepository: [:],
         selectedChangeRepositoryID: nil,
         historyBranchFiltersByRepository: [:],
@@ -35,6 +73,7 @@ struct WorkspaceWindowState: Codable, Equatable {
         mavenSelectionsByRepository: [:],
         changesRepositoryScopeID: nil,
         changesGrouping: .directory,
+        historyGrouping: .directory,
         navigationRepositoryID: nil,
         historyVerticalSplitFraction: HistorySplitLayout.defaultVerticalFraction,
         historyHorizontalSplitFraction: HistorySplitLayout.defaultHorizontalFraction
@@ -44,6 +83,7 @@ struct WorkspaceWindowState: Codable, Equatable {
         case selectedSection
         case selectedFilePath
         case selectedFileShowsMarkdownPreview
+        case fileTabSessionsByContext
         case selectedChangesByRepository
         case selectedChangeRepositoryID
         case historyBranchFiltersByRepository
@@ -53,6 +93,7 @@ struct WorkspaceWindowState: Codable, Equatable {
         case mavenSelectionsByRepository
         case changesRepositoryScopeID
         case changesGrouping
+        case historyGrouping
         case navigationRepositoryID
         case historyVerticalSplitFraction
         case historyHorizontalSplitFraction
@@ -62,15 +103,17 @@ struct WorkspaceWindowState: Codable, Equatable {
         selectedSection: AppSection,
         selectedFilePath: String?,
         selectedFileShowsMarkdownPreview: Bool = false,
+        fileTabSessionsByContext: [String: FileTabSessionState] = [:],
         selectedChangesByRepository: [String: GitChangeSelection],
         selectedChangeRepositoryID: String? = nil,
         historyBranchFiltersByRepository: [String: GitHistoryBranchFilter] = [:],
-        historyAuthorFiltersByRepository: [String: String] = [:],
+        historyAuthorFiltersByRepository: [String: GitHistoryAuthorFilter] = [:],
         selectedCommitHashesByRepository: [String: String] = [:],
         selectedCommitFilesByRepository: [String: HistoryCommitFileSelection] = [:],
         mavenSelectionsByRepository: [String: MavenWindowSelection] = [:],
         changesRepositoryScopeID: String? = nil,
         changesGrouping: GitChangesGrouping = .directory,
+        historyGrouping: GitChangesGrouping = .directory,
         navigationRepositoryID: String? = nil,
         historyVerticalSplitFraction: Double = HistorySplitLayout.defaultVerticalFraction,
         historyHorizontalSplitFraction: Double = HistorySplitLayout.defaultHorizontalFraction
@@ -78,6 +121,7 @@ struct WorkspaceWindowState: Codable, Equatable {
         self.selectedSection = selectedSection
         self.selectedFilePath = selectedFilePath
         self.selectedFileShowsMarkdownPreview = selectedFileShowsMarkdownPreview
+        self.fileTabSessionsByContext = fileTabSessionsByContext
         self.selectedChangesByRepository = selectedChangesByRepository
         self.selectedChangeRepositoryID = selectedChangeRepositoryID
         self.historyBranchFiltersByRepository = historyBranchFiltersByRepository
@@ -87,6 +131,7 @@ struct WorkspaceWindowState: Codable, Equatable {
         self.mavenSelectionsByRepository = mavenSelectionsByRepository
         self.changesRepositoryScopeID = changesRepositoryScopeID
         self.changesGrouping = changesGrouping
+        self.historyGrouping = historyGrouping
         self.navigationRepositoryID = navigationRepositoryID
         self.historyVerticalSplitFraction = HistorySplitLayout.normalizedFraction(
             historyVerticalSplitFraction,
@@ -106,6 +151,10 @@ struct WorkspaceWindowState: Codable, Equatable {
             Bool.self,
             forKey: .selectedFileShowsMarkdownPreview
         ) ?? false
+        fileTabSessionsByContext = try container.decodeIfPresent(
+            [String: FileTabSessionState].self,
+            forKey: .fileTabSessionsByContext
+        ) ?? [:]
         selectedChangesByRepository = try container.decodeIfPresent(
             [String: GitChangeSelection].self,
             forKey: .selectedChangesByRepository
@@ -119,7 +168,7 @@ struct WorkspaceWindowState: Codable, Equatable {
             forKey: .historyBranchFiltersByRepository
         ) ?? [:]
         historyAuthorFiltersByRepository = try container.decodeIfPresent(
-            [String: String].self,
+            [String: GitHistoryAuthorFilter].self,
             forKey: .historyAuthorFiltersByRepository
         ) ?? [:]
         selectedCommitHashesByRepository = try container.decodeIfPresent(
@@ -141,6 +190,10 @@ struct WorkspaceWindowState: Codable, Equatable {
         changesGrouping = try container.decodeIfPresent(
             GitChangesGrouping.self,
             forKey: .changesGrouping
+        ) ?? .directory
+        historyGrouping = try container.decodeIfPresent(
+            GitChangesGrouping.self,
+            forKey: .historyGrouping
         ) ?? .directory
         navigationRepositoryID = try container.decodeIfPresent(
             String.self,

@@ -3,23 +3,44 @@ import SwiftUI
 @MainActor
 struct FilesView: View {
     @Bindable var appState: AppState
+    @State private var selectedTreeItem: FileTreeItemSelection?
+    @State private var selectedTreeItems: Set<FileTreeItemSelection> = []
+    @State private var selectionAnchorURL: URL?
+    @State private var pendingFilePastePlan: WorkspaceFilePastePlan?
+    @State private var filePasteErrorMessage: String?
+    @State private var isPastingFiles = false
+    @State private var newFileItemRequest: NewFileItemRequest?
+    @State private var newFileItemName = ""
+    @State private var newFileItemErrorMessage: String?
+    @State private var isCreatingFileItem = false
+    @State private var deleteFileItemRequest: DeleteFileItemRequest?
+    @State private var deleteFileItemErrorMessage: String?
+    @State private var isDeletingFileItem = false
+    @State private var contextMenuTreeItemURL: URL?
+    @FocusState private var focusedFileTreeURL: URL?
+    private let fileTransfer = FileSystemWorkspaceFileTransfer()
+    private let fileCreator = FileSystemWorkspaceFileCreator()
 
     var body: some View {
-        HSplitView {
-            fileTree
-                .frame(minWidth: 240, idealWidth: 310, maxWidth: 440)
-            documentView
-                .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            if !appState.openFileTabs.isEmpty {
+                fileTabsBar
+                Divider()
+            }
+            HSplitView {
+                fileTree
+                    .frame(minWidth: 240, idealWidth: 310, maxWidth: 440)
+                documentView
+                    .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .toolbar {
             ToolbarItemGroup {
-                if appState.canEditSelectedDocument {
-                    Button("保存", systemImage: "square.and.arrow.down") {
-                        Task { await appState.saveSelectedDocument() }
-                    }
-                    .disabled(!appState.hasUnsavedDocumentChanges || appState.isSavingDocument)
-                    .help("保存当前文件")
+                Button("在文件树中定位", systemImage: "scope") {
+                    Task { await appState.revealSelectedFileInTree() }
                 }
+                .disabled(!appState.canRevealSelectedFileInTree)
+                .help("在文件树中定位当前文件")
 
                 if appState.selectedFileURL != nil {
                     Button("重新加载", systemImage: "arrow.clockwise") {
@@ -31,7 +52,13 @@ struct FilesView: View {
                 }
 
                 if appState.selectedFileURL?.pathExtension.lowercased() == "md" {
-                    Picker("Markdown 视图", selection: $appState.showsMarkdownPreview) {
+                    Picker(
+                        "Markdown 视图",
+                        selection: Binding(
+                            get: { appState.showsMarkdownPreview },
+                            set: appState.setMarkdownPreview
+                        )
+                    ) {
                         Text("源码").tag(false)
                         Text("预览").tag(true)
                     }
@@ -41,16 +68,6 @@ struct FilesView: View {
                 }
             }
         }
-        .alert("打开另一个文件？", isPresented: pendingFileAlertBinding) {
-            Button("继续编辑", role: .cancel) {
-                appState.cancelPendingFileSelection()
-            }
-            Button("放弃改动并打开", role: .destructive) {
-                appState.discardChangesAndOpenPendingFile()
-            }
-        } message: {
-            Text("当前文件还有未保存的改动。")
-        }
         .alert("从磁盘重新加载？", isPresented: $appState.showsDiscardAndReloadConfirmation) {
             Button("取消", role: .cancel) {}
             Button("放弃改动并重新加载", role: .destructive) {
@@ -59,9 +76,84 @@ struct FilesView: View {
         } message: {
             Text("重新加载会丢弃当前未保存的改动。")
         }
+        .alert("目标中已存在同名项目", isPresented: pendingFilePasteBinding) {
+            Button("替换", role: .destructive) {
+                resolvePendingFilePaste(.replace)
+            }
+            Button("保留两者") {
+                resolvePendingFilePaste(.keepBoth)
+            }
+            Button("取消", role: .cancel) {
+                pendingFilePastePlan = nil
+            }
+        } message: {
+            Text(filePasteConflictMessage)
+        }
+        .alert("无法粘贴", isPresented: filePasteErrorBinding) {
+            Button("好", role: .cancel) {
+                filePasteErrorMessage = nil
+            }
+        } message: {
+            Text(filePasteErrorMessage ?? "文件操作失败。")
+        }
+        .sheet(item: $newFileItemRequest) { request in
+            NewFileItemSheet(
+                title: request.isDirectory ? "新建目录" : "新建文件",
+                placeholder: request.isDirectory ? "目录名称" : "文件名称",
+                directoryName: request.directoryURL.lastPathComponent,
+                name: $newFileItemName,
+                create: createFileItem,
+                cancel: cancelNewFileItem
+            )
+        }
+        .alert("无法创建", isPresented: newFileItemErrorBinding) {
+            Button("好", role: .cancel) {
+                newFileItemErrorMessage = nil
+            }
+        } message: {
+            Text(newFileItemErrorMessage ?? "文件操作失败。")
+        }
+        .sheet(item: $deleteFileItemRequest) { _ in
+            DeleteConfirmationSheet(
+                message: deleteFileItemMessage,
+                delete: deleteFileItem,
+                cancel: { deleteFileItemRequest = nil }
+            )
+        }
+        .alert("无法删除", isPresented: deleteFileItemErrorBinding) {
+            Button("好", role: .cancel) {
+                deleteFileItemErrorMessage = nil
+            }
+        } message: {
+            Text(deleteFileItemErrorMessage ?? "文件操作失败。")
+        }
         .task(id: appState.visibleWorkspaceRootURL?.path) {
             guard let rootURL = appState.visibleWorkspaceRootURL else { return }
+            if let selectedFileURL = appState.selectedFileURL,
+               WorkspaceTreeRefreshPlanner.isSameOrDescendant(selectedFileURL, of: rootURL) {
+                let selection = FileTreeItemSelection(
+                    url: selectedFileURL,
+                    isDirectory: false
+                )
+                selectedTreeItem = selection
+                selectedTreeItems = [selection]
+                selectionAnchorURL = selectedFileURL.standardizedFileURL
+            } else {
+                let selection = FileTreeItemSelection(url: rootURL, isDirectory: true)
+                selectedTreeItem = selection
+                selectedTreeItems = [selection]
+                selectionAnchorURL = rootURL
+            }
+            focusedFileTreeURL = nil
+            contextMenuTreeItemURL = nil
             await appState.loadDirectory(rootURL)
+        }
+        .onChange(of: appState.selectedFileURL) {
+            guard let selectedFileURL = appState.selectedFileURL else { return }
+            let selection = FileTreeItemSelection(url: selectedFileURL, isDirectory: false)
+            selectedTreeItem = selection
+            selectedTreeItems = [selection]
+            selectionAnchorURL = selectedFileURL.standardizedFileURL
         }
     }
 
@@ -69,13 +161,34 @@ struct FilesView: View {
     private var fileTree: some View {
         if let rootURL = appState.visibleWorkspaceRootURL?.standardizedFileURL {
             VStack(spacing: 0) {
+                Button("") {
+                    beginDeletingSelectedFileItems()
+                }
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(selectedTreeItems.isEmpty)
+                .opacity(0)
+                .frame(width: 1, height: 1)
+                .accessibilityHidden(true)
+                Button("") {
+                    beginDeletingSelectedFileItems()
+                }
+                .keyboardShortcut(.deleteForward, modifiers: .command)
+                .disabled(selectedTreeItems.isEmpty)
+                .opacity(0)
+                .frame(width: 1, height: 1)
+                .accessibilityHidden(true)
+
                 HStack(spacing: 8) {
                     Image(systemName: "folder.fill")
                         .foregroundStyle(.secondary)
                     Text(visibleRootName)
-                        .font(.headline)
+                        .fontWeight(.semibold)
                         .lineLimit(1)
                     Spacer()
+                    if isPastingFiles {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                     Menu("文件树选项", systemImage: "ellipsis.circle") {
                         Toggle(
                             "显示隐藏文件",
@@ -98,32 +211,82 @@ struct FilesView: View {
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 38)
+                .contentShape(.rect)
+                .background(fileTreeItemBackground(for: rootURL))
+                .onTapGesture {
+                    handleTreeItemClick(
+                        itemURL: rootURL,
+                        isDirectory: true,
+                        activationURL: rootURL,
+                        siblingURLs: [rootURL]
+                    )
+                }
+                .focusable()
+                .focusEffectDisabled()
+                .focused($focusedFileTreeURL, equals: rootURL)
+                .onKeyPress(keys: ["c", "v"], phases: .down) { keyPress in
+                    handleFileTreeKeyPress(
+                        keyPress,
+                        itemURL: rootURL,
+                        isDirectory: true
+                    )
+                }
+                .fileSystemPathCopyMenu(
+                    FileSystemPathCopyValues(itemURL: rootURL, rootURL: rootURL),
+                    copyItem: { copyFileTreeItems(for: rootURL) },
+                    pasteItem: { requestPaste(into: rootURL, isDirectory: true) },
+                    newFileItem: { beginCreatingFileItem(in: rootURL, isDirectory: false) },
+                    newDirectoryItem: { beginCreatingFileItem(in: rootURL, isDirectory: true) },
+                    isContextMenuPresented: contextMenuPresentationBinding(for: rootURL)
+                )
 
                 Divider()
 
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        if let message = appState.workspaceMonitoringErrorMessage {
-                            Label(message, systemImage: "exclamationmark.triangle")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(8)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 1) {
+                            if let message = appState.workspaceMonitoringErrorMessage {
+                                Label(message, systemImage: "exclamationmark.triangle")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .padding(8)
+                            }
+                            if appState.loadingDirectoryURLs.contains(rootURL) {
+                                ProgressView("正在加载文件…")
+                                    .padding(12)
+                            }
+                            if let message = appState.directoryLoadErrors[rootURL] {
+                                DirectoryLoadErrorView(
+                                    message: message,
+                                    retry: { appState.retryDirectory(rootURL) }
+                                )
+                            }
+                            ForEach(visibleEntries(appState.fileChildren[rootURL] ?? [])) { entry in
+                                FileTreeEntryView(
+                                    entry: entry,
+                                    appState: appState,
+                                    depth: 0,
+                                    selectedTreeItem: $selectedTreeItem,
+                                    selectedTreeItems: selectedTreeItems,
+                                    contextMenuTreeItemURL: $contextMenuTreeItemURL,
+                                    focusedFileTreeURL: $focusedFileTreeURL,
+                                    requestPaste: requestPaste,
+                                    beginCreatingFileItem: beginCreatingFileItem,
+                                    beginDeletingFileItem: beginDeletingFileItem,
+                                    beginDeletingSelectedFileItems: beginDeletingSelectedFileItems,
+                                    handleTreeItemClick: handleTreeItemClick,
+                                    prepareContextMenu: prepareContextMenu
+                                )
+                            }
                         }
-                        if appState.loadingDirectoryURLs.contains(rootURL) {
-                            ProgressView("正在加载文件…")
-                                .padding(12)
-                        }
-                        if let message = appState.directoryLoadErrors[rootURL] {
-                            DirectoryLoadErrorView(
-                                message: message,
-                                retry: { appState.retryDirectory(rootURL) }
-                            )
-                        }
-                        ForEach(visibleEntries(appState.fileChildren[rootURL] ?? [])) { entry in
-                            FileTreeEntryView(entry: entry, appState: appState, depth: 0)
+                        .padding(6)
+                    }
+                    .onChange(of: appState.fileTreeRevealRequest?.id) {
+                        guard let fileURL = appState.fileTreeRevealRequest?.fileURL else { return }
+                        withAnimation {
+                            proxy.scrollTo(fileURL, anchor: .center)
                         }
                     }
-                    .padding(6)
                 }
             }
         } else {
@@ -152,18 +315,27 @@ struct FilesView: View {
                    appState.selectedFileURL?.pathExtension.lowercased() == "md" {
                     MarkdownDocumentView(
                         text: appState.documentText,
-                        fileName: appState.selectedFileURL?.lastPathComponent ?? ""
+                        fileName: appState.selectedFileURL?.lastPathComponent ?? "",
+                        fontSize: appState.fileContentFontSize
                     )
                 } else {
                     SourceDocumentView(
-                        text: $appState.documentText,
+                        text: Binding(
+                            get: { appState.documentText },
+                            set: appState.updateSelectedDocumentText
+                        ),
                         isLarge: textDocument.isLarge,
+                        fileIdentity: appState.selectedFileURL?.standardizedFileURL.path ?? "",
                         fileName: appState.selectedFileURL?.lastPathComponent ?? "",
                         fileExtension: appState.selectedFileURL?.pathExtension.lowercased() ?? "",
                         encoding: textDocument.encoding,
                         isModified: appState.hasUnsavedDocumentChanges,
                         isSaving: appState.isSavingDocument,
-                        scrollToLine: appState.pendingSourceLine
+                        navigationRequest: appState.selectedSourceNavigationRequest,
+                        onVisibleLineChange: appState.rememberSelectedFileVisibleLine,
+                        onNavigationHandled: appState.clearSelectedSourceNavigationRequest,
+                        fontSize: appState.fileContentFontSize,
+                        loadGitBlame: selectedFileGitBlameLoader
                     )
                 }
             case .binary(let size):
@@ -188,11 +360,447 @@ struct FilesView: View {
         }
     }
 
-    private var pendingFileAlertBinding: Binding<Bool> {
+    private var fileTabsBar: some View {
+        FileTabFlowLayout(horizontalSpacing: 4, verticalSpacing: 4) {
+            ForEach(appState.openFileTabs) { tab in
+                HStack(spacing: 6) {
+                    Button {
+                        appState.selectFileTab(tab)
+                    } label: {
+                        HStack(spacing: 6) {
+                            FileTypeIcon(path: tab.url.path)
+                            Text(tab.url.lastPathComponent)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.bottom, 13)
+                                .overlay(alignment: .bottomLeading) {
+                                    Text(fileTabPath(tab))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help(tab.url.path)
+
+                    Button {
+                        appState.closeFileTab(id: tab.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("关闭 \(tab.url.lastPathComponent)")
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    appState.selectedFileURL == tab.url
+                        ? Color.accentColor.opacity(0.16)
+                        : Color.secondary.opacity(0.08),
+                    in: .rect(cornerRadius: 5)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(
+                            appState.selectedFileURL == tab.url
+                                ? Color.accentColor.opacity(0.5)
+                                : Color.clear,
+                            lineWidth: 1
+                        )
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                .contextMenu {
+                    Button("关闭当前", systemImage: "xmark") {
+                        appState.closeFileTab(id: tab.id)
+                    }
+                    Button("关闭其他", systemImage: "xmark.circle") {
+                        appState.closeOtherFileTabs(keeping: tab.id)
+                    }
+                    Button("关闭所有", systemImage: "xmark.circle.fill") {
+                        appState.closeAllFileTabs()
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(minHeight: 42)
+    }
+
+    private func fileTabPath(_ tab: OpenFileTab) -> String {
+        guard let root = appState.visibleWorkspaceRootURL?.standardizedFileURL else {
+            return tab.url.deletingLastPathComponent().path
+        }
+        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard tab.url.path.hasPrefix(rootPath) else { return tab.url.deletingLastPathComponent().path }
+        let relative = String(tab.url.path.dropFirst(rootPath.count))
+        let directory = (relative as NSString).deletingLastPathComponent
+        return directory.isEmpty ? "." : directory
+    }
+
+    private var selectedFileGitBlameLoader: (() async throws -> [GitBlameLine])? {
+        guard appState.canBlameSelectedFile else { return nil }
+        return { try await appState.blameForSelectedFile() }
+    }
+
+    private var pendingFilePasteBinding: Binding<Bool> {
         Binding(
-            get: { appState.pendingFileSelectionURL != nil },
-            set: { if !$0 { appState.cancelPendingFileSelection() } }
+            get: { pendingFilePastePlan != nil },
+            set: { if !$0 { pendingFilePastePlan = nil } }
         )
+    }
+
+    private var filePasteErrorBinding: Binding<Bool> {
+        Binding(
+            get: { filePasteErrorMessage != nil },
+            set: { if !$0 { filePasteErrorMessage = nil } }
+        )
+    }
+
+    private var filePasteConflictMessage: String {
+        guard let pendingFilePastePlan else { return "请选择如何处理同名项目。" }
+        let conflicts = pendingFilePastePlan.conflictingDestinationURLs
+        if conflicts.count == 1, let name = conflicts.first?.lastPathComponent {
+            return "“\(name)”已经存在。"
+        }
+        return "有 \(conflicts.count) 个同名项目已经存在。"
+    }
+
+    private func handleTreeItemClick(
+        itemURL: URL,
+        isDirectory: Bool,
+        activationURL: URL,
+        siblingURLs: [URL]
+    ) {
+        let itemURL = itemURL.standardizedFileURL
+        let selection = FileTreeItemSelection(url: itemURL, isDirectory: isDirectory)
+        let modifiers = NSApp.currentEvent?.modifierFlags.intersection(.deviceIndependentFlagsMask) ?? []
+
+        if modifiers.contains(.shift) {
+            let siblings = siblingURLs.map { $0.standardizedFileURL }
+            if let anchor = selectionAnchorURL,
+               let anchorIndex = siblings.firstIndex(of: anchor),
+               let itemIndex = siblings.firstIndex(of: itemURL) {
+                let range = anchorIndex <= itemIndex
+                    ? siblings[anchorIndex...itemIndex]
+                    : siblings[itemIndex...anchorIndex]
+                let kinds = Dictionary(uniqueKeysWithValues: selectedTreeItems.map { ($0.url, $0.isDirectory) })
+                selectedTreeItems = Set(range.map {
+                    FileTreeItemSelection(
+                        url: $0,
+                        isDirectory: kinds[$0] ?? ($0 == itemURL ? isDirectory : directoryFlag(at: $0))
+                    )
+                })
+            } else {
+                selectedTreeItems = [selection]
+                selectionAnchorURL = itemURL
+            }
+            selectedTreeItem = selection
+            focusedFileTreeURL = itemURL
+            return
+        }
+
+        if modifiers.contains(.command) {
+            if selectedTreeItems.contains(selection) {
+                selectedTreeItems.remove(selection)
+            } else {
+                selectedTreeItems.insert(selection)
+            }
+            selectedTreeItem = selection
+            selectionAnchorURL = itemURL
+            focusedFileTreeURL = itemURL
+            return
+        }
+
+        selectedTreeItems = [selection]
+        selectedTreeItem = selection
+        selectionAnchorURL = itemURL
+        focusedFileTreeURL = itemURL
+        if isDirectory {
+            appState.toggleDirectory(activationURL.standardizedFileURL)
+        } else {
+            appState.selectFile(itemURL)
+        }
+    }
+
+    private func prepareContextMenu(for itemURL: URL, isDirectory: Bool) {
+        let itemURL = itemURL.standardizedFileURL
+        guard !selectedTreeItems.contains(where: { $0.url == itemURL }) else { return }
+        let selection = FileTreeItemSelection(url: itemURL, isDirectory: isDirectory)
+        selectedTreeItems = [selection]
+        selectedTreeItem = selection
+        selectionAnchorURL = itemURL
+        focusedFileTreeURL = itemURL
+    }
+
+    private func fileTreeItemBackground(for itemURL: URL) -> Color {
+        let itemURL = itemURL.standardizedFileURL
+        if selectedTreeItems.contains(where: { $0.url == itemURL }) {
+            return Color.accentColor.opacity(0.14)
+        }
+        if contextMenuTreeItemURL == itemURL {
+            return Color.accentColor.opacity(0.06)
+        }
+        return .clear
+    }
+
+    private func contextMenuPresentationBinding(for itemURL: URL) -> Binding<Bool> {
+        let itemURL = itemURL.standardizedFileURL
+        return Binding(
+            get: { contextMenuTreeItemURL == itemURL },
+            set: { isPresented in
+                if isPresented {
+                    contextMenuTreeItemURL = itemURL
+                } else if contextMenuTreeItemURL == itemURL {
+                    contextMenuTreeItemURL = nil
+                }
+            }
+        )
+    }
+
+    private func copyFileTreeItems(for itemURL: URL) {
+        let itemURL = itemURL.standardizedFileURL
+        let urls = selectedTreeItems.count > 1 && selectedTreeItems.contains(where: { $0.url == itemURL })
+            ? selectedTreeItems.map(\.url)
+            : [itemURL]
+        FileSystemClipboard.copyItems(at: urls)
+    }
+
+    private func beginCreatingFileItem(in directoryURL: URL, isDirectory: Bool) {
+        guard let rootURL = appState.visibleWorkspaceRootURL?.standardizedFileURL else { return }
+        let directoryURL = directoryURL.standardizedFileURL
+        guard WorkspaceTreeRefreshPlanner.isSameOrDescendant(directoryURL, of: rootURL),
+              (try? directoryURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+              !isCreatingFileItem else { return }
+        newFileItemName = ""
+        newFileItemRequest = NewFileItemRequest(
+            directoryURL: directoryURL,
+            isDirectory: isDirectory
+        )
+    }
+
+    private func beginDeletingFileItem(_ itemURL: URL, isDirectory: Bool) {
+        guard let rootURL = appState.visibleWorkspaceRootURL?.standardizedFileURL,
+              itemURL.standardizedFileURL != rootURL,
+              WorkspaceTreeRefreshPlanner.isSameOrDescendant(itemURL, of: rootURL),
+              !isDeletingFileItem else { return }
+        let itemURL = itemURL.standardizedFileURL
+        if selectedTreeItems.contains(where: { $0.url == itemURL }) {
+            beginDeletingSelectedFileItems()
+            return
+        }
+        deleteFileItemRequest = DeleteFileItemRequest(
+            items: [FileTreeItemSelection(url: itemURL, isDirectory: isDirectory)]
+        )
+    }
+
+    private func beginDeletingSelectedFileItems() {
+        guard let rootURL = appState.visibleWorkspaceRootURL?.standardizedFileURL,
+              !isDeletingFileItem else { return }
+        let items = normalizedDeletionItems(
+            selectedTreeItems.filter {
+                $0.url != rootURL && WorkspaceTreeRefreshPlanner.isSameOrDescendant($0.url, of: rootURL)
+            }
+        )
+        guard !items.isEmpty else { return }
+        deleteFileItemRequest = DeleteFileItemRequest(items: items)
+    }
+
+    private func deleteFileItem() {
+        guard let request = deleteFileItemRequest,
+              let rootURL = appState.visibleWorkspaceRootURL?.standardizedFileURL else { return }
+        deleteFileItemRequest = nil
+        isDeletingFileItem = true
+        Task {
+            do {
+                for item in request.items {
+                    try await FileSystemWorkspaceFileDeleter().delete(
+                        WorkspaceFileDeletionRequest(
+                            itemURL: item.url,
+                            workspaceRootURL: rootURL
+                        )
+                    )
+                    appState.closeFileTabs(at: item.url)
+                }
+                for directoryURL in Set(request.items.map { $0.url.deletingLastPathComponent().standardizedFileURL }) {
+                    await appState.loadDirectory(directoryURL, forceReload: true)
+                }
+                let deletedURLs = Set(request.items.map(\.url))
+                selectedTreeItems = selectedTreeItems.filter { selection in
+                    !deletedURLs.contains(where: { WorkspaceTreeRefreshPlanner.isSameOrDescendant(selection.url, of: $0) })
+                }
+                selectedTreeItem = nil
+                selectionAnchorURL = nil
+                focusedFileTreeURL = nil
+            } catch {
+                deleteFileItemErrorMessage = error.localizedDescription
+            }
+            isDeletingFileItem = false
+        }
+    }
+
+    private func createFileItem() {
+        guard let request = newFileItemRequest else { return }
+        let name = newFileItemName.trimmingCharacters(in: .whitespacesAndNewlines)
+        newFileItemRequest = nil
+        newFileItemName = ""
+        guard !name.isEmpty else { return }
+
+        isCreatingFileItem = true
+        Task {
+            do {
+                let destinationURL = try await fileCreator.create(
+                    WorkspaceFileCreationRequest(
+                        directoryURL: request.directoryURL,
+                        name: name,
+                        isDirectory: request.isDirectory
+                    )
+                )
+                await appState.loadDirectory(request.directoryURL, forceReload: true)
+                let selection = FileTreeItemSelection(
+                    url: destinationURL,
+                    isDirectory: request.isDirectory
+                )
+                selectedTreeItem = selection
+                selectedTreeItems = [selection]
+                selectionAnchorURL = destinationURL.standardizedFileURL
+                await appState.revealFileTreeItem(destinationURL)
+                focusedFileTreeURL = destinationURL
+                if !request.isDirectory {
+                    appState.selectFile(destinationURL)
+                }
+            } catch {
+                newFileItemErrorMessage = error.localizedDescription
+            }
+            isCreatingFileItem = false
+        }
+    }
+
+    private func cancelNewFileItem() {
+        newFileItemRequest = nil
+        newFileItemName = ""
+    }
+
+    private func handleFileTreeKeyPress(
+        _ keyPress: KeyPress,
+        itemURL: URL,
+        isDirectory: Bool
+    ) -> KeyPress.Result {
+        guard keyPress.modifiers == .command else { return .ignored }
+        switch keyPress.characters.lowercased() {
+        case "c":
+            copyFileTreeItems(for: itemURL)
+            return .handled
+        case "v":
+            requestPaste(into: itemURL, isDirectory: isDirectory)
+            return .handled
+        default:
+            return .ignored
+        }
+    }
+
+    private func requestPaste(into itemURL: URL, isDirectory: Bool) {
+        guard !isPastingFiles else { return }
+        let sourceURLs = FileSystemClipboard.fileURLs()
+        guard !sourceURLs.isEmpty else { return }
+        let destinationDirectoryURL = isDirectory
+            ? itemURL.standardizedFileURL
+            : itemURL.deletingLastPathComponent().standardizedFileURL
+        isPastingFiles = true
+        Task {
+            do {
+                let plan = try await fileTransfer.preparePaste(
+                    sourceURLs: sourceURLs,
+                    destinationDirectoryURL: destinationDirectoryURL
+                )
+                isPastingFiles = false
+                if plan.conflictingDestinationURLs.isEmpty {
+                    performPaste(plan, resolution: .replace)
+                } else {
+                    pendingFilePastePlan = plan
+                }
+            } catch {
+                isPastingFiles = false
+                filePasteErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var newFileItemErrorBinding: Binding<Bool> {
+        Binding(
+            get: { newFileItemErrorMessage != nil },
+            set: { if !$0 { newFileItemErrorMessage = nil } }
+        )
+    }
+
+    private var deleteFileItemErrorBinding: Binding<Bool> {
+        Binding(
+            get: { deleteFileItemErrorMessage != nil },
+            set: { if !$0 { deleteFileItemErrorMessage = nil } }
+        )
+    }
+
+    private var deleteFileItemMessage: String {
+        guard let request = deleteFileItemRequest else { return "" }
+        if request.items.count > 1 {
+            return "确定删除这 \(request.items.count) 个项目吗？此操作无法撤销。"
+        }
+        guard let item = request.items.first else { return "" }
+        if item.isDirectory {
+            return "确定要删除目录“\(item.url.lastPathComponent)”及其全部内容吗？此操作无法撤销。"
+        }
+        return "确定要删除文件“\(item.url.lastPathComponent)”吗？此操作无法撤销。"
+    }
+
+    private func normalizedDeletionItems(_ items: [FileTreeItemSelection]) -> [FileTreeItemSelection] {
+        let sorted = items.sorted { $0.url.path.count < $1.url.path.count }
+        return sorted.filter { item in
+            !sorted.contains { other in
+                other.url != item.url
+                    && WorkspaceTreeRefreshPlanner.isSameOrDescendant(item.url, of: other.url)
+            }
+        }
+    }
+
+    private func directoryFlag(at url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    private func resolvePendingFilePaste(_ resolution: WorkspaceFilePasteConflictResolution) {
+        guard let plan = pendingFilePastePlan else { return }
+        pendingFilePastePlan = nil
+        performPaste(plan, resolution: resolution)
+    }
+
+    private func performPaste(
+        _ plan: WorkspaceFilePastePlan,
+        resolution: WorkspaceFilePasteConflictResolution
+    ) {
+        guard !isPastingFiles else { return }
+        isPastingFiles = true
+        Task {
+            do {
+                let result = try await fileTransfer.executePaste(plan, resolution: resolution)
+                await appState.loadDirectory(result.destinationDirectoryURL, forceReload: true)
+                if let item = result.items.first {
+                    let selection = FileTreeItemSelection(
+                        url: item.destinationURL,
+                        isDirectory: item.isDirectory
+                    )
+                    selectedTreeItem = selection
+                    selectedTreeItems = [selection]
+                    selectionAnchorURL = item.destinationURL.standardizedFileURL
+                    await appState.revealFileTreeItem(item.destinationURL)
+                    focusedFileTreeURL = item.destinationURL.standardizedFileURL
+                }
+            } catch {
+                filePasteErrorMessage = error.localizedDescription
+            }
+            isPastingFiles = false
+        }
     }
 
     private func visibleEntries(_ entries: [WorkspaceFileEntry]) -> [WorkspaceFileEntry] {
@@ -202,18 +810,186 @@ struct FilesView: View {
 }
 
 @MainActor
+private struct NewFileItemSheet: View {
+    let title: String
+    let placeholder: String
+    let directoryName: String
+    @Binding var name: String
+    let create: () -> Void
+    let cancel: () -> Void
+    @FocusState private var isNameFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.headline)
+            Text("在“\(directoryName)”中创建")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField(placeholder, text: $name)
+                .textFieldStyle(.roundedBorder)
+                .focused($isNameFocused)
+                .onSubmit(create)
+            HStack {
+                Spacer()
+                Button("取消", role: .cancel, action: cancel)
+                    .keyboardShortcut(.escape, modifiers: [])
+                Button("创建", action: create)
+                    .keyboardShortcut(.return, modifiers: [])
+                    .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .onAppear {
+            isNameFocused = true
+        }
+        .onExitCommand(perform: cancel)
+    }
+}
+
+@MainActor
+private struct DeleteConfirmationSheet: View {
+    let message: String
+    let delete: () -> Void
+    let cancel: () -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("确认删除")
+                .font(.headline)
+            Text(message)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Spacer()
+                Button("取消", role: .cancel, action: cancel)
+                    .buttonStyle(.plain)
+                    .focusable(false)
+                Button("删除", role: .destructive, action: delete)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red)
+                    .focusable(false)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        .focusable()
+        .focusEffectDisabled()
+        .focused($isFocused)
+        .onAppear {
+            isFocused = true
+        }
+        .onKeyPress(.return, phases: .down) { keyPress in
+            guard keyPress.modifiers.isEmpty else { return .ignored }
+            delete()
+            return .handled
+        }
+        .onExitCommand(perform: cancel)
+    }
+}
+
+private struct NewFileItemRequest: Identifiable {
+    let id = UUID()
+    let directoryURL: URL
+    let isDirectory: Bool
+}
+
+private struct DeleteFileItemRequest: Identifiable {
+    let id = UUID()
+    let items: [FileTreeItemSelection]
+}
+
+private struct FileTreeItemSelection: Hashable {
+    let url: URL
+    let isDirectory: Bool
+}
+
+private struct FileTabFlowLayout: Layout {
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let availableWidth = proposal.width ?? .infinity
+        var rowWidth: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var contentWidth: CGFloat = 0
+        var contentHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            let nextWidth = rowWidth == 0 ? size.width : rowWidth + horizontalSpacing + size.width
+            if rowWidth > 0, nextWidth > availableWidth {
+                contentWidth = max(contentWidth, rowWidth)
+                contentHeight += rowHeight + verticalSpacing
+                rowWidth = size.width
+                rowHeight = size.height
+            } else {
+                rowWidth = nextWidth
+                rowHeight = max(rowHeight, size.height)
+            }
+        }
+
+        contentWidth = max(contentWidth, rowWidth)
+        contentHeight += rowHeight
+        return CGSize(
+            width: availableWidth.isFinite ? min(contentWidth, availableWidth) : contentWidth,
+            height: contentHeight
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            subview.place(
+                at: CGPoint(x: x, y: y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(size)
+            )
+            x += size.width + horizontalSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
+@MainActor
 private struct FileTreeEntryView: View {
     let entry: WorkspaceFileEntry
     @Bindable var appState: AppState
     let depth: Int
+    @Binding var selectedTreeItem: FileTreeItemSelection?
+    let selectedTreeItems: Set<FileTreeItemSelection>
+    @Binding var contextMenuTreeItemURL: URL?
+    let focusedFileTreeURL: FocusState<URL?>.Binding
+    let requestPaste: (URL, Bool) -> Void
+    let beginCreatingFileItem: (URL, Bool) -> Void
+    let beginDeletingFileItem: (URL, Bool) -> Void
+    let beginDeletingSelectedFileItems: () -> Void
+    let handleTreeItemClick: (URL, Bool, URL, [URL]) -> Void
+    let prepareContextMenu: (URL, Bool) -> Void
 
     var body: some View {
         Button {
-            if entry.isDirectory {
-                appState.toggleDirectory(entry.url)
-            } else {
-                appState.selectFile(entry.url)
-            }
+            handleTreeItemClick(commandItemURL, entry.isDirectory, entry.url, siblingURLs)
         } label: {
             HStack(spacing: 5) {
                 if entry.isDirectory {
@@ -242,8 +1018,38 @@ private struct FileTreeEntryView: View {
         }
         .buttonStyle(.plain)
         .background(
-            appState.selectedFileURL == entry.url ? Color.accentColor.opacity(0.14) : .clear,
+            rowBackgroundColor,
             in: .rect(cornerRadius: 5)
+        )
+        .focusable()
+        .focusEffectDisabled()
+        .focused(focusedFileTreeURL, equals: commandItemURL)
+        .onKeyPress(keys: ["c", "v"], phases: .down) { keyPress in
+            guard keyPress.modifiers == .command else { return .ignored }
+            switch keyPress.characters.lowercased() {
+            case "c":
+                copySelectedItems()
+                return .handled
+            case "v":
+                requestPaste(commandItemURL, entry.isDirectory)
+                return .handled
+            default:
+                return .ignored
+            }
+        }
+        .id(entry.url.standardizedFileURL)
+        .fileSystemPathCopyMenu(
+            isMultiSelection ? nil : pathCopyValues,
+            copyItem: { copySelectedItems() },
+            pasteItem: isMultiSelection ? nil : { requestPaste(commandItemURL, entry.isDirectory) },
+            newFileItem: isMultiSelection ? nil : (entry.isDirectory
+                ? { beginCreatingFileItem(commandItemURL, false) }
+                : nil),
+            newDirectoryItem: isMultiSelection ? nil : (entry.isDirectory
+                ? { beginCreatingFileItem(commandItemURL, true) }
+                : nil),
+            deleteItem: { beginDeletingFileItem(commandItemURL, entry.isDirectory) },
+            isContextMenuPresented: contextMenuPresentationBinding
         )
 
         if entry.isDirectory, appState.expandedDirectoryURLs.contains(entry.url) {
@@ -255,12 +1061,33 @@ private struct FileTreeEntryView: View {
                 .padding(.leading, CGFloat(depth + 1) * 14)
             }
             ForEach(visibleChildren) { child in
-                FileTreeEntryView(entry: child, appState: appState, depth: depth + 1)
+                FileTreeEntryView(
+                    entry: child,
+                    appState: appState,
+                    depth: depth + 1,
+                    selectedTreeItem: $selectedTreeItem,
+                    selectedTreeItems: selectedTreeItems,
+                    contextMenuTreeItemURL: $contextMenuTreeItemURL,
+                    focusedFileTreeURL: focusedFileTreeURL,
+                    requestPaste: requestPaste,
+                    beginCreatingFileItem: beginCreatingFileItem,
+                    beginDeletingFileItem: beginDeletingFileItem,
+                    beginDeletingSelectedFileItems: beginDeletingSelectedFileItems,
+                    handleTreeItemClick: handleTreeItemClick,
+                    prepareContextMenu: prepareContextMenu
+                )
             }
         }
     }
 
     private var displayedEntries: [WorkspaceFileEntry] {
+        Self.displayedEntries(for: entry, appState: appState)
+    }
+
+    private static func displayedEntries(
+        for entry: WorkspaceFileEntry,
+        appState: AppState
+    ) -> [WorkspaceFileEntry] {
         guard entry.isDirectory, appState.compactsSingleChildDirectories else { return [entry] }
         var entries = [entry]
         var currentURL = entry.url.standardizedFileURL
@@ -284,6 +1111,66 @@ private struct FileTreeEntryView: View {
 
     private var displayedDirectoryURL: URL {
         displayedEntries.last?.url.standardizedFileURL ?? entry.url.standardizedFileURL
+    }
+
+    private var commandItemURL: URL {
+        entry.isDirectory ? displayedDirectoryURL : entry.url.standardizedFileURL
+    }
+
+    private static func commandItemURL(
+        for entry: WorkspaceFileEntry,
+        appState: AppState
+    ) -> URL {
+        let displayedEntries = Self.displayedEntries(for: entry, appState: appState)
+        return (entry.isDirectory ? displayedEntries.last?.url : entry.url)?.standardizedFileURL
+            ?? entry.url.standardizedFileURL
+    }
+
+    private var siblingURLs: [URL] {
+        let parentURL = entry.url.deletingLastPathComponent().standardizedFileURL
+        let siblings = appState.fileChildren[parentURL] ?? []
+        return siblings
+            .filter { appState.showsHiddenFiles || !$0.name.hasPrefix(".") }
+            .map { Self.commandItemURL(for: $0, appState: appState) }
+    }
+
+    private var isMultiSelection: Bool {
+        selectedTreeItems.count > 1 && selectedTreeItems.contains(where: { $0.url == commandItemURL })
+    }
+
+    private func copySelectedItems() {
+        let urls = isMultiSelection ? selectedTreeItems.map(\.url) : [commandItemURL]
+        FileSystemClipboard.copyItems(at: urls)
+    }
+
+    private var rowBackgroundColor: Color {
+        if selectedTreeItems.contains(where: { $0.url == commandItemURL }) {
+            return Color.accentColor.opacity(0.14)
+        }
+        if contextMenuTreeItemURL == commandItemURL {
+            return Color.accentColor.opacity(0.06)
+        }
+        return .clear
+    }
+
+    private var contextMenuPresentationBinding: Binding<Bool> {
+        Binding(
+            get: { contextMenuTreeItemURL == commandItemURL },
+            set: { isPresented in
+                if isPresented {
+                    prepareContextMenu(commandItemURL, entry.isDirectory)
+                    contextMenuTreeItemURL = commandItemURL
+                } else if contextMenuTreeItemURL == commandItemURL {
+                    contextMenuTreeItemURL = nil
+                }
+            }
+        )
+    }
+
+    private var pathCopyValues: FileSystemPathCopyValues? {
+        guard let rootURL = appState.visibleWorkspaceRootURL else { return nil }
+        let itemURL = entry.isDirectory ? displayedDirectoryURL : entry.url
+        return FileSystemPathCopyValues(itemURL: itemURL, rootURL: rootURL)
     }
 
     private var visibleChildren: [WorkspaceFileEntry] {
@@ -320,19 +1207,35 @@ private struct DirectoryLoadErrorView: View {
 struct SourceDocumentView: View {
     @Binding var text: String
     let isLarge: Bool
+    let fileIdentity: String
     let fileName: String
     let fileExtension: String
     let encoding: DocumentTextEncoding
     let isModified: Bool
     let isSaving: Bool
-    let scrollToLine: Int?
+    let navigationRequest: NativeTextNavigationRequest?
+    let onVisibleLineChange: (Int) -> Void
+    let onNavigationHandled: (UUID) -> Void
+    let fontSize: Double
+    let loadGitBlame: (() async throws -> [GitBlameLine])?
+    @State private var showsGoToLine = false
+    @State private var goToLineInput = ""
+    @State private var goToLineError: String?
+    @State private var maximumLine = 1
+    @State private var goToLineNavigationRequest: NativeTextNavigationRequest?
+    @State private var gitBlame: [Int: NativeGitBlameAnnotation]?
+    @State private var gitBlameErrorMessage: String?
+    @State private var isLoadingGitBlame = false
+    @State private var gitBlameRequestID = UUID()
+    @State private var contentFindState = ContentFindState()
+    @FocusState private var isGoToLineFieldFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
                 FileTypeIcon(path: fileName)
                 Text(fileName)
-                    .font(.headline)
+                    .fontWeight(.semibold)
                     .lineLimit(1)
                 if isModified {
                     Circle()
@@ -344,6 +1247,18 @@ struct SourceDocumentView: View {
                 if isSaving {
                     ProgressView()
                         .controlSize(.small)
+                }
+                if isLoadingGitBlame {
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("正在加载 Git Blame")
+                }
+                if let gitBlameErrorMessage {
+                    Label(gitBlameErrorMessage, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(gitBlameErrorMessage)
                 }
                 Text(encoding.rawValue)
                     .font(.caption)
@@ -367,49 +1282,279 @@ struct SourceDocumentView: View {
                     .frame(maxWidth: .infinity)
                     .background(.quaternary)
             }
-            NativeCodeEditor(
-                text: $text,
-                isEditable: !isLarge,
-                style: isLarge ? .plain : .source(fileExtension: fileExtension),
-                scrollToLine: scrollToLine
-            )
+            if contentFindState.isPresented {
+                ContentFindBar(
+                    state: $contentFindState,
+                    matchCount: contentSearchMatches.count,
+                    dismiss: dismissContentFind
+                )
+                Divider()
+            }
+            ZStack(alignment: .topTrailing) {
+                NativeCodeEditor(
+                    text: $text,
+                    isEditable: !isLarge,
+                    style: isLarge ? .plain : .source(fileExtension: fileExtension),
+                    navigationRequest: goToLineNavigationRequest ?? navigationRequest,
+                    showsLineNumbers: true,
+                    gitBlame: gitBlame,
+                    canToggleGitBlame: loadGitBlame != nil && !isLoadingGitBlame,
+                    onToggleGitBlame: toggleGitBlame,
+                    onRequestGoToLine: { _, lineCount in
+                        presentGoToLine(maximumLine: lineCount)
+                    },
+                    onVisibleLineChange: onVisibleLineChange,
+                    onNavigationHandled: { id in
+                        if let request = goToLineNavigationRequest, request.id == id {
+                            onVisibleLineChange(request.line)
+                            goToLineNavigationRequest = nil
+                        } else {
+                            onNavigationHandled(id)
+                        }
+                    },
+                    contentIdentity: fileIdentity,
+                    fontSize: CGFloat(fontSize),
+                    contentSearch: contentSearchPresentation
+                )
+
+                if showsGoToLine {
+                    goToLinePanel
+                        .padding(10)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .clipped()
         }
+        .background(ContentFindCommandListener(
+            requestFind: presentContentFind,
+            navigateMatch: navigateContentFind
+        ))
+        .onChange(of: fileIdentity) {
+            dismissGoToLine()
+            contentFindState.dismiss()
+            contentFindState.resetSelection()
+            goToLineNavigationRequest = nil
+            resetGitBlame()
+        }
+        .onChange(of: text) {
+            if contentFindState.isPresented {
+                contentFindState.resetSelection()
+            }
+            guard gitBlame != nil || isLoadingGitBlame else { return }
+            resetGitBlame()
+        }
+    }
+
+    private var contentSearchMatches: [ContentSearchMatch] {
+        return ContentSearchMatcher.matches(
+            in: text,
+            query: contentFindState.query,
+            options: contentFindState.options
+        )
+    }
+
+    private var contentSearchPresentation: ContentSearchPresentation? {
+        guard contentFindState.isPresented else { return nil }
+        let matches = contentSearchMatches
+        let activeIndex = contentFindState.activeMatchIndex(matchCount: matches.count)
+        return ContentSearchPresentation(
+            ranges: matches.map(\.range),
+            activeRange: activeIndex.map { matches[$0].range },
+            navigationRequestID: contentFindState.navigationRequestID
+        )
+    }
+
+    private func presentContentFind() {
+        dismissGoToLine()
+        contentFindState.present()
+    }
+
+    private func dismissContentFind() {
+        contentFindState.dismiss()
+    }
+
+    private func navigateContentFind(by offset: Int) {
+        if !contentFindState.isPresented {
+            presentContentFind()
+        }
+        contentFindState.navigate(by: offset, matchCount: contentSearchMatches.count)
+    }
+
+    private func toggleGitBlame() {
+        gitBlameErrorMessage = nil
+        if gitBlame != nil {
+            resetGitBlame()
+            return
+        }
+        guard let loadGitBlame, !isLoadingGitBlame else { return }
+
+        let requestID = UUID()
+        gitBlameRequestID = requestID
+        isLoadingGitBlame = true
+        Task {
+            do {
+                let lines = try await loadGitBlame()
+                guard gitBlameRequestID == requestID else { return }
+                isLoadingGitBlame = false
+                if lines.isEmpty {
+                    gitBlameErrorMessage = "当前文件没有可显示的 Git Blame 信息。"
+                } else {
+                    gitBlame = lines.reduce(into: [:]) { annotations, line in
+                        annotations[line.lineNumber] = NativeGitBlameAnnotation(
+                            commitHash: line.commitHash,
+                            author: line.author,
+                            authoredAt: line.authoredAt,
+                            isUncommitted: line.isUncommitted
+                        )
+                    }
+                }
+            } catch {
+                guard gitBlameRequestID == requestID else { return }
+                isLoadingGitBlame = false
+                gitBlameErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func resetGitBlame() {
+        gitBlameRequestID = UUID()
+        gitBlame = nil
+        gitBlameErrorMessage = nil
+        isLoadingGitBlame = false
+    }
+
+    private var goToLinePanel: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: "arrow.down.to.line")
+                    .foregroundStyle(.secondary)
+                TextField("行号", text: $goToLineInput)
+                    .textFieldStyle(.plain)
+                    .frame(width: 96)
+                    .focused($isGoToLineFieldFocused)
+                    .onSubmit(performGoToLine)
+                    .onChange(of: goToLineInput) {
+                        goToLineError = nil
+                    }
+                Text("1-\(maximumLine)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Button("跳转", systemImage: "arrow.turn.down.left", action: performGoToLine)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("跳转到输入的行")
+            }
+            if let goToLineError {
+                Text(goToLineError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.regularMaterial, in: .rect(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(.separator.opacity(0.75), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+        .onExitCommand(perform: dismissGoToLine)
+        .accessibilityIdentifier("RepoDesk.GoToLine")
+    }
+
+    private func presentGoToLine(maximumLine: Int) {
+        dismissContentFind()
+        self.maximumLine = maximumLine
+        goToLineInput = ""
+        goToLineError = nil
+        withAnimation(.easeOut(duration: 0.12)) {
+            showsGoToLine = true
+        }
+        DispatchQueue.main.async {
+            isGoToLineFieldFocused = true
+        }
+    }
+
+    private func performGoToLine() {
+        do {
+            let line = try GoToLineValidator.validate(goToLineInput, maximumLine: maximumLine)
+            goToLineNavigationRequest = NativeTextNavigationRequest(line: line)
+            dismissGoToLine()
+        } catch let error as GoToLineValidationError {
+            goToLineError = error.message
+        } catch {
+            goToLineError = "无法跳转到该行。"
+        }
+    }
+
+    private func dismissGoToLine() {
+        withAnimation(.easeOut(duration: 0.1)) {
+            showsGoToLine = false
+        }
+        isGoToLineFieldFocused = false
     }
 }
 
 @MainActor
-struct FileQuickOpenSheet: View {
+struct FileNameSearchSheet: View {
     @Bindable var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var selectedResultIndex = 0
+    @FocusState private var isQueryFocused: Bool
 
     var body: some View {
         VStack(spacing: 12) {
-            TextField("按名称搜索文件", text: $query)
+            HStack {
+                Text("文件名搜索")
+                    .fontWeight(.semibold)
+                Spacer()
+                Text(searchScopeLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            TextField("搜索文件名", text: $query)
                 .textFieldStyle(.roundedBorder)
+                .focused($isQueryFocused)
                 .onChange(of: query) { _, value in
-                    appState.searchWorkspaceFiles(query: value)
+                    selectedResultIndex = 0
+                    appState.searchFiles(query: value)
                 }
+                .onSubmit { openSelectedResult() }
 
-            ScrollView {
-                LazyVStack(spacing: 3) {
-                    ForEach(appState.fileSearchResults) { entry in
-                        Button {
-                            appState.selectFile(entry.url)
-                            appState.selectSection(.files)
-                            dismiss()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.name)
-                                Text(relativePath(for: entry.url))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 3) {
+                        ForEach(Array(appState.fileSearchResults.enumerated()), id: \.element.id) { index, entry in
+                            Button {
+                                selectedResultIndex = index
+                                openSelectedResult()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.name)
+                                        .fontWeight(index == selectedResultIndex ? .semibold : .regular)
+                                    Text(relativePath(for: entry.url))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .contentShape(.rect)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .contentShape(.rect)
+                            .buttonStyle(.plain)
+                            .background(
+                                index == selectedResultIndex ? Color.accentColor.opacity(0.16) : .clear,
+                                in: .rect(cornerRadius: 5)
+                            )
+                            .id(entry.id)
                         }
-                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 2)
+                }
+                .onChange(of: selectedResultIndex) {
+                    guard appState.fileSearchResults.indices.contains(selectedResultIndex) else { return }
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(appState.fileSearchResults[selectedResultIndex].id, anchor: .center)
                     }
                 }
             }
@@ -423,11 +1568,171 @@ struct FileQuickOpenSheet: View {
         }
         .padding(16)
         .frame(width: 620, height: 460)
+        .onAppear {
+            appState.searchFiles(query: "")
+            isQueryFocused = true
+        }
+        .onChange(of: appState.fileSearchResults) {
+            if appState.fileSearchResults.isEmpty {
+                selectedResultIndex = 0
+            } else {
+                selectedResultIndex = min(selectedResultIndex, appState.fileSearchResults.count - 1)
+            }
+        }
+        .onMoveCommand { direction in
+            guard !appState.fileSearchResults.isEmpty else { return }
+            switch direction {
+            case .down:
+                selectedResultIndex = (selectedResultIndex + 1) % appState.fileSearchResults.count
+            case .up:
+                selectedResultIndex = (selectedResultIndex - 1 + appState.fileSearchResults.count) % appState.fileSearchResults.count
+            default:
+                break
+            }
+        }
+    }
+
+    private func openSelectedResult() {
+        guard appState.fileSearchResults.indices.contains(selectedResultIndex) else { return }
+        appState.selectFile(appState.fileSearchResults[selectedResultIndex].url)
+        appState.selectSection(.files)
+        dismiss()
     }
 
     private func relativePath(for url: URL) -> String {
-        guard let workspacePath = appState.workspace?.path else { return url.path }
-        let prefix = workspacePath.hasSuffix("/") ? workspacePath : workspacePath + "/"
+        guard let rootPath = appState.visibleWorkspaceRootURL?.standardizedFileURL.path else { return url.path }
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         return url.path.hasPrefix(prefix) ? String(url.path.dropFirst(prefix.count)) : url.path
+    }
+
+    private var searchScopeLabel: String {
+        appState.isWorkspaceContext ? "工作区" : (appState.selectedRepository?.name ?? "Repository")
+    }
+}
+
+@MainActor
+struct FullTextSearchSheet: View {
+    @Bindable var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var selectedResultIndex = 0
+    @FocusState private var isQueryFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("全文检索")
+                    .fontWeight(.semibold)
+                Spacer()
+                Text(searchScopeLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            TextField("搜索文件内容", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .focused($isQueryFocused)
+                .onChange(of: query) { _, value in
+                    selectedResultIndex = 0
+                    appState.searchWorkspaceText(query: value)
+                }
+                .onSubmit { openSelectedResult() }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 3) {
+                        ForEach(Array(appState.textSearchResults.enumerated()), id: \.element.id) { index, result in
+                            Button {
+                                selectedResultIndex = index
+                                openSelectedResult()
+                            } label: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 6) {
+                                        FileTypeIcon(path: result.fileURL.path)
+                                        Text(result.fileURL.lastPathComponent)
+                                            .fontWeight(index == selectedResultIndex ? .semibold : .regular)
+                                        Text(":\(result.line)")
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                        Spacer(minLength: 0)
+                                    }
+                                    Text(result.lineText.isEmpty ? " " : result.lineText)
+                                        .font(.system(.caption, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                    Text(relativePath(for: result.fileURL))
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                            .background(
+                                index == selectedResultIndex ? Color.accentColor.opacity(0.16) : .clear,
+                                in: .rect(cornerRadius: 5)
+                            )
+                            .id(result.id)
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                }
+                .onChange(of: selectedResultIndex) {
+                    guard appState.textSearchResults.indices.contains(selectedResultIndex) else { return }
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(appState.textSearchResults[selectedResultIndex].id, anchor: .center)
+                    }
+                }
+            }
+            .overlay {
+                if appState.isSearchingText {
+                    ProgressView()
+                } else if !query.isEmpty, appState.textSearchResults.isEmpty {
+                    ContentUnavailableView("没有匹配的内容", systemImage: "text.magnifyingglass")
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 700, height: 520)
+        .onAppear {
+            appState.searchWorkspaceText(query: "")
+            isQueryFocused = true
+        }
+        .onChange(of: appState.textSearchResults) {
+            if appState.textSearchResults.isEmpty {
+                selectedResultIndex = 0
+            } else {
+                selectedResultIndex = min(selectedResultIndex, appState.textSearchResults.count - 1)
+            }
+        }
+        .onMoveCommand { direction in
+            guard !appState.textSearchResults.isEmpty else { return }
+            switch direction {
+            case .down:
+                selectedResultIndex = (selectedResultIndex + 1) % appState.textSearchResults.count
+            case .up:
+                selectedResultIndex = (selectedResultIndex - 1 + appState.textSearchResults.count) % appState.textSearchResults.count
+            default:
+                break
+            }
+        }
+    }
+
+    private func openSelectedResult() {
+        guard appState.textSearchResults.indices.contains(selectedResultIndex) else { return }
+        let result = appState.textSearchResults[selectedResultIndex]
+        appState.selectFile(result.fileURL, line: result.line)
+        appState.selectSection(.files)
+        dismiss()
+    }
+
+    private func relativePath(for url: URL) -> String {
+        guard let rootPath = appState.visibleWorkspaceRootURL?.standardizedFileURL.path else { return url.path }
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        return url.path.hasPrefix(prefix) ? String(url.path.dropFirst(prefix.count)) : url.path
+    }
+
+    private var searchScopeLabel: String {
+        appState.isWorkspaceContext ? "工作区" : (appState.selectedRepository?.name ?? "Repository")
     }
 }

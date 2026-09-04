@@ -18,6 +18,17 @@ swiftc -parse "${project_dir}"/RepoDeskTests/**/*.swift
 
 swiftc \
   -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Features/FileSystemPathCopy.swift" \
+  "${project_dir}/scripts/verify-file-system-path-copy.swift" \
+  -o "${project_dir}/build/verify-file-system-path-copy"
+
+"${project_dir}/build/verify-file-system-path-copy"
+
+swiftc \
+  -parse-as-library \
   -emit-library \
   -emit-module \
   -enable-testing \
@@ -58,6 +69,66 @@ swiftc \
 repodesk_library_path="${project_dir}/build"
 DYLD_LIBRARY_PATH="${repodesk_library_path}" \
   "${project_dir}/build/verify-commit-execution-rendering"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-git-remote-operation-rendering.swift" \
+  -o "${project_dir}/build/verify-git-remote-operation-rendering"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-git-remote-operation-rendering"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-git-push-preparation.swift" \
+  -o "${project_dir}/build/verify-git-push-preparation"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-git-push-preparation"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-git-push-diff-loading.swift" \
+  -o "${project_dir}/build/verify-git-push-diff-loading"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-git-push-diff-loading"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-git-push-diff-ui-performance.swift" \
+  -o "${project_dir}/build/verify-git-push-diff-ui-performance"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-git-push-diff-ui-performance"
 
 swiftc \
   -parse-as-library \
@@ -182,12 +253,56 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-layout.swift" \
   -o "${project_dir}/build/verify-git-diff-layout"
 
 "${project_dir}/build/verify-git-diff-layout"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
+  "${project_dir}/scripts/verify-git-diff-selection.swift" \
+  -o "${project_dir}/build/verify-git-diff-selection"
+
+"${project_dir}/build/verify-git-diff-selection"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
+  "${project_dir}/scripts/verify-git-diff-mouse-copy.swift" \
+  -o "${project_dir}/build/verify-git-diff-mouse-copy"
+
+"${project_dir}/build/verify-git-diff-mouse-copy"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitMergeDiffView.swift" \
+  "${project_dir}/scripts/verify-git-merge-diff.swift" \
+  -o "${project_dir}/build/verify-git-merge-diff"
+
+"${project_dir}/build/verify-git-merge-diff"
 
 swiftc \
   -parse-as-library \
@@ -206,6 +321,7 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-performance.swift" \
@@ -240,12 +356,68 @@ swiftc \
   -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
+  "${project_dir}/scripts/verify-content-search.swift" \
+  -o "${project_dir}/build/verify-content-search"
+
+"${project_dir}/build/verify-content-search"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
+  "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
   "${project_dir}/RepoDeskApp/Features/StreamingOutputView.swift" \
   "${project_dir}/scripts/verify-output-follow.swift" \
   -o "${project_dir}/build/verify-output-follow"
 
 "${project_dir}/build/verify-output-follow"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
+  "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
+  "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
+  "${project_dir}/scripts/verify-source-editor-scroll-performance.swift" \
+  -o "${project_dir}/build/verify-source-editor-scroll-performance"
+
+"${project_dir}/build/verify-source-editor-scroll-performance" < /dev/null
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-history-refresh-stability.swift" \
+  -o "${project_dir}/build/verify-history-refresh-stability"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-history-refresh-stability"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-history-merge-diff.swift" \
+  -o "${project_dir}/build/verify-history-merge-diff"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-history-merge-diff"
 
 swiftc \
   -parse-as-library \
@@ -324,6 +496,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Process/CommandRunner.swift" \
   "${project_dir}/RepoDeskApp/Diagnostics/AppDiagnosticLogger.swift" \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitPushModels.swift" \
   "${project_dir}/RepoDeskApp/Git/GitBlameParser.swift" \
   "${project_dir}/RepoDeskApp/Git/GitDiffParser.swift" \
   "${project_dir}/RepoDeskApp/Git/GitHistoryParser.swift" \

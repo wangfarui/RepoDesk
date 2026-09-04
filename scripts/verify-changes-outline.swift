@@ -18,6 +18,8 @@ enum ChangesOutlineVerification {
         try verifyDirectFilesRemainVisibleBesideChildDirectories()
         try verifyFlatGrouping()
         try verifyCombinedModuleDirectoryGrouping()
+        try verifyDirectoryCommitSelectionScope()
+        try verifyCommitCheckboxAggregation()
         try verifyGroupingPersistenceCompatibility()
         print("Changes outline verification passed")
     }
@@ -167,6 +169,51 @@ enum ChangesOutlineVerification {
                 "\(serviceModuleID):file:\(service.id)"
             ],
             "Combined grouping should nest directories inside modules."
+        )
+        try expect(
+            rows.contains { row in
+                if case .directory(_, _, _, _, _, let modulePath) = row {
+                    return modulePath == "client"
+                }
+                return false
+            },
+            "Combined grouping directory rows should preserve their module context."
+        )
+    }
+
+    private static func verifyDirectoryCommitSelectionScope() throws {
+        let clientDirect = GitChangeSelection(path: "client/src/App.swift", kind: .changes)
+        let clientNested = GitChangeSelection(path: "client/src/feature/Feature.swift", kind: .changes)
+        let clientDocs = GitChangeSelection(path: "client/docs/README.md", kind: .changes)
+        let serviceSource = GitChangeSelection(path: "service/src/API.swift", kind: .changes)
+        let selections = ChangesCommitSelectionScope.directorySelections(
+            path: "src",
+            modulePath: "client",
+            selections: [clientDirect, clientNested, clientDocs, serviceSource]
+        )
+
+        try expect(
+            Set(selections) == [clientDirect, clientNested],
+            "A module directory commit scope should contain only its direct and nested descendants."
+        )
+    }
+
+    private static func verifyCommitCheckboxAggregation() throws {
+        let first = GitChangeSelection(path: "src/First.swift", kind: .changes)
+        let second = GitChangeSelection(path: "src/Second.swift", kind: .changes)
+        let selections = [first, second]
+        let checked = CommitCheckboxState.resolve(selections: selections) { _ in true }
+        let unchecked = CommitCheckboxState.resolve(selections: selections) { _ in false }
+        let mixed = CommitCheckboxState.resolve(selections: selections) { $0 == first }
+
+        try expect(checked == .checked, "All included descendants should check their directory.")
+        try expect(unchecked == .unchecked, "No included descendants should uncheck their directory.")
+        try expect(mixed == .mixed, "Partially included descendants should mix their directory.")
+        try expect(
+            !checked.includesSelectionsAfterToggle
+                && unchecked.includesSelectionsAfterToggle
+                && mixed.includesSelectionsAfterToggle,
+            "Directory toggles should clear checked scopes and include unchecked or mixed scopes."
         )
     }
 

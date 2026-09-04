@@ -1,6 +1,60 @@
 import Foundation
 import Observation
 
+struct FileTreeRevealRequest: Equatable, Sendable {
+    let id = UUID()
+    let fileURL: URL
+}
+
+struct GitFileBlameTarget: Equatable, Sendable {
+    let repositoryID: RegisteredRepository.ID
+    let repositoryURL: URL
+    let path: String
+
+    static func resolve(
+        fileURL: URL,
+        workspaceURL: URL,
+        repositories: [RegisteredRepository]
+    ) -> GitFileBlameTarget? {
+        let fileURL = fileURL.standardizedFileURL
+        let workspaceURL = workspaceURL.standardizedFileURL
+
+        return repositories.compactMap { repository -> GitFileBlameTarget? in
+            let repositoryURL = repository.relativePath == "."
+                ? workspaceURL
+                : workspaceURL.appendingPathComponent(repository.relativePath, isDirectory: true)
+                    .standardizedFileURL
+            guard WorkspaceTreeRefreshPlanner.isSameOrDescendant(fileURL, of: repositoryURL),
+                  fileURL != repositoryURL else { return nil }
+            let repositoryPrefix = repositoryURL.path.hasSuffix("/")
+                ? repositoryURL.path
+                : repositoryURL.path + "/"
+            guard fileURL.path.hasPrefix(repositoryPrefix) else { return nil }
+            return GitFileBlameTarget(
+                repositoryID: repository.id,
+                repositoryURL: repositoryURL,
+                path: String(fileURL.path.dropFirst(repositoryPrefix.count))
+            )
+        }
+        .max { lhs, rhs in
+            lhs.repositoryURL.path.count < rhs.repositoryURL.path.count
+        }
+    }
+}
+
+struct OpenFileTab: Equatable, Identifiable, Sendable {
+    let url: URL
+    var loadedDocument: LoadedDocument?
+    var text: String
+    var originalText: String
+    var fingerprint: String?
+    var showsMarkdownPreview: Bool
+    var isLoading: Bool
+    var visibleLine: Int
+
+    var id: URL { url }
+}
+
 private actor RepositoryRefreshLimiter {
     private var availableSlots: Int
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -58,6 +112,9 @@ final class AppState {
     var commitMessageDrafts: [RegisteredRepository.ID: String] = [:]
     var excludedCommitChanges: [RegisteredRepository.ID: Set<GitChangeSelection>] = [:]
     var commitExecutionState: GitCommitExecutionState = .idle
+    var gitRemoteOperationState: GitRemoteOperationState = .idle
+    var gitStashes: [GitStash] = []
+    var stashesErrorMessage: String?
     var isSwitchingBranch = false
     var branchSwitchErrorMessage: String?
     var isPerformingBranchOperation = false
@@ -71,12 +128,19 @@ final class AppState {
     var expandedDirectoryURLs: Set<URL> = []
     var loadingDirectoryURLs: Set<URL> = []
     var directoryLoadErrors: [URL: String] = [:]
+    var fileTreeRevealRequest: FileTreeRevealRequest?
     var workspaceMonitoringErrorMessage: String?
     var automaticallyRefreshesWorkspace = true
     var refreshesWhenBecomingActive = true
     var showsHiddenFiles = false
     var compactsSingleChildDirectories = true
     var opensMarkdownInPreview = false
+    var sidebarFontSize = RepoDeskFontSize.default
+    var interfaceFontSize = RepoDeskFontSize.default
+    var fileContentFontSize = RepoDeskFontSize.default
+    var maximumOpenFileTabs = 5
+    var openFileTabs: [OpenFileTab] = []
+    var fileTabSessionsByContext: [String: FileTabSessionState] = [:]
     var selectedFileURL: URL?
     var loadedDocument: LoadedDocument?
     var documentText = ""
@@ -85,7 +149,6 @@ final class AppState {
     var isSavingDocument = false
     var showsMarkdownPreview = false
     var selectedFileFingerprint: String?
-    var pendingFileSelectionURL: URL?
     var showsDiscardAndReloadConfirmation = false
     var hasDocumentConflict = false
     var documentSaveErrorMessage: String?
@@ -99,6 +162,7 @@ final class AppState {
     var selectedCommitDetail: GitCommitDetail?
     var selectedCommitFile: GitCommitFile?
     var commitFileDiff: GitFileDiff?
+    var mergeCommitFileDiff: GitMergeFileDiff?
     var isLoadingCommitDiff = false
     var commitDiffErrorMessage: String?
     var isLoadingHistory = false
@@ -108,10 +172,13 @@ final class AppState {
     var historyErrorMessage: String?
     var branchesErrorMessage: String?
     var historyAuthorsErrorMessage: String?
+    var historyCurrentUserName: String?
+    var historyCurrentUserErrorMessage: String?
     var commitErrorMessage: String?
     var hasMoreHistory = true
     var historyBranchFilter: GitHistoryBranchFilter = .current
-    var historyAuthorFilter: String?
+    var historyAuthorFilter: GitHistoryAuthorFilter = .all
+    var historyGrouping: GitChangesGrouping = .directory
     var historyVerticalSplitFraction = HistorySplitLayout.defaultVerticalFraction
     var historyHorizontalSplitFraction = HistorySplitLayout.defaultHorizontalFraction
     var taskCatalog = TaskCatalog(global: [], workspace: [], repository: [])
@@ -130,13 +197,15 @@ final class AppState {
     var mavenProjectRevisions: [String: Int] = [:]
     var fileSearchResults: [WorkspaceFileEntry] = []
     var isSearchingFiles = false
+    var textSearchResults: [WorkspaceTextSearchResult] = []
+    var isSearchingText = false
     var rememberedChangeSelections: [RegisteredRepository.ID: GitChangeSelection] = [:]
     var rememberedHistoryBranchFilters: [RegisteredRepository.ID: GitHistoryBranchFilter] = [:]
-    var rememberedHistoryAuthorFilters: [RegisteredRepository.ID: String] = [:]
+    var rememberedHistoryAuthorFilters: [RegisteredRepository.ID: GitHistoryAuthorFilter] = [:]
     var rememberedCommitHashes: [RegisteredRepository.ID: String] = [:]
     var rememberedCommitFileSelections: [RegisteredRepository.ID: HistoryCommitFileSelection] = [:]
     var rememberedMavenSelections: [RegisteredRepository.ID: MavenWindowSelection] = [:]
-    var pendingSourceLine: Int?
+    var selectedSourceNavigationRequest: NativeTextNavigationRequest?
     var jumpToSourceErrorMessage: String?
 
     private let workspaceStore: WorkspaceStoring
@@ -155,6 +224,7 @@ final class AppState {
     private let mavenSettingsStore: MavenSettingsStoring
     private let mavenRunHistoryStore: MavenRunHistoryStoring
     private let workspaceFileSearch: any WorkspaceFileSearching
+    private let workspaceTextSearch: any WorkspaceTextSearching
     private let windowStateStore: WindowStateStoring
     private let appPreferencesStore: AppPreferencesStoring
     private let diagnosticLogger: AppDiagnosticLogger
@@ -163,9 +233,11 @@ final class AppState {
     private var documentRequestID: UUID?
     private var historyRequestID: UUID?
     private var branchesRequestID: UUID?
+    private var historyAuthorsRequestID: UUID?
     private var commitRequestID: UUID?
     private var commitDiffRequestID: UUID?
     private var fileSearchRequestID: UUID?
+    private var textSearchRequestID: UUID?
     private var mavenRunID: UUID?
     private var repositoryRefreshContextID = UUID()
     private let repositoryRefreshLimiter = RepositoryRefreshLimiter(limit: 4)
@@ -173,6 +245,10 @@ final class AppState {
     private var activeRepositoryRefreshIDs: Set<RegisteredRepository.ID> = []
     private var repositoryRefreshWaiters: [RegisteredRepository.ID: [CheckedContinuation<Void, Never>]] = [:]
     @ObservationIgnored private var commitSuccessDismissTask: Task<Void, Never>?
+    @ObservationIgnored private var documentAutoSaveTasks: [URL: Task<Void, Never>] = [:]
+    @ObservationIgnored private var documentAutoSaveRequestIDs: [URL: UUID] = [:]
+    @ObservationIgnored private var windowStatePersistenceTask: Task<Void, Never>?
+    @ObservationIgnored private var gitRemoteOperationSuccessDismissTask: Task<Void, Never>?
 
     private enum DiffLoadPresentation {
         case foreground
@@ -200,6 +276,7 @@ final class AppState {
         mavenSettingsStore: MavenSettingsStoring? = nil,
         mavenRunHistoryStore: MavenRunHistoryStoring? = nil,
         workspaceFileSearch: (any WorkspaceFileSearching)? = nil,
+        workspaceTextSearch: (any WorkspaceTextSearching)? = nil,
         windowStateStore: WindowStateStoring? = nil,
         appPreferencesStore: AppPreferencesStoring? = nil,
         diagnosticLogger: AppDiagnosticLogger = .shared,
@@ -229,6 +306,7 @@ final class AppState {
         self.mavenSettingsStore = mavenSettingsStore ?? UserDefaultsMavenSettingsStore()
         self.mavenRunHistoryStore = mavenRunHistoryStore ?? UserDefaultsMavenRunHistoryStore()
         self.workspaceFileSearch = workspaceFileSearch ?? FileSystemWorkspaceSearch()
+        self.workspaceTextSearch = workspaceTextSearch ?? FileSystemWorkspaceTextSearch()
         self.windowStateStore = windowStateStore ?? UserDefaultsWindowStateStore()
         self.appPreferencesStore = appPreferencesStore
         self.diagnosticLogger = diagnosticLogger
@@ -240,6 +318,10 @@ final class AppState {
         opensMarkdownInPreview = appPreferences.opensMarkdownInPreview
         diffPresentation = appPreferences.diffPresentation
         ignoresWhitespaceInDiff = appPreferences.ignoresWhitespaceInDiff
+        sidebarFontSize = appPreferences.sidebarFontSize
+        interfaceFontSize = appPreferences.interfaceFontSize
+        fileContentFontSize = appPreferences.fileContentFontSize
+        maximumOpenFileTabs = appPreferences.maximumOpenFileTabs
         recentTaskRuns = self.taskStore.recentRuns()
         repositoryDiscoveryID = nil
         diffRequestID = nil
@@ -249,6 +331,7 @@ final class AppState {
         commitRequestID = nil
         commitDiffRequestID = nil
         fileSearchRequestID = nil
+        textSearchRequestID = nil
         mavenRunID = nil
         recentWorkspaces = workspaceStore.recentWorkspaces()
 
@@ -286,7 +369,10 @@ final class AppState {
     }
 
     var isGitWriteOperationRunning: Bool {
-        isCommittingChanges || isSwitchingBranch || isPerformingBranchOperation
+        isCommittingChanges
+            || gitRemoteOperationState.blocksGitOperations
+            || isSwitchingBranch
+            || isPerformingBranchOperation
     }
 
     var isCommittingChanges: Bool {
@@ -336,6 +422,20 @@ final class AppState {
         return selectedRepository.flatMap(repositoryURL(for:))
     }
 
+    var canRevealSelectedFileInTree: Bool {
+        guard let selectedFileURL,
+              let visibleWorkspaceRootURL else { return false }
+        let fileURL = selectedFileURL.standardizedFileURL
+        let rootURL = visibleWorkspaceRootURL.standardizedFileURL
+        return fileURL != rootURL
+            && WorkspaceTreeRefreshPlanner.isSameOrDescendant(fileURL, of: rootURL)
+    }
+
+    var showsHistoryLoadingIndicator: Bool {
+        commitHistory.isEmpty
+            && (isLoadingHistory || isLoadingBranches || isLoadingHistoryAuthors)
+    }
+
     var hasUnsavedDocumentChanges: Bool {
         guard case .text(let document) = loadedDocument, !document.isLarge else { return false }
         return documentText != documentOriginalText
@@ -344,6 +444,17 @@ final class AppState {
     var canEditSelectedDocument: Bool {
         guard case .text(let document) = loadedDocument else { return false }
         return !document.isLarge
+    }
+
+    var canBlameSelectedFile: Bool {
+        guard let selectedFileURL,
+              let workspaceURL,
+              case .text = loadedDocument else { return false }
+        return GitFileBlameTarget.resolve(
+            fileURL: selectedFileURL,
+            workspaceURL: workspaceURL,
+            repositories: repositories
+        ) != nil
     }
 
     var selectedDocumentEncoding: DocumentTextEncoding? {
@@ -475,11 +586,14 @@ final class AppState {
     }
 
     func chooseWorkspace() {
+        guard !isGitWriteOperationRunning else { return }
         guard let url = workspacePicker.chooseWorkspace() else { return }
         requestOpenWorkspace(at: url)
     }
 
     func openWorkspace(at url: URL) {
+        guard !isGitWriteOperationRunning else { return }
+        persistWindowState()
         if mavenExecution.runningRequestID != nil {
             stopMaven()
         }
@@ -507,13 +621,19 @@ final class AppState {
         selectedFileFingerprint = nil
         loadedDocument = nil
         resetDocumentEditingState()
+        fileTabSessionsByContext = [:]
         commitHistory = []
         branches = []
+        gitStashes = []
+        stashesErrorMessage = nil
         historyAuthors = []
+        historyCurrentUserName = nil
+        historyCurrentUserErrorMessage = nil
         selectedCommitHash = nil
         selectedCommitDetail = nil
         selectedCommitFile = nil
         commitFileDiff = nil
+        mergeCommitFileDiff = nil
         commitDiffRequestID = nil
         isLoadingCommitDiff = false
         taskCatalog = TaskCatalog(global: [], workspace: [], repository: [])
@@ -525,7 +645,12 @@ final class AppState {
         mavenProjectRevisions = [:]
         historyVerticalSplitFraction = HistorySplitLayout.defaultVerticalFraction
         historyHorizontalSplitFraction = HistorySplitLayout.defaultHorizontalFraction
+        fileSearchRequestID = nil
+        textSearchRequestID = nil
         fileSearchResults = []
+        textSearchResults = []
+        isSearchingFiles = false
+        isSearchingText = false
         rememberedChangeSelections = [:]
         rememberedHistoryBranchFilters = [:]
         rememberedHistoryAuthorFilters = [:]
@@ -535,6 +660,7 @@ final class AppState {
         commitMessageDrafts = [:]
         excludedCommitChanges = [:]
         clearCommitExecutionState()
+        clearGitRemoteOperationState()
         isSwitchingBranch = false
         branchSwitchErrorMessage = nil
         isPerformingBranchOperation = false
@@ -546,6 +672,7 @@ final class AppState {
         mergeSourceBranch = nil
         changesRepositoryScopeID = nil
         changesGrouping = .directory
+        historyGrouping = .directory
         navigationContext = .workspace
         repositoryDiscoveryID = nil
         isDiscoveringRepositories = false
@@ -558,10 +685,12 @@ final class AppState {
     }
 
     func openRecentWorkspace(_ recentWorkspace: RecentWorkspace) {
+        guard !isGitWriteOperationRunning else { return }
         requestOpenWorkspace(at: workspaceStore.resolve(recentWorkspace))
     }
 
     func closeWorkspace() {
+        guard !isGitWriteOperationRunning else { return }
         if hasUnsavedDocumentChanges {
             showsDiscardAndCloseWorkspaceConfirmation = true
             return
@@ -593,6 +722,7 @@ final class AppState {
     }
 
     private func performCloseWorkspace() {
+        persistWindowState()
         if runningTaskID != nil {
             stopRunningTask()
         }
@@ -621,18 +751,25 @@ final class AppState {
         selectedFileFingerprint = nil
         loadedDocument = nil
         resetDocumentEditingState()
+        fileTabSessionsByContext = [:]
         commitHistory = []
         branches = []
+        gitStashes = []
+        stashesErrorMessage = nil
         historyAuthors = []
+        historyCurrentUserName = nil
+        historyCurrentUserErrorMessage = nil
         selectedCommitDetail = nil
         selectedCommitFile = nil
         commitFileDiff = nil
+        mergeCommitFileDiff = nil
         taskCatalog = TaskCatalog(global: [], workspace: [], repository: [])
         mavenSettings = .empty
         mavenExecution = .idle
         recentMavenRuns = []
         mavenSettingsErrorMessage = nil
         mavenProjectRevisions = [:]
+        historyGrouping = .directory
         historyVerticalSplitFraction = HistorySplitLayout.defaultVerticalFraction
         historyHorizontalSplitFraction = HistorySplitLayout.defaultHorizontalFraction
         rememberedCommitFileSelections = [:]
@@ -640,6 +777,7 @@ final class AppState {
         commitMessageDrafts = [:]
         excludedCommitChanges = [:]
         clearCommitExecutionState()
+        clearGitRemoteOperationState()
         isSwitchingBranch = false
         branchSwitchErrorMessage = nil
         isPerformingBranchOperation = false
@@ -714,6 +852,8 @@ final class AppState {
         guard repositoryChanged else { return }
         commitHistory = []
         branches = []
+        gitStashes = []
+        stashesErrorMessage = nil
         branchesRequestID = nil
         isLoadingBranches = false
         branchSwitchErrorMessage = nil
@@ -721,6 +861,7 @@ final class AppState {
         selectedCommitDetail = nil
         selectedCommitFile = nil
         commitFileDiff = nil
+        mergeCommitFileDiff = nil
         historyErrorMessage = nil
         branchesErrorMessage = nil
         branchOperationErrorMessage = nil
@@ -729,9 +870,11 @@ final class AppState {
         conflictFiles = []
         mergeSourceBranch = nil
         historyAuthorsErrorMessage = nil
+        historyCurrentUserName = nil
+        historyCurrentUserErrorMessage = nil
         commitErrorMessage = nil
         historyBranchFilter = rememberedHistoryBranchFilters[id] ?? .current
-        historyAuthorFilter = rememberedHistoryAuthorFilters[id]
+        historyAuthorFilter = rememberedHistoryAuthorFilters[id] ?? .all
         selectedCommitHash = rememberedCommitHashes[id]
         persistRepositoryState()
         persistWindowState()
@@ -740,16 +883,28 @@ final class AppState {
 
     func selectRepositoryContext(_ id: RegisteredRepository.ID) {
         guard repositories.contains(where: { $0.id == id }) else { return }
+        let targetContext = NavigationContext.repository(id)
+        let contextChanged = navigationContext != targetContext
+        if contextChanged {
+            persistWindowState()
+        }
         selectRepository(id)
-        navigationContext = .repository(id)
+        navigationContext = targetContext
         changesRepositoryScopeID = id
         if selectedSection == .overview {
             selectedSection = .changes
+        }
+        if contextChanged {
+            restoreFileTabsForCurrentContext()
         }
         persistWindowState()
     }
 
     func selectWorkspaceContext() {
+        let contextChanged = navigationContext != .workspace
+        if contextChanged {
+            persistWindowState()
+        }
         navigationContext = .workspace
         changesRepositoryScopeID = nil
         selectedChange = nil
@@ -758,6 +913,9 @@ final class AppState {
         diffErrorMessage = nil
         if selectedSection == .history {
             selectedSection = .overview
+        }
+        if contextChanged {
+            restoreFileTabsForCurrentContext()
         }
         persistWindowState()
     }
@@ -798,6 +956,15 @@ final class AppState {
             changesGrouping.remove(grouping)
         } else {
             changesGrouping.insert(grouping)
+        }
+        persistWindowState()
+    }
+
+    func toggleHistoryGrouping(_ grouping: GitChangesGrouping) {
+        if historyGrouping.contains(grouping) {
+            historyGrouping.remove(grouping)
+        } else {
+            historyGrouping.insert(grouping)
         }
         persistWindowState()
     }
@@ -1037,38 +1204,133 @@ final class AppState {
         }
     }
 
-    func fetchCurrentRepository() async {
-        await performBranchOperation {
-            try await self.gitRepositoryOperator.fetch(repositoryURL: $0)
-        }
+    func performGitRemoteOperation(_ kind: GitRemoteOperationKind) async {
+        guard !isGitWriteOperationRunning,
+              isRepositoryContext,
+              let repository = selectedRepository else { return }
+        await performGitRemoteOperation(kind, repository: repository)
     }
 
-    func pullCurrentRepository() async {
-        guard let repositoryURL = activeRepositoryURL else { return }
-        isPerformingBranchOperation = true
-        branchOperationErrorMessage = nil
-        branchOperationStatusMessage = nil
-        defer { isPerformingBranchOperation = false }
-        do {
-            try await gitRepositoryOperator.pullCurrentBranch(repositoryURL: repositoryURL)
-            branchOperationStatusMessage = "Pull 成功。"
-            await refreshAfterBranchOperation()
-        } catch {
-            let files = (try? await gitRepositoryOperator.conflictFiles(repositoryURL: repositoryURL)) ?? []
-            if files.isEmpty {
-                branchOperationErrorMessage = error.localizedDescription
+    func pushPreparation(targetRemoteBranch: String?) async throws -> GitPushPreparation {
+        guard let repositoryURL = activeRepositoryURL else {
+            throw GitRepositoryError.pushPreparationUnavailable
+        }
+        return try await gitRepositoryReader.pushPreparation(
+            repositoryURL: repositoryURL,
+            targetRemoteBranch: targetRemoteBranch
+        )
+    }
+
+    func pushCommitRange(_ commits: [GitCommitSummary]) async throws -> GitPushCommitRange {
+        guard let repositoryURL = activeRepositoryURL else {
+            throw GitRepositoryError.pushPreparationUnavailable
+        }
+        return try await gitRepositoryReader.pushCommitRange(
+            repositoryURL: repositoryURL,
+            commits: commits
+        )
+    }
+
+    func pushFileDiff(
+        range: GitPushCommitRange,
+        file: GitCommitFile
+    ) async throws -> GitFileDiff {
+        guard let repositoryURL = activeRepositoryURL else {
+            throw GitRepositoryError.pushPreparationUnavailable
+        }
+        let target: GitDiffTarget
+        if range.commits.count == 1, let commit = range.commits.first {
+            target = .commit(hash: commit.hash, file: file)
+        } else {
+            target = .revisionRange(
+                base: range.baseRevision,
+                head: range.headRevision,
+                file: file
+            )
+        }
+        return try await gitRepositoryReader.fileDiff(
+            repositoryURL: repositoryURL,
+            target: target,
+            ignoringWhitespace: ignoresWhitespaceInDiff
+        )
+    }
+
+    func push(_ preparation: GitPushPreparation) async -> Bool {
+        guard !isGitWriteOperationRunning,
+              isRepositoryContext,
+              let repository = selectedRepository else { return false }
+        return await performPreparedPush(preparation, repository: repository)
+    }
+
+    func retryGitRemoteOperation() async {
+        guard case .failed(let context, _) = gitRemoteOperationState,
+              !isGitWriteOperationRunning,
+              let repository = repositories.first(where: { $0.id == context.repositoryID }) else {
+            return
+        }
+        switch context.kind {
+        case .stash:
+            await performGitStashOperation(.stash, repository: repository, stash: nil, message: context.stashMessage)
+        case .unstash:
+            guard let reference = context.stashReference else { return }
+            let stash = gitStashes.first(where: { $0.reference == reference })
+                ?? GitStash(reference: reference, message: reference)
+            await performGitStashOperation(.unstash, repository: repository, stash: stash, message: nil)
+        case .dropStash:
+            guard let reference = context.stashReference else { return }
+            let stash = gitStashes.first(where: { $0.reference == reference })
+                ?? GitStash(reference: reference, message: reference)
+            await performGitStashOperation(.dropStash, repository: repository, stash: stash, message: nil)
+        case .rollback:
+            await performRollbackOperation(repository: repository, changes: context.rollbackSelections)
+        case .push:
+            if let remote = context.pushRemote,
+               let target = context.pushTargetBranch {
+                let preparation = GitPushPreparation(
+                    localBranch: context.branch,
+                    remote: remote,
+                    targetRemoteBranch: target,
+                    remoteBranches: [],
+                    targetExists: !context.pushSetsUpstream,
+                    commits: [],
+                    blockingMessage: nil
+                )
+                _ = await performPreparedPush(preparation, repository: repository)
             } else {
-                conflictFiles = files
-                mergeSourceBranch = "upstream"
+                await performGitRemoteOperation(.push, repository: repository)
             }
-            await refreshAfterBranchOperation()
+        case .fetch, .pull:
+            await performGitRemoteOperation(context.kind, repository: repository)
         }
     }
 
-    func pushCurrentRepository() async {
-        await performBranchOperation {
-            try await self.gitRepositoryOperator.pushCurrentBranch(repositoryURL: $0)
-        }
+    func stashChanges(message: String? = nil) async {
+        guard isRepositoryContext, let repository = selectedRepository else { return }
+        await performGitStashOperation(.stash, repository: repository, stash: nil, message: message)
+    }
+
+    func unstashChanges(_ stash: GitStash) async {
+        guard isRepositoryContext, let repository = selectedRepository else { return }
+        await performGitStashOperation(.unstash, repository: repository, stash: stash, message: nil)
+    }
+
+    func dropStash(_ stash: GitStash) async {
+        guard isRepositoryContext, let repository = selectedRepository else { return }
+        await performGitStashOperation(.dropStash, repository: repository, stash: stash, message: nil)
+    }
+
+    func rollbackChanges(
+        _ changes: [GitChangeSelection],
+        repositoryID: RegisteredRepository.ID
+    ) async {
+        guard !changes.isEmpty,
+              let repository = repositories.first(where: { $0.id == repositoryID }) else { return }
+        await performRollbackOperation(repository: repository, changes: changes)
+    }
+
+    func dismissGitRemoteOperationResult() {
+        guard !gitRemoteOperationState.blocksGitOperations else { return }
+        clearGitRemoteOperationState()
     }
 
     func mergeBranch(_ branch: GitBranch) async {
@@ -1149,11 +1411,23 @@ final class AppState {
 
     func abortMerge() async {
         guard let repositoryURL = activeRepositoryURL else { return }
+        let remoteContext: GitRemoteOperationContext?
+        if case .requiresConflictResolution(let context, _) = gitRemoteOperationState {
+            remoteContext = context
+        } else {
+            remoteContext = nil
+        }
         do {
             try await gitRepositoryOperator.abortMerge(repositoryURL: repositoryURL)
             conflictFiles = []
             mergeSourceBranch = nil
-            await refreshAfterBranchOperation()
+            if let remoteContext,
+               let repository = repositories.first(where: { $0.id == remoteContext.repositoryID }) {
+                clearGitRemoteOperationState()
+                await refreshAfterGitRemoteOperation(repository)
+            } else {
+                await refreshAfterBranchOperation()
+            }
         } catch {
             branchOperationErrorMessage = error.localizedDescription
         }
@@ -1161,12 +1435,30 @@ final class AppState {
 
     func continueMerge() async {
         guard conflictFiles.allSatisfy(\.isResolved), let repositoryURL = activeRepositoryURL else { return }
+        let remoteContext: GitRemoteOperationContext?
+        if case .requiresConflictResolution(let context, _) = gitRemoteOperationState {
+            remoteContext = context
+        } else {
+            remoteContext = nil
+        }
         do {
             try await gitRepositoryOperator.continueMerge(repositoryURL: repositoryURL)
             conflictFiles = []
             mergeSourceBranch = nil
-            branchOperationStatusMessage = "Merge 完成。"
-            await refreshAfterBranchOperation()
+            if let remoteContext,
+               let repository = repositories.first(where: { $0.id == remoteContext.repositoryID }) {
+                await refreshAfterGitRemoteOperation(repository)
+                guard case .requiresConflictResolution(let currentContext, _) = gitRemoteOperationState,
+                      currentContext == remoteContext else { return }
+                setGitRemoteOperationState(
+                    .succeeded(
+                        GitRemoteOperationResult(context: remoteContext, completedAt: .now)
+                    )
+                )
+            } else {
+                branchOperationStatusMessage = "Merge 完成。"
+                await refreshAfterBranchOperation()
+            }
         } catch {
             branchOperationErrorMessage = error.localizedDescription
         }
@@ -1189,6 +1481,253 @@ final class AppState {
             await refreshAfterBranchOperation()
         } catch {
             branchOperationErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func performGitRemoteOperation(
+        _ kind: GitRemoteOperationKind,
+        repository: RegisteredRepository
+    ) async {
+        guard !isGitWriteOperationRunning,
+              let repositoryURL = repositoryURL(for: repository) else { return }
+        let context = gitRemoteOperationContext(kind: kind, repository: repository)
+        branchOperationErrorMessage = nil
+        branchOperationStatusMessage = nil
+        setGitRemoteOperationState(.running(context))
+        var pushOutcome: GitPushOutcome?
+
+        do {
+            switch kind {
+            case .fetch:
+                try await gitRepositoryOperator.fetch(repositoryURL: repositoryURL)
+            case .pull:
+                try await gitRepositoryOperator.pullCurrentBranch(repositoryURL: repositoryURL)
+            case .push:
+                pushOutcome = try await gitRepositoryOperator.pushCurrentBranchOutcome(
+                    repositoryURL: repositoryURL
+                )
+            case .stash, .unstash, .dropStash, .rollback:
+                return
+            }
+        } catch {
+            guard gitRemoteOperationState == .running(context) else { return }
+            if kind == .pull {
+                let files = (try? await gitRepositoryOperator.conflictFiles(repositoryURL: repositoryURL)) ?? []
+                guard gitRemoteOperationState == .running(context) else { return }
+                if !files.isEmpty {
+                    conflictFiles = files
+                    mergeSourceBranch = "upstream"
+                    setGitRemoteOperationState(
+                        .requiresConflictResolution(context: context, fileCount: files.count)
+                    )
+                    await refreshAfterGitRemoteOperation(repository)
+                    return
+                }
+            }
+            setGitRemoteOperationState(
+                .failed(context: context, message: error.localizedDescription)
+            )
+            if kind == .pull {
+                await refreshAfterGitRemoteOperation(repository)
+            }
+            return
+        }
+
+        guard gitRemoteOperationState == .running(context) else { return }
+        await refreshAfterGitRemoteOperation(repository)
+        guard gitRemoteOperationState == .running(context) else { return }
+        if pushOutcome == .upToDate {
+            setGitRemoteOperationState(.noChangesToPush(context))
+        } else {
+            setGitRemoteOperationState(
+                .succeeded(GitRemoteOperationResult(context: context, completedAt: .now))
+            )
+        }
+    }
+
+    private func performPreparedPush(
+        _ preparation: GitPushPreparation,
+        repository: RegisteredRepository
+    ) async -> Bool {
+        guard !isGitWriteOperationRunning,
+              let repositoryURL = repositoryURL(for: repository) else { return false }
+        let context = GitRemoteOperationContext(
+            kind: .push,
+            repositoryID: repository.id,
+            repositoryName: repository.name,
+            branch: preparation.localBranch,
+            pushRemote: preparation.remote,
+            pushTargetBranch: preparation.targetRemoteBranch,
+            pushSetsUpstream: preparation.createsRemoteBranch
+        )
+        branchOperationErrorMessage = nil
+        branchOperationStatusMessage = nil
+        setGitRemoteOperationState(.running(context))
+        let outcome: GitPushOutcome
+        do {
+            outcome = try await gitRepositoryOperator.push(
+                repositoryURL: repositoryURL,
+                localBranch: preparation.localBranch,
+                remote: preparation.remote,
+                remoteBranch: preparation.targetRemoteBranch,
+                setUpstream: preparation.createsRemoteBranch
+            )
+        } catch {
+            guard gitRemoteOperationState == .running(context) else { return false }
+            setGitRemoteOperationState(.failed(context: context, message: error.localizedDescription))
+            await refreshAfterGitRemoteOperation(repository)
+            return false
+        }
+        guard gitRemoteOperationState == .running(context) else { return false }
+        await refreshAfterGitRemoteOperation(repository)
+        guard gitRemoteOperationState == .running(context) else { return false }
+        if outcome == .upToDate && !preparation.createsRemoteBranch {
+            setGitRemoteOperationState(.noChangesToPush(context))
+        } else {
+            setGitRemoteOperationState(
+                .succeeded(GitRemoteOperationResult(context: context, completedAt: .now))
+            )
+        }
+        return true
+    }
+
+    private func performGitStashOperation(
+        _ kind: GitRemoteOperationKind,
+        repository: RegisteredRepository,
+        stash: GitStash?,
+        message: String?
+    ) async {
+        guard !isGitWriteOperationRunning,
+              let repositoryURL = repositoryURL(for: repository) else { return }
+        guard (kind != .unstash && kind != .dropStash) || stash != nil else { return }
+        let context = GitRemoteOperationContext(
+            kind: kind,
+            repositoryID: repository.id,
+            repositoryName: repository.name,
+            branch: repositorySnapshots[repository.id]?.branch ?? "当前分支",
+            stashReference: stash?.reference,
+            stashMessage: message ?? stash?.message
+        )
+        setGitRemoteOperationState(.running(context))
+        do {
+            switch kind {
+            case .stash:
+                try await gitRepositoryOperator.stashChanges(repositoryURL: repositoryURL, message: message)
+            case .unstash:
+                guard let stash else { return }
+                try await gitRepositoryOperator.unstashChanges(repositoryURL: repositoryURL, stash: stash)
+            case .dropStash:
+                guard let stash else { return }
+                try await gitRepositoryOperator.dropStash(repositoryURL: repositoryURL, stash: stash)
+            case .fetch, .pull, .push:
+                return
+            case .rollback:
+                return
+            }
+        } catch {
+            guard gitRemoteOperationState == .running(context) else { return }
+            setGitRemoteOperationState(.failed(context: context, message: error.localizedDescription))
+            await refreshAfterGitRemoteOperation(repository)
+            await loadStashes()
+            return
+        }
+        guard gitRemoteOperationState == .running(context) else { return }
+        await refreshAfterGitRemoteOperation(repository)
+        await loadStashes()
+        guard gitRemoteOperationState == .running(context) else { return }
+        setGitRemoteOperationState(
+            .succeeded(GitRemoteOperationResult(context: context, completedAt: .now))
+        )
+    }
+
+    private func performRollbackOperation(
+        repository: RegisteredRepository,
+        changes: [GitChangeSelection]
+    ) async {
+        guard !isGitWriteOperationRunning,
+              !changes.isEmpty,
+              let repositoryURL = repositoryURL(for: repository) else { return }
+        let context = GitRemoteOperationContext(
+            kind: .rollback,
+            repositoryID: repository.id,
+            repositoryName: repository.name,
+            branch: repositorySnapshots[repository.id]?.branch ?? "当前分支",
+            rollbackSelections: changes
+        )
+        setGitRemoteOperationState(.running(context))
+        do {
+            try await gitRepositoryOperator.rollbackChanges(
+                repositoryURL: repositoryURL,
+                changes: changes
+            )
+        } catch {
+            guard gitRemoteOperationState == .running(context) else { return }
+            setGitRemoteOperationState(.failed(context: context, message: error.localizedDescription))
+            await refreshAfterGitRemoteOperation(repository)
+            return
+        }
+        guard gitRemoteOperationState == .running(context) else { return }
+        await refreshAfterGitRemoteOperation(repository)
+        guard gitRemoteOperationState == .running(context) else { return }
+        setGitRemoteOperationState(
+            .succeeded(GitRemoteOperationResult(context: context, completedAt: .now))
+        )
+    }
+
+    private func gitRemoteOperationContext(
+        kind: GitRemoteOperationKind,
+        repository: RegisteredRepository
+    ) -> GitRemoteOperationContext {
+        let branch = repositorySnapshots[repository.id]?.branch
+            ?? (repository.id == selectedRepositoryID
+                ? branches.first(where: { !$0.isRemote && $0.isCurrent })?.name
+                : nil)
+            ?? "当前分支"
+        return GitRemoteOperationContext(
+            kind: kind,
+            repositoryID: repository.id,
+            repositoryName: repository.name,
+            branch: branch
+        )
+    }
+
+    private func setGitRemoteOperationState(_ state: GitRemoteOperationState) {
+        gitRemoteOperationSuccessDismissTask?.cancel()
+        gitRemoteOperationSuccessDismissTask = nil
+        gitRemoteOperationState = state
+        let autoDismissState: GitRemoteOperationState
+        switch state {
+        case .succeeded, .noChangesToPush:
+            autoDismissState = state
+        default:
+            return
+        }
+        gitRemoteOperationSuccessDismissTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
+            guard let self,
+                  gitRemoteOperationState == autoDismissState else { return }
+            gitRemoteOperationState = .idle
+            gitRemoteOperationSuccessDismissTask = nil
+        }
+    }
+
+    private func clearGitRemoteOperationState() {
+        gitRemoteOperationSuccessDismissTask?.cancel()
+        gitRemoteOperationSuccessDismissTask = nil
+        gitRemoteOperationState = .idle
+    }
+
+    private func refreshAfterGitRemoteOperation(_ repository: RegisteredRepository) async {
+        await refreshRepository(repository)
+        guard selectedRepositoryID == repository.id else { return }
+        if selectedSection == .history {
+            await refreshHistory()
+        } else {
+            await loadBranches()
         }
     }
 
@@ -1296,6 +1835,54 @@ final class AppState {
                 path: selection.originalPath ?? selection.path,
                 revision: "HEAD",
                 contentsPath: selection.path
+            )
+        }
+    }
+
+    func blameForSelectedFile() async throws -> [GitBlameLine] {
+        guard let selectedFileURL,
+              let workspaceURL,
+              case .text = loadedDocument,
+              let target = GitFileBlameTarget.resolve(
+                fileURL: selectedFileURL,
+                workspaceURL: workspaceURL,
+                repositories: repositories
+              ) else { return [] }
+
+        let change = repositorySnapshots[target.repositoryID]?.changes.first {
+            $0.path == target.path
+        }
+        if change?.isUntracked == true
+            || (change?.indexStatus == .added && change?.originalPath == nil) {
+            return uncommittedBlameLines(for: documentText)
+        }
+
+        let temporaryDirectoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-FileBlame-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectoryURL) }
+
+        let contentsURL = temporaryDirectoryURL.appendingPathComponent("contents")
+        try Data(documentText.utf8).write(to: contentsURL, options: .atomic)
+        return try await gitRepositoryReader.blame(
+            repositoryURL: target.repositoryURL,
+            path: change?.originalPath ?? target.path,
+            revision: "HEAD",
+            contentsPath: contentsURL.path
+        )
+    }
+
+    private func uncommittedBlameLines(for text: String) -> [GitBlameLine] {
+        let lineCount = SourceLineIndex(text: text).lineCount
+        return (1...lineCount).map {
+            GitBlameLine(
+                lineNumber: $0,
+                commitHash: String(repeating: "0", count: 40),
+                author: "未提交",
+                authoredAt: nil
             )
         }
     }
@@ -1440,6 +2027,43 @@ final class AppState {
         persistAppPreferences()
     }
 
+    func setSidebarFontSize(_ fontSize: Double) {
+        let fontSize = RepoDeskFontSize.normalized(fontSize)
+        guard sidebarFontSize != fontSize else { return }
+        sidebarFontSize = fontSize
+        persistAppPreferences()
+    }
+
+    func setInterfaceFontSize(_ fontSize: Double) {
+        let fontSize = RepoDeskFontSize.normalized(fontSize)
+        guard interfaceFontSize != fontSize else { return }
+        interfaceFontSize = fontSize
+        persistAppPreferences()
+    }
+
+    func setFileContentFontSize(_ fontSize: Double) {
+        let fontSize = RepoDeskFontSize.normalized(fontSize)
+        guard fileContentFontSize != fontSize else { return }
+        fileContentFontSize = fontSize
+        persistAppPreferences()
+    }
+
+    func setMaximumOpenFileTabs(_ count: Int) {
+        let normalized = min(max(count, 1), 50)
+        guard maximumOpenFileTabs != normalized else { return }
+        syncActiveFileTab()
+        maximumOpenFileTabs = normalized
+        trimOpenFileTabsIfNeeded()
+        persistAppPreferences()
+        persistWindowState()
+    }
+
+    func resetFontSizes() {
+        setSidebarFontSize(RepoDeskFontSize.default)
+        setInterfaceFontSize(RepoDeskFontSize.default)
+        setFileContentFontSize(RepoDeskFontSize.default)
+    }
+
     func toggleDirectory(_ directoryURL: URL) {
         let directoryURL = directoryURL.standardizedFileURL
         if expandedDirectoryURLs.remove(directoryURL) == nil {
@@ -1448,24 +2072,134 @@ final class AppState {
         }
     }
 
-    func selectFile(_ fileURL: URL) {
+    func revealSelectedFileInTree() async {
+        guard canRevealSelectedFileInTree,
+              let selectedFileURL else { return }
+        await revealFileTreeItem(selectedFileURL)
+    }
+
+    func revealFileTreeItem(_ itemURL: URL) async {
+        guard let visibleWorkspaceRootURL else { return }
+        let itemURL = itemURL.standardizedFileURL
+        let rootURL = visibleWorkspaceRootURL.standardizedFileURL
+        guard itemURL != rootURL,
+              WorkspaceTreeRefreshPlanner.isSameOrDescendant(itemURL, of: rootURL) else { return }
+
+        await loadDirectory(rootURL)
+        for directoryURL in parentDirectories(of: itemURL, relativeTo: rootURL) {
+            expandedDirectoryURLs.insert(directoryURL)
+            await loadDirectory(directoryURL)
+        }
+        fileTreeRevealRequest = FileTreeRevealRequest(fileURL: itemURL)
+    }
+
+    func selectFile(_ fileURL: URL, line: Int? = nil) {
         let fileURL = fileURL.standardizedFileURL
-        guard fileURL != selectedFileURL else { return }
-        if hasUnsavedDocumentChanges {
-            pendingFileSelectionURL = fileURL
+        let targetLine = line.map { max(1, $0) }
+        if fileURL == selectedFileURL {
+            if let targetLine {
+                rememberSelectedFileVisibleLine(targetLine)
+                selectedSourceNavigationRequest = NativeTextNavigationRequest(line: targetLine)
+            }
             return
         }
+        syncActiveFileTab()
+        if let existingIndex = openFileTabs.firstIndex(where: { $0.url == fileURL }) {
+            if let targetLine {
+                openFileTabs[existingIndex].visibleLine = targetLine
+            }
+            activateFileTab(openFileTabs[existingIndex])
+            return
+        }
+        openFileTabs.append(
+            OpenFileTab(
+                url: fileURL,
+                loadedDocument: nil,
+                text: "",
+                originalText: "",
+                fingerprint: fileFingerprint(fileURL),
+                showsMarkdownPreview: fileURL.pathExtension.lowercased() == "md" && opensMarkdownInPreview,
+                isLoading: true,
+                visibleLine: targetLine ?? 1
+            )
+        )
+        trimOpenFileTabsIfNeeded()
+        selectedSourceNavigationRequest = NativeTextNavigationRequest(line: targetLine ?? 1)
         loadFile(fileURL)
     }
 
-    func discardChangesAndOpenPendingFile() {
-        guard let pendingFileSelectionURL else { return }
-        self.pendingFileSelectionURL = nil
-        loadFile(pendingFileSelectionURL)
+    func selectFileTab(_ tab: OpenFileTab) {
+        guard openFileTabs.contains(where: { $0.id == tab.id }) else { return }
+        guard tab.url != selectedFileURL else { return }
+        syncActiveFileTab()
+        if let index = openFileTabs.firstIndex(where: { $0.id == tab.id }) {
+            activateFileTab(openFileTabs[index])
+        }
     }
 
-    func cancelPendingFileSelection() {
-        pendingFileSelectionURL = nil
+    func closeSelectedFileTab() {
+        guard let selectedFileURL else { return }
+        closeFileTab(id: selectedFileURL)
+    }
+
+    func closeAllFileTabs() {
+        openFileTabs = []
+        selectedFileURL = nil
+        loadedDocument = nil
+        resetDocumentEditingState()
+        persistWindowState()
+    }
+
+    func closeOtherFileTabs(keeping id: URL) {
+        guard let targetIndex = openFileTabs.firstIndex(where: { $0.id == id }) else { return }
+        syncActiveFileTab()
+        let targetTab = openFileTabs[targetIndex]
+        openFileTabs = [targetTab]
+        if selectedFileURL != targetTab.url {
+            activateFileTab(targetTab)
+        } else {
+            persistWindowState()
+        }
+    }
+
+    func closeFileTabs(at itemURL: URL) {
+        let itemURL = itemURL.standardizedFileURL
+        syncActiveFileTab()
+        openFileTabs.removeAll {
+            $0.url == itemURL || WorkspaceTreeRefreshPlanner.isSameOrDescendant($0.url, of: itemURL)
+        }
+        guard let selectedFileURL else {
+            persistWindowState()
+            return
+        }
+        if openFileTabs.contains(where: { $0.url == selectedFileURL }) {
+            persistWindowState()
+        } else if let replacement = openFileTabs.last {
+            activateFileTab(replacement)
+        } else {
+            self.selectedFileURL = nil
+            loadedDocument = nil
+            resetDocumentEditingState()
+            persistWindowState()
+        }
+    }
+
+    func closeFileTab(id: URL) {
+        guard let index = openFileTabs.firstIndex(where: { $0.id == id }) else { return }
+        let wasSelected = selectedFileURL == id
+        openFileTabs.remove(at: index)
+        guard wasSelected else {
+            persistWindowState()
+            return
+        }
+        if let nextTab = openFileTabs.last {
+            activateFileTab(nextTab)
+        } else {
+            selectedFileURL = nil
+            loadedDocument = nil
+            resetDocumentEditingState()
+            persistWindowState()
+        }
     }
 
     func requestReloadSelectedFile() {
@@ -1513,6 +2247,7 @@ final class AppState {
             )
             documentOriginalText = savedText
             selectedFileFingerprint = fileFingerprint(selectedFileURL)
+            syncActiveFileTab()
             hasDocumentConflict = false
             lastDocumentSavedAt = .now
         } catch DocumentSaveError.changedOnDisk {
@@ -1522,22 +2257,55 @@ final class AppState {
         }
     }
 
+    func updateSelectedDocumentText(_ text: String) {
+        guard text != documentText else { return }
+        documentText = text
+        syncActiveFileTab()
+        scheduleDocumentAutoSave()
+    }
+
+    func rememberSelectedFileVisibleLine(_ line: Int) {
+        guard let selectedFileURL,
+              let index = openFileTabs.firstIndex(where: { $0.url == selectedFileURL }) else { return }
+        let line = max(1, line)
+        guard openFileTabs[index].visibleLine != line else { return }
+        openFileTabs[index].visibleLine = line
+        scheduleWindowStatePersistence()
+    }
+
+    func clearSelectedSourceNavigationRequest(_ id: UUID) {
+        guard selectedSourceNavigationRequest?.id == id else { return }
+        selectedSourceNavigationRequest = nil
+    }
+
     private func loadFile(_ fileURL: URL, preservesMarkdownPreview: Bool = false) {
         let previewWasVisible = showsMarkdownPreview
+        if selectedSourceNavigationRequest == nil,
+           let tab = openFileTabs.first(where: { $0.url == fileURL }) {
+            selectedSourceNavigationRequest = NativeTextNavigationRequest(line: tab.visibleLine)
+        }
         selectedFileURL = fileURL
         selectedFileFingerprint = fileFingerprint(fileURL)
-        showsMarkdownPreview = fileURL.pathExtension.lowercased() == "md" && opensMarkdownInPreview
-        pendingFileSelectionURL = nil
+        showsMarkdownPreview = fileURL.pathExtension.lowercased() == "md"
+            && (preservesMarkdownPreview ? previewWasVisible : opensMarkdownInPreview)
         showsDiscardAndReloadConfirmation = false
         hasDocumentConflict = false
         documentSaveErrorMessage = nil
         lastDocumentSavedAt = nil
+        isSavingDocument = documentAutoSaveRequestIDs[fileURL] != nil
         documentText = ""
         documentOriginalText = ""
         let requestID = UUID()
         documentRequestID = requestID
         isLoadingDocument = true
         loadedDocument = nil
+        if let index = openFileTabs.firstIndex(where: { $0.url == fileURL }) {
+            openFileTabs[index].isLoading = true
+            openFileTabs[index].loadedDocument = nil
+            openFileTabs[index].text = ""
+            openFileTabs[index].originalText = ""
+            openFileTabs[index].fingerprint = fileFingerprint(fileURL)
+        }
         persistWindowState()
 
         Task { [weak self] in
@@ -1552,13 +2320,132 @@ final class AppState {
             if preservesMarkdownPreview {
                 showsMarkdownPreview = previewWasVisible
             }
+            syncActiveFileTab()
             documentRequestID = nil
             isLoadingDocument = false
         }
     }
 
+    private func activateFileTab(_ tab: OpenFileTab) {
+        selectedFileURL = tab.url
+        selectedFileFingerprint = tab.fingerprint
+        loadedDocument = tab.loadedDocument
+        documentText = tab.text
+        documentOriginalText = tab.originalText
+        showsMarkdownPreview = tab.showsMarkdownPreview
+        isLoadingDocument = tab.isLoading
+        showsDiscardAndReloadConfirmation = false
+        hasDocumentConflict = false
+        documentSaveErrorMessage = nil
+        lastDocumentSavedAt = nil
+        isSavingDocument = documentAutoSaveRequestIDs[tab.url] != nil
+        documentRequestID = nil
+        selectedSourceNavigationRequest = NativeTextNavigationRequest(line: tab.visibleLine)
+        if tab.loadedDocument == nil && !tab.isLoading {
+            loadFile(tab.url, preservesMarkdownPreview: true)
+        }
+        persistWindowState()
+    }
+
+    private func syncActiveFileTab() {
+        guard let selectedFileURL,
+              let index = openFileTabs.firstIndex(where: { $0.url == selectedFileURL }) else { return }
+        openFileTabs[index].loadedDocument = loadedDocument
+        openFileTabs[index].text = documentText
+        openFileTabs[index].originalText = documentOriginalText
+        openFileTabs[index].fingerprint = selectedFileFingerprint
+        openFileTabs[index].showsMarkdownPreview = showsMarkdownPreview
+        openFileTabs[index].isLoading = isLoadingDocument
+    }
+
+    private func trimOpenFileTabsIfNeeded() {
+        while openFileTabs.count > maximumOpenFileTabs {
+            openFileTabs.removeFirst()
+        }
+        if let selectedFileURL,
+           !openFileTabs.contains(where: { $0.url == selectedFileURL }) {
+            if let replacement = openFileTabs.last {
+                activateFileTab(replacement)
+            } else {
+                self.selectedFileURL = nil
+                loadedDocument = nil
+                resetDocumentEditingState()
+            }
+        }
+    }
+
+    private func scheduleDocumentAutoSave() {
+        guard let fileURL = selectedFileURL,
+              case .text(let document) = loadedDocument,
+              !document.isLarge else { return }
+        documentAutoSaveTasks[fileURL]?.cancel()
+        let requestID = UUID()
+        documentAutoSaveRequestIDs[fileURL] = requestID
+        let text = documentText
+        let request = DocumentSaveRequest(
+            fileURL: fileURL,
+            text: text,
+            encoding: document.encoding,
+            expectedRevision: document.revision,
+            allowsOverwrite: false
+        )
+        isSavingDocument = true
+        documentAutoSaveTasks[fileURL] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(180))
+            } catch {
+                guard let self else { return }
+                guard self.documentAutoSaveRequestIDs[fileURL] == requestID else { return }
+                self.documentAutoSaveRequestIDs[fileURL] = nil
+                self.documentAutoSaveTasks[fileURL] = nil
+                if self.selectedFileURL == fileURL { self.isSavingDocument = false }
+                return
+            }
+            guard let self else { return }
+            do {
+                let revision = try await self.documentSaver.save(request)
+                guard self.documentAutoSaveRequestIDs[fileURL] == requestID else { return }
+                self.documentAutoSaveRequestIDs[fileURL] = nil
+                self.documentAutoSaveTasks[fileURL] = nil
+                guard let index = self.openFileTabs.firstIndex(where: { $0.url == fileURL }) else { return }
+                self.openFileTabs[index].loadedDocument = .text(
+                    LoadedTextDocument(
+                        text: text,
+                        isLarge: false,
+                        encoding: document.encoding,
+                        revision: revision
+                    )
+                )
+                self.openFileTabs[index].text = text
+                self.openFileTabs[index].originalText = text
+                self.openFileTabs[index].fingerprint = self.fileFingerprint(fileURL)
+                self.openFileTabs[index].isLoading = false
+                if self.selectedFileURL == fileURL {
+                    self.loadedDocument = self.openFileTabs[index].loadedDocument
+                    self.documentOriginalText = text
+                    self.selectedFileFingerprint = self.openFileTabs[index].fingerprint
+                    self.isSavingDocument = false
+                }
+            } catch {
+                guard self.documentAutoSaveRequestIDs[fileURL] == requestID else { return }
+                self.documentAutoSaveRequestIDs[fileURL] = nil
+                self.documentAutoSaveTasks[fileURL] = nil
+                if self.selectedFileURL == fileURL {
+                    self.isSavingDocument = false
+                    self.documentSaveErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
     func toggleMarkdownPreview() {
-        showsMarkdownPreview.toggle()
+        setMarkdownPreview(!showsMarkdownPreview)
+    }
+
+    func setMarkdownPreview(_ showsPreview: Bool) {
+        guard showsMarkdownPreview != showsPreview else { return }
+        showsMarkdownPreview = showsPreview
+        syncActiveFileTab()
         persistWindowState()
     }
 
@@ -1670,6 +2557,17 @@ final class AppState {
         }
     }
 
+    private func parentDirectories(of fileURL: URL, relativeTo rootURL: URL) -> [URL] {
+        var directories: [URL] = []
+        var directoryURL = fileURL.deletingLastPathComponent().standardizedFileURL
+        while directoryURL != rootURL,
+              WorkspaceTreeRefreshPlanner.isSameOrDescendant(directoryURL, of: rootURL) {
+            directories.append(directoryURL)
+            directoryURL = directoryURL.deletingLastPathComponent().standardizedFileURL
+        }
+        return directories.reversed()
+    }
+
     private func loadCompactedDirectoryChain(startingAt directoryURL: URL) async {
         var currentURL = directoryURL.standardizedFileURL
         for _ in 0..<32 {
@@ -1713,7 +2611,7 @@ final class AppState {
         }
     }
 
-    func searchWorkspaceFiles(query: String) {
+    func searchFiles(query: String) {
         guard let searchRootURL = visibleWorkspaceRootURL else { return }
         let requestID = UUID()
         fileSearchRequestID = requestID
@@ -1722,6 +2620,7 @@ final class AppState {
             isSearchingFiles = false
             return
         }
+        fileSearchResults = []
         isSearchingFiles = true
         Task { [weak self] in
             guard let self else { return }
@@ -1735,6 +2634,32 @@ final class AppState {
             guard fileSearchRequestID == requestID else { return }
             fileSearchResults = results
             isSearchingFiles = false
+        }
+    }
+
+    func searchWorkspaceText(query: String) {
+        guard let searchRootURL = visibleWorkspaceRootURL else { return }
+        let requestID = UUID()
+        textSearchRequestID = requestID
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            textSearchResults = []
+            isSearchingText = false
+            return
+        }
+        textSearchResults = []
+        isSearchingText = true
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(180))
+            } catch {
+                return
+            }
+            guard textSearchRequestID == requestID else { return }
+            let results = await workspaceTextSearch.search(in: searchRootURL, query: query, limit: 300)
+            guard textSearchRequestID == requestID else { return }
+            textSearchResults = results
+            isSearchingText = false
         }
     }
 
@@ -1774,25 +2699,69 @@ final class AppState {
         isLoadingBranches = false
     }
 
+    func loadStashes() async {
+        guard let repository = selectedRepository,
+              let repositoryURL = repositoryURL(for: repository) else { return }
+        let repositoryID = repository.id
+        do {
+            let loadedStashes = try await gitRepositoryOperator.listStashes(repositoryURL: repositoryURL)
+            guard selectedRepositoryID == repositoryID else { return }
+            gitStashes = loadedStashes
+            stashesErrorMessage = nil
+        } catch {
+            guard selectedRepositoryID == repositoryID else { return }
+            gitStashes = []
+            stashesErrorMessage = error.localizedDescription
+        }
+    }
+
     func loadHistoryAuthors() async {
         guard let repository = selectedRepository,
               let repositoryURL = repositoryURL(for: repository) else { return }
+        let repositoryID = repository.id
+        let requestID = UUID()
+        historyAuthorsRequestID = requestID
         isLoadingHistoryAuthors = true
         historyAuthorsErrorMessage = nil
-        defer { isLoadingHistoryAuthors = false }
+        historyCurrentUserName = nil
+        historyCurrentUserErrorMessage = nil
 
         do {
-            historyAuthors = try await gitRepositoryReader.authors(repositoryURL: repositoryURL)
-            if let historyAuthorFilter, !historyAuthors.contains(historyAuthorFilter) {
-                self.historyAuthorFilter = nil
-                if let repositoryID = selectedRepositoryID {
+            let loadedAuthors = try await gitRepositoryReader.authors(repositoryURL: repositoryURL)
+            guard historyAuthorsRequestID == requestID,
+                  selectedRepositoryID == repositoryID else { return }
+            historyAuthors = loadedAuthors
+            if case .author(let author) = historyAuthorFilter,
+               !historyAuthors.contains(author) {
+                historyAuthorFilter = .all
+                if selectedRepositoryID == repositoryID {
                     rememberedHistoryAuthorFilters[repositoryID] = nil
                 }
             }
         } catch {
+            guard historyAuthorsRequestID == requestID,
+                  selectedRepositoryID == repositoryID else { return }
             historyAuthors = []
             historyAuthorsErrorMessage = error.localizedDescription
         }
+
+        do {
+            let userName = try await gitRepositoryReader.currentUserName(repositoryURL: repositoryURL)
+            guard historyAuthorsRequestID == requestID,
+                  selectedRepositoryID == repositoryID else { return }
+            historyCurrentUserName = userName
+            if userName == nil {
+                historyCurrentUserErrorMessage = "当前 Repository 未配置 Git user.name。"
+            }
+        } catch {
+            guard historyAuthorsRequestID == requestID,
+                  selectedRepositoryID == repositoryID else { return }
+            historyCurrentUserErrorMessage = error.localizedDescription
+        }
+
+        guard historyAuthorsRequestID == requestID else { return }
+        historyAuthorsRequestID = nil
+        isLoadingHistoryAuthors = false
     }
 
     func loadHistory(reset: Bool = true) async {
@@ -1803,6 +2772,22 @@ final class AppState {
         isLoadingHistory = true
         historyErrorMessage = nil
         let skip = reset ? 0 : commitHistory.count
+        let author = resolvedHistoryAuthorName
+
+        if historyAuthorFilter == .me, author == nil {
+            if reset {
+                commitHistory = []
+                selectedCommitHash = nil
+                selectedCommitDetail = nil
+                selectedCommitFile = nil
+                commitFileDiff = nil
+                mergeCommitFileDiff = nil
+            }
+            hasMoreHistory = false
+            historyRequestID = nil
+            isLoadingHistory = false
+            return
+        }
 
         do {
             let history = try await gitRepositoryReader.history(
@@ -1810,7 +2795,7 @@ final class AppState {
                 limit: 50,
                 skip: skip,
                 revision: historyRevision,
-                author: historyAuthorFilter
+                author: author
             )
             guard historyRequestID == requestID else { return }
             if reset {
@@ -1822,15 +2807,32 @@ final class AppState {
             hasMoreHistory = history.count == 50
             if reset {
                 let rememberedHash = selectedRepositoryID.flatMap { rememberedCommitHashes[$0] }
-                if let rememberedHash, history.contains(where: { $0.hash == rememberedHash }) {
-                    selectCommit(rememberedHash)
-                } else if let first = history.first {
-                    selectCommit(first.hash)
+                let preferredHash = rememberedHash ?? selectedCommitHash
+                let targetHash = preferredHash.flatMap { preferredHash in
+                    history.contains(where: { $0.hash == preferredHash }) ? preferredHash : nil
+                } ?? history.first?.hash
+                if let targetHash {
+                    let hasVisibleDetail = selectedCommitHash == targetHash
+                        && selectedCommitDetail?.summary.hash == targetHash
+                    if hasVisibleDetail {
+                        if let refreshedSummary = history.first(where: { $0.hash == targetHash }),
+                           let selectedCommitDetail,
+                           selectedCommitDetail.summary != refreshedSummary {
+                            self.selectedCommitDetail = GitCommitDetail(
+                                summary: refreshedSummary,
+                                files: selectedCommitDetail.files,
+                                parentHashes: selectedCommitDetail.parentHashes
+                            )
+                        }
+                    } else if selectedCommitHash != targetHash || !isLoadingCommit {
+                        selectCommit(targetHash)
+                    }
                 } else {
                     selectedCommitHash = nil
                     selectedCommitDetail = nil
                     selectedCommitFile = nil
                     commitFileDiff = nil
+                    mergeCommitFileDiff = nil
                 }
             }
         } catch {
@@ -1886,6 +2888,7 @@ final class AppState {
                     persistWindowState()
                 }
                 commitFileDiff = nil
+                mergeCommitFileDiff = nil
                 if selectedCommitFile != nil {
                     isLoadingCommitDiff = true
                     Task { await self.loadSelectedCommitDiff() }
@@ -1923,8 +2926,11 @@ final class AppState {
         guard let repository = selectedRepository,
               let repositoryURL = repositoryURL(for: repository),
               let hash = selectedCommitHash,
+              let detail = selectedCommitDetail,
+              detail.summary.hash == hash,
               let file = selectedCommitFile else {
             commitFileDiff = nil
+            mergeCommitFileDiff = nil
             return
         }
         let requestID = UUID()
@@ -1932,13 +2938,29 @@ final class AppState {
         isLoadingCommitDiff = true
         commitDiffErrorMessage = nil
         do {
-            let diff = try await gitRepositoryReader.fileDiff(
-                repositoryURL: repositoryURL,
-                target: .commit(hash: hash, file: file),
-                ignoringWhitespace: ignoresWhitespaceInDiff
-            )
-            guard commitDiffRequestID == requestID else { return }
-            commitFileDiff = diff
+            if detail.isTwoParentMerge {
+                let diff = try await gitRepositoryReader.mergeFileDiff(
+                    repositoryURL: repositoryURL,
+                    hash: hash,
+                    parentHashes: detail.parentHashes,
+                    file: file,
+                    ignoringWhitespace: ignoresWhitespaceInDiff
+                )
+                guard commitDiffRequestID == requestID else { return }
+                mergeCommitFileDiff = diff
+                commitFileDiff = nil
+            } else if detail.parentHashes.count > 2 {
+                throw GitRepositoryError.unsupportedMergeParentCount(detail.parentHashes.count)
+            } else {
+                let diff = try await gitRepositoryReader.fileDiff(
+                    repositoryURL: repositoryURL,
+                    target: .commit(hash: hash, file: file),
+                    ignoringWhitespace: ignoresWhitespaceInDiff
+                )
+                guard commitDiffRequestID == requestID else { return }
+                commitFileDiff = diff
+                mergeCommitFileDiff = nil
+            }
         } catch {
             guard commitDiffRequestID == requestID else { return }
             commitDiffErrorMessage = error.localizedDescription
@@ -1963,8 +2985,7 @@ final class AppState {
             jumpToSourceErrorMessage = "文件不存在或已删除：\(path)"
             return
         }
-        pendingSourceLine = line
-        selectFile(fileURL)
+        selectFile(fileURL, line: line)
         selectSection(.files)
     }
 
@@ -1977,13 +2998,24 @@ final class AppState {
         resetHistorySelectionAndReload()
     }
 
-    func selectHistoryAuthorFilter(_ author: String?) {
-        historyAuthorFilter = author
+    func selectHistoryAuthorFilter(_ filter: GitHistoryAuthorFilter) {
+        historyAuthorFilter = filter
         if let repositoryID = selectedRepositoryID {
-            rememberedHistoryAuthorFilters[repositoryID] = author
+            rememberedHistoryAuthorFilters[repositoryID] = filter == .all ? nil : filter
             rememberedCommitHashes[repositoryID] = nil
         }
         resetHistorySelectionAndReload()
+    }
+
+    private var resolvedHistoryAuthorName: String? {
+        switch historyAuthorFilter {
+        case .all:
+            nil
+        case .me:
+            historyCurrentUserName
+        case .author(let author):
+            author
+        }
     }
 
     private var historyRevision: String? {
@@ -2000,6 +3032,7 @@ final class AppState {
         selectedCommitDetail = nil
         selectedCommitFile = nil
         commitFileDiff = nil
+        mergeCommitFileDiff = nil
         if let repositoryID = selectedRepositoryID {
             rememberedCommitFileSelections[repositoryID] = nil
         }
@@ -2315,13 +3348,21 @@ final class AppState {
                 compactsSingleChildDirectories: compactsSingleChildDirectories,
                 opensMarkdownInPreview: opensMarkdownInPreview,
                 diffPresentation: diffPresentation,
-                ignoresWhitespaceInDiff: ignoresWhitespaceInDiff
+                ignoresWhitespaceInDiff: ignoresWhitespaceInDiff,
+                sidebarFontSize: sidebarFontSize,
+                interfaceFontSize: interfaceFontSize,
+                fileContentFontSize: fileContentFontSize,
+                maximumOpenFileTabs: maximumOpenFileTabs
             )
         )
     }
 
     func removeRepository(_ id: RegisteredRepository.ID) {
         guard let index = repositories.firstIndex(where: { $0.id == id }) else { return }
+        let removesActiveContext = navigationContext == .repository(id)
+        if removesActiveContext {
+            persistWindowState()
+        }
         let removedRepositoryURL = repositoryURL(for: repositories[index])
         repositories.remove(at: index)
         if selectedRepositoryID == id {
@@ -2335,6 +3376,7 @@ final class AppState {
         if case .repository(let contextID) = navigationContext, contextID == id {
             navigationContext = .workspace
             selectedSection = .overview
+            restoreFileTabsForCurrentContext()
         }
         persistRepositoryState()
         repositorySnapshots[id] = nil
@@ -2361,6 +3403,10 @@ final class AppState {
         ) else { return }
 
         do {
+            let relocatesActiveContext = navigationContext == .repository(id)
+            if relocatesActiveContext {
+                persistWindowState()
+            }
             var relocatedRepository = try RepositoryRegistration.make(
                 directoryURL: repositoryURL,
                 workspaceURL: workspaceURL
@@ -2373,14 +3419,19 @@ final class AppState {
             relocatedRepository.isPinned = existingRepository.isPinned
             let previousRepositoryURL = self.repositoryURL(for: existingRepository)
             repositories[index] = relocatedRepository
-            migrateRepositoryWindowState(from: id, to: relocatedRepository.id)
+            migrateRepositoryWindowState(
+                from: id,
+                to: relocatedRepository.id,
+                previousRepositoryURL: previousRepositoryURL,
+                relocatedRepositoryURL: repositoryURL
+            )
             repositorySnapshots[id] = nil
             repositorySnapshotErrors[id] = nil
             refreshingRepositoryIDs.remove(id)
             if selectedRepositoryID == id {
                 selectedRepositoryID = relocatedRepository.id
                 historyBranchFilter = rememberedHistoryBranchFilters[relocatedRepository.id] ?? .current
-                historyAuthorFilter = rememberedHistoryAuthorFilters[relocatedRepository.id]
+                historyAuthorFilter = rememberedHistoryAuthorFilters[relocatedRepository.id] ?? .all
                 selectedCommitHash = rememberedCommitHashes[relocatedRepository.id]
                 loadTaskCatalog()
             }
@@ -2389,6 +3440,7 @@ final class AppState {
             }
             if case .repository(let contextID) = navigationContext, contextID == id {
                 navigationContext = .repository(relocatedRepository.id)
+                restoreFileTabsForCurrentContext()
             }
             if let previousRepositoryURL {
                 mavenProjectRevisions[previousRepositoryURL.standardizedFileURL.path] = nil
@@ -2781,7 +3833,9 @@ final class AppState {
 
     private func migrateRepositoryWindowState(
         from oldID: RegisteredRepository.ID,
-        to newID: RegisteredRepository.ID
+        to newID: RegisteredRepository.ID,
+        previousRepositoryURL: URL?,
+        relocatedRepositoryURL: URL
     ) {
         guard oldID != newID else { return }
         if let selection = rememberedChangeSelections.removeValue(forKey: oldID) {
@@ -2805,6 +3859,43 @@ final class AppState {
         if let message = commitMessageDrafts.removeValue(forKey: oldID) {
             commitMessageDrafts[newID] = message
         }
+        let oldContextKey = fileTabContextKey(for: .repository(oldID))
+        let newContextKey = fileTabContextKey(for: .repository(newID))
+        if var session = fileTabSessionsByContext.removeValue(forKey: oldContextKey) {
+            if let previousRepositoryURL {
+                session.tabs = session.tabs.map { tab in
+                    PersistedFileTab(
+                        path: relocatedFilePath(
+                            tab.path,
+                            from: previousRepositoryURL,
+                            to: relocatedRepositoryURL
+                        ),
+                        showsMarkdownPreview: tab.showsMarkdownPreview,
+                        visibleLine: tab.visibleLine
+                    )
+                }
+                session.selectedFilePath = session.selectedFilePath.map {
+                    relocatedFilePath(
+                        $0,
+                        from: previousRepositoryURL,
+                        to: relocatedRepositoryURL
+                    )
+                }
+            }
+            fileTabSessionsByContext[newContextKey] = session
+        }
+    }
+
+    private func relocatedFilePath(_ path: String, from oldRoot: URL, to newRoot: URL) -> String {
+        let fileURL = URL(fileURLWithPath: path).standardizedFileURL
+        let oldRoot = oldRoot.standardizedFileURL
+        guard WorkspaceTreeRefreshPlanner.isSameOrDescendant(fileURL, of: oldRoot) else {
+            return fileURL.path
+        }
+        let prefix = oldRoot.path.hasSuffix("/") ? oldRoot.path : oldRoot.path + "/"
+        guard fileURL.path.hasPrefix(prefix) else { return fileURL.path }
+        let relativePath = String(fileURL.path.dropFirst(prefix.count))
+        return newRoot.appendingPathComponent(relativePath).standardizedFileURL.path
     }
 
     private func selectedFilePath(relativeTo repositoryURL: URL) -> String? {
@@ -2824,19 +3915,85 @@ final class AppState {
     }
 
     private func resetDocumentEditingState() {
+        openFileTabs = []
         documentRequestID = nil
         documentText = ""
         documentOriginalText = ""
         isLoadingDocument = false
         isSavingDocument = false
         showsMarkdownPreview = false
-        pendingFileSelectionURL = nil
+        selectedSourceNavigationRequest = nil
         showsDiscardAndReloadConfirmation = false
         hasDocumentConflict = false
         documentSaveErrorMessage = nil
         lastDocumentSavedAt = nil
         pendingWorkspaceURL = nil
         showsDiscardAndCloseWorkspaceConfirmation = false
+    }
+
+    private func fileTabContextKey(for context: NavigationContext) -> String {
+        switch context {
+        case .workspace:
+            return "workspace"
+        case .repository(let repositoryID):
+            return "repository:\(repositoryID)"
+        }
+    }
+
+    private var currentFileTabContextKey: String {
+        fileTabContextKey(for: navigationContext)
+    }
+
+    private func syncCurrentFileTabSession() {
+        fileTabSessionsByContext[currentFileTabContextKey] = FileTabSessionState(
+            tabs: openFileTabs.map {
+                PersistedFileTab(
+                    path: $0.url.standardizedFileURL.path,
+                    showsMarkdownPreview: $0.showsMarkdownPreview,
+                    visibleLine: $0.visibleLine
+                )
+            },
+            selectedFilePath: selectedFileURL?.standardizedFileURL.path
+        )
+    }
+
+    private func restoreFileTabsForCurrentContext() {
+        selectedFileURL = nil
+        selectedFileFingerprint = nil
+        loadedDocument = nil
+        resetDocumentEditingState()
+        guard let session = fileTabSessionsByContext[currentFileTabContextKey] else { return }
+
+        var seenPaths: Set<String> = []
+        let validTabs = session.tabs.filter { persistedTab in
+            let fileURL = URL(fileURLWithPath: persistedTab.path).standardizedFileURL
+            return seenPaths.insert(fileURL.path).inserted
+        }
+        let restoredTabs = validTabs.suffix(maximumOpenFileTabs)
+        openFileTabs = restoredTabs.map { persistedTab in
+            let fileURL = URL(fileURLWithPath: persistedTab.path).standardizedFileURL
+            return OpenFileTab(
+                url: fileURL,
+                loadedDocument: nil,
+                text: "",
+                originalText: "",
+                fingerprint: fileFingerprint(fileURL),
+                showsMarkdownPreview: fileURL.pathExtension.lowercased() == "md"
+                    && persistedTab.showsMarkdownPreview,
+                isLoading: false,
+                visibleLine: persistedTab.visibleLine
+            )
+        }
+
+        let selectedPath = session.selectedFilePath.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        }
+        let selectedTab = selectedPath.flatMap { path in
+            openFileTabs.first(where: { $0.url.path == path })
+        } ?? openFileTabs.last
+        if let selectedTab {
+            activateFileTab(selectedTab)
+        }
     }
 
     private func restoreWindowState(for workspaceURL: URL) {
@@ -2848,12 +4005,26 @@ final class AppState {
         } else {
             navigationContext = .workspace
         }
+        fileTabSessionsByContext = state.fileTabSessionsByContext
+        if fileTabSessionsByContext[currentFileTabContextKey] == nil,
+           let selectedFilePath = state.selectedFilePath {
+            fileTabSessionsByContext[currentFileTabContextKey] = FileTabSessionState(
+                tabs: [
+                    PersistedFileTab(
+                        path: selectedFilePath,
+                        showsMarkdownPreview: state.selectedFileShowsMarkdownPreview
+                    )
+                ],
+                selectedFilePath: selectedFilePath
+            )
+        }
         let sections = isWorkspaceContext ? AppSection.workspaceSections : AppSection.repositorySections
         selectedSection = sections.contains(state.selectedSection) ? state.selectedSection : sections[0]
         changesRepositoryScopeID = state.changesRepositoryScopeID.flatMap { id in
             repositories.contains(where: { $0.id == id }) ? id : nil
         }
         changesGrouping = state.changesGrouping
+        historyGrouping = state.historyGrouping
         rememberedChangeSelections = state.selectedChangesByRepository
         rememberedHistoryBranchFilters = state.historyBranchFiltersByRepository
         rememberedHistoryAuthorFilters = state.historyAuthorFiltersByRepository
@@ -2881,43 +4052,70 @@ final class AppState {
         } ?? .current
         historyAuthorFilter = selectedRepositoryID.flatMap {
             state.historyAuthorFiltersByRepository[$0]
-        }
+        } ?? .all
         selectedCommitHash = selectedRepositoryID.flatMap {
             state.selectedCommitHashesByRepository[$0]
         }
         historyVerticalSplitFraction = state.historyVerticalSplitFraction
         historyHorizontalSplitFraction = state.historyHorizontalSplitFraction
-        if let path = state.selectedFilePath {
-            selectFile(URL(fileURLWithPath: path))
-            if URL(fileURLWithPath: path).pathExtension.lowercased() == "md" {
-                showsMarkdownPreview = state.selectedFileShowsMarkdownPreview
-                persistWindowState()
-            }
-        }
+        restoreFileTabsForCurrentContext()
     }
 
     private func persistWindowState() {
         guard let workspaceURL else { return }
-        windowStateStore.save(
-            WorkspaceWindowState(
-                selectedSection: selectedSection,
-                selectedFilePath: selectedFileURL?.path,
-                selectedFileShowsMarkdownPreview: showsMarkdownPreview,
-                selectedChangesByRepository: rememberedChangeSelections,
-                selectedChangeRepositoryID: selectedChangeRepositoryID,
-                historyBranchFiltersByRepository: rememberedHistoryBranchFilters,
-                historyAuthorFiltersByRepository: rememberedHistoryAuthorFilters,
-                selectedCommitHashesByRepository: rememberedCommitHashes,
-                selectedCommitFilesByRepository: rememberedCommitFileSelections,
-                mavenSelectionsByRepository: rememberedMavenSelections,
-                changesRepositoryScopeID: changesRepositoryScopeID,
-                changesGrouping: changesGrouping,
-                navigationRepositoryID: isRepositoryContext ? selectedRepositoryID : nil,
-                historyVerticalSplitFraction: historyVerticalSplitFraction,
-                historyHorizontalSplitFraction: historyHorizontalSplitFraction
-            ),
-            for: workspaceURL
+        windowStatePersistenceTask?.cancel()
+        windowStatePersistenceTask = nil
+        syncCurrentFileTabSession()
+        windowStateStore.save(windowStateSnapshot(), for: workspaceURL)
+    }
+
+    private func scheduleWindowStatePersistence() {
+        guard let workspaceURL else { return }
+        syncCurrentFileTabSession()
+        let state = windowStateSnapshot()
+        windowStatePersistenceTask?.cancel()
+        windowStatePersistenceTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return
+            }
+            guard let self else { return }
+            windowStateStore.save(state, for: workspaceURL)
+            windowStatePersistenceTask = nil
+        }
+    }
+
+    private func windowStateSnapshot() -> WorkspaceWindowState {
+        let navigationRepositoryID: RegisteredRepository.ID?
+        if case .repository(let repositoryID) = navigationContext {
+            navigationRepositoryID = repositoryID
+        } else {
+            navigationRepositoryID = nil
+        }
+        return WorkspaceWindowState(
+            selectedSection: selectedSection,
+            selectedFilePath: selectedFileURL?.path,
+            selectedFileShowsMarkdownPreview: showsMarkdownPreview,
+            fileTabSessionsByContext: fileTabSessionsByContext,
+            selectedChangesByRepository: rememberedChangeSelections,
+            selectedChangeRepositoryID: selectedChangeRepositoryID,
+            historyBranchFiltersByRepository: rememberedHistoryBranchFilters,
+            historyAuthorFiltersByRepository: rememberedHistoryAuthorFilters,
+            selectedCommitHashesByRepository: rememberedCommitHashes,
+            selectedCommitFilesByRepository: rememberedCommitFileSelections,
+            mavenSelectionsByRepository: rememberedMavenSelections,
+            changesRepositoryScopeID: changesRepositoryScopeID,
+            changesGrouping: changesGrouping,
+            historyGrouping: historyGrouping,
+            navigationRepositoryID: navigationRepositoryID,
+            historyVerticalSplitFraction: historyVerticalSplitFraction,
+            historyHorizontalSplitFraction: historyHorizontalSplitFraction
         )
+    }
+
+    func persistStateBeforeTermination() {
+        persistWindowState()
     }
 }
 
@@ -3119,6 +4317,10 @@ private actor PreviewTaskRunner: RepoTaskRunning {
 
 private struct PreviewWorkspaceFileSearch: WorkspaceFileSearching {
     func search(in workspaceURL: URL, query: String, limit: Int) async -> [WorkspaceFileEntry] { [] }
+}
+
+private struct PreviewWorkspaceTextSearch: WorkspaceTextSearching {
+    func search(in workspaceURL: URL, query: String, limit: Int) async -> [WorkspaceTextSearchResult] { [] }
 }
 
 @MainActor

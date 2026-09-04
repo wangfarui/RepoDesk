@@ -10,6 +10,14 @@ protocol GitRepositoryOperating: Sendable {
     func fetch(repositoryURL: URL) async throws
     func pullCurrentBranch(repositoryURL: URL) async throws
     func pushCurrentBranch(repositoryURL: URL) async throws
+    func pushCurrentBranchOutcome(repositoryURL: URL) async throws -> GitPushOutcome
+    func push(
+        repositoryURL: URL,
+        localBranch: String,
+        remote: String,
+        remoteBranch: String,
+        setUpstream: Bool
+    ) async throws -> GitPushOutcome
     func switchBranch(repositoryURL: URL, branch: GitBranch) async throws
     func pushBranch(repositoryURL: URL, branch: GitBranch) async throws
     func mergeBranch(repositoryURL: URL, branch: GitBranch) async throws
@@ -19,6 +27,11 @@ protocol GitRepositoryOperating: Sendable {
     func continueMerge(repositoryURL: URL) async throws
     func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile]
     func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws
+    func stashChanges(repositoryURL: URL, message: String?) async throws
+    func listStashes(repositoryURL: URL) async throws -> [GitStash]
+    func unstashChanges(repositoryURL: URL, stash: GitStash) async throws
+    func dropStash(repositoryURL: URL, stash: GitStash) async throws
+    func rollbackChanges(repositoryURL: URL, changes: [GitChangeSelection]) async throws
 }
 
 extension GitRepositoryOperating {
@@ -31,6 +44,19 @@ extension GitRepositoryOperating {
     }
     func fetch(repositoryURL: URL) async throws {}
     func pullCurrentBranch(repositoryURL: URL) async throws {}
+    func pushCurrentBranchOutcome(repositoryURL: URL) async throws -> GitPushOutcome {
+        try await pushCurrentBranch(repositoryURL: repositoryURL)
+        return .pushed
+    }
+    func push(
+        repositoryURL: URL,
+        localBranch: String,
+        remote: String,
+        remoteBranch: String,
+        setUpstream: Bool
+    ) async throws -> GitPushOutcome {
+        try await pushCurrentBranchOutcome(repositoryURL: repositoryURL)
+    }
     func pushBranch(repositoryURL: URL, branch: GitBranch) async throws { try await pushCurrentBranch(repositoryURL: repositoryURL) }
     func mergeBranch(repositoryURL: URL, branch: GitBranch) async throws {}
     func renameBranch(repositoryURL: URL, branch: GitBranch, to newName: String) async throws {}
@@ -39,10 +65,20 @@ extension GitRepositoryOperating {
     func continueMerge(repositoryURL: URL) async throws {}
     func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile] { [] }
     func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws {}
+    func stashChanges(repositoryURL: URL, message: String?) async throws {}
+    func listStashes(repositoryURL: URL) async throws -> [GitStash] { [] }
+    func unstashChanges(repositoryURL: URL, stash: GitStash) async throws {}
+    func dropStash(repositoryURL: URL, stash: GitStash) async throws {}
+    func rollbackChanges(repositoryURL: URL, changes: [GitChangeSelection]) async throws {}
 }
 
 struct GitCreatedCommit: Equatable, Sendable {
     let hash: String
+}
+
+enum GitPushOutcome: Equatable, Sendable {
+    case pushed
+    case upToDate
 }
 
 enum GitRepositoryOperation: String, Equatable, Sendable {
@@ -59,6 +95,10 @@ enum GitRepositoryOperation: String, Equatable, Sendable {
     case abortMerge
     case continueMerge
     case resolveConflict
+    case stash
+    case unstash
+    case dropStash
+    case rollback
 
     var displayName: String {
         switch self {
@@ -75,6 +115,10 @@ enum GitRepositoryOperation: String, Equatable, Sendable {
         case .abortMerge: "Abort Merge"
         case .continueMerge: "Continue Merge"
         case .resolveConflict: "Resolve Conflict"
+        case .stash: "暂存改动"
+        case .unstash: "恢复暂存"
+        case .dropStash: "删除暂存"
+        case .rollback: "Rollback"
         }
     }
 }
@@ -82,6 +126,7 @@ enum GitRepositoryOperation: String, Equatable, Sendable {
 enum GitRepositoryOperationError: LocalizedError, Equatable, Sendable {
     case emptyCommitMessage
     case invalidRemoteBranch(String)
+    case invalidPushTarget(String)
     case missingUpstream(String)
     case commandFailed(operation: GitRepositoryOperation, message: String)
 
@@ -91,6 +136,8 @@ enum GitRepositoryOperationError: LocalizedError, Equatable, Sendable {
             "请输入 Commit 信息。"
         case .invalidRemoteBranch(let name):
             "无法从远程 Branch \(name) 创建本地 tracking Branch。"
+        case .invalidPushTarget(let name):
+            "'\(name)' 不是有效的远程 Branch 名称。"
         case .missingUpstream(let name):
             "Branch \(name) 没有配置 upstream，无法 Push。"
         case .commandFailed(let operation, let message):
@@ -188,12 +235,133 @@ struct SystemGitRepositoryOperator: GitRepositoryOperating {
         )
     }
 
-    func pushCurrentBranch(repositoryURL: URL) async throws {
+    func stashChanges(repositoryURL: URL, message: String?) async throws {
+        let normalizedMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var arguments = ["stash", "push", "--include-untracked"]
+        if !normalizedMessage.isEmpty {
+            arguments += ["--message", normalizedMessage]
+        }
         _ = try await runGit(
-            ["push"],
+            arguments,
+            operation: .stash,
+            repositoryURL: repositoryURL,
+            redacting: normalizedMessage.isEmpty ? [] : [normalizedMessage]
+        )
+    }
+
+    func listStashes(repositoryURL: URL) async throws -> [GitStash] {
+        let result = try await runGit(
+            ["stash", "list", "--format=%H%x00%gd%x00%gs"],
+            operation: .stash,
+            repositoryURL: repositoryURL
+        )
+        let output = String(decoding: result.standardOutput, as: UTF8.self)
+        return output.split(whereSeparator: \.isNewline).compactMap { line in
+            let fields = line.split(separator: "\0", maxSplits: 2, omittingEmptySubsequences: false)
+            guard fields.count >= 2, !fields[0].isEmpty, !fields[1].isEmpty else { return nil }
+            let message = fields.count > 2 ? String(fields[2]) : String(fields[1])
+            return GitStash(reference: String(fields[1]), message: message, hash: String(fields[0]))
+        }
+    }
+
+    func unstashChanges(repositoryURL: URL, stash: GitStash) async throws {
+        _ = try await runGit(
+            ["stash", "pop", stash.reference],
+            operation: .unstash,
+            repositoryURL: repositoryURL
+        )
+    }
+
+    func dropStash(repositoryURL: URL, stash: GitStash) async throws {
+        _ = try await runGit(
+            ["stash", "drop", stash.reference],
+            operation: .dropStash,
+            repositoryURL: repositoryURL
+        )
+    }
+
+    func rollbackChanges(repositoryURL: URL, changes: [GitChangeSelection]) async throws {
+        let paths = Array(Set(changes.flatMap { [$0.path, $0.originalPath].compactMap { $0 } }.filter {
+            !$0.isEmpty && !$0.hasPrefix("/") && !$0.split(separator: "/").contains("..")
+        })).sorted()
+        let untrackedPaths = Set(changes.filter { $0.kind == .unversioned }.map(\.path))
+        let trackedPaths = paths.filter { !untrackedPaths.contains($0) }
+
+        if !trackedPaths.isEmpty {
+            _ = try await runGit(
+                ["restore", "--source=HEAD", "--staged", "--worktree", "--"] + trackedPaths,
+                operation: .rollback,
+                repositoryURL: repositoryURL
+            )
+        }
+
+        for path in untrackedPaths.sorted() {
+            let fileURL = repositoryURL.appendingPathComponent(path).standardizedFileURL
+            let repositoryRoot = repositoryURL.standardizedFileURL
+            let prefix = repositoryRoot.path.hasSuffix("/") ? repositoryRoot.path : repositoryRoot.path + "/"
+            guard fileURL.path.hasPrefix(prefix) else { continue }
+            do {
+                if FileManager.default.fileExists(atPath: fileURL.path) {
+                    try FileManager.default.removeItem(at: fileURL)
+                }
+            } catch {
+                throw GitRepositoryOperationError.commandFailed(
+                    operation: .rollback,
+                    message: "无法删除未跟踪文件 (path)：(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    func pushCurrentBranch(repositoryURL: URL) async throws {
+        _ = try await pushCurrentBranchOutcome(repositoryURL: repositoryURL)
+    }
+
+    func pushCurrentBranchOutcome(repositoryURL: URL) async throws -> GitPushOutcome {
+        let result = try await runGit(
+            ["push", "--porcelain"],
             operation: .push,
             repositoryURL: repositoryURL
         )
+        let output = String(decoding: result.standardOutput + result.standardError, as: UTF8.self)
+        return output.contains("[up to date]") || output.contains("Everything up-to-date")
+            ? .upToDate
+            : .pushed
+    }
+
+    func push(
+        repositoryURL: URL,
+        localBranch: String,
+        remote: String,
+        remoteBranch: String,
+        setUpstream: Bool
+    ) async throws -> GitPushOutcome {
+        let validation = try await runGit(
+            ["check-ref-format", "--branch", remoteBranch],
+            operation: .push,
+            repositoryURL: repositoryURL,
+            allowedStatuses: [0, 1]
+        )
+        guard validation.terminationStatus == 0 else {
+            throw GitRepositoryOperationError.invalidPushTarget(remoteBranch)
+        }
+        var arguments = ["push", "--porcelain"]
+        if setUpstream {
+            arguments.append("--set-upstream")
+        }
+        arguments.append(contentsOf: [
+            remote,
+            "refs/heads/\(localBranch):refs/heads/\(remoteBranch)"
+        ])
+        let result = try await runGit(
+            arguments,
+            operation: .push,
+            repositoryURL: repositoryURL
+        )
+        let output = String(decoding: result.standardOutput + result.standardError, as: UTF8.self)
+        return output.contains("[up to date]") || output.contains("Everything up-to-date")
+            ? .upToDate
+            : .pushed
     }
 
     func pushBranch(repositoryURL: URL, branch: GitBranch) async throws {

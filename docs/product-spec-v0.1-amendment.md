@@ -9,8 +9,10 @@ The Files page is no longer read-only. Git review remains non-destructive by def
 ## Required editing behavior
 
 - Normal text files open in a native monospaced editor with horizontal scrolling and no forced line wrapping.
-- `Cmd+S` and the toolbar Save action write the active file atomically while preserving its detected encoding.
-- Switching files or reloading while the buffer is dirty requires explicit discard confirmation.
+- Edits are written back to disk automatically after a short debounce while preserving the detected encoding.
+- Files opened from the tree, file-name search, or full-text search share the same multi-Tab surface.
+- File Tabs keep their open order, Markdown mode, selected Tab, and visible line independently for the Workspace and each Repository; those sessions restore after relaunch.
+- The maximum open Tab count is configurable, defaults to 5, and evicts the oldest Tab when exceeded.
 - Saving after another process changes the file is rejected. The user must choose Reload or explicitly Overwrite.
 - Markdown preview renders the current edit buffer rather than only the last disk version.
 - Binary files are never editable. Files over 1 MB use read-only large-file mode; files over 10 MB are not loaded.
@@ -32,7 +34,7 @@ The Files page is no longer read-only. Git review remains non-destructive by def
 - Changes Diff compares HEAD directly with the current working file. A partially staged file does not appear twice and does not expose the index as a separate review version.
 - Module grouping uses the nearest common module marker such as Maven, Gradle, Swift Package, Node package, or `project.yml`, with a top-level-directory fallback.
 - History only displays the currently selected Repository.
-- History supports Branch and User filters, a commit list, and selected-commit metadata, files, and Patch.
+- History supports Branch and User filters, a commit list, and selected-commit metadata, files, and Patch. Its changed-file list independently supports the same flat, Directory, Module, and Module-to-Directory grouping modes as Changes. A Merge Commit uses combined-diff file semantics: only files whose merge result differs from every parent are listed. A two-parent Merge displays a read-only IDEA-style Target Parent / Merge Result / Source Parent three-pane Diff; ordinary Commits remain Side-by-side.
 - Selected File History is removed.
 
 ## Git Review acceptance additions
@@ -41,13 +43,13 @@ The Files page is no longer read-only. Git review remains non-destructive by def
 2. Directory and Module grouping preserve Repository and Changes/Unversioned Files boundaries.
 3. Rename and copy rows show their original/source paths; binary selection shows a clear Binary Diff state.
 4. History never mixes commits from repositories other than the selected Repository.
-5. Branch and User filters can be combined, and selecting a commit shows its metadata, changed files, and Patch.
+5. Branch and User filters can be combined, and selecting a commit shows its metadata, changed files, and Patch; the changed-file grouping preference is persisted independently from Changes. Two-parent Merge Commits show combined files and a vertically aligned three-pane Diff, while merges with more than two parents surface an explicit unsupported state instead of an incorrect comparison.
 
 ## Git operations revision
 
 - Repository Changes supports selecting the files included in the next Commit, entering a Commit message, creating a Commit, and running Commit And Push. Workspace Changes across all repositories remains review-only and cannot Commit.
 - Commit And Push is a visible two-phase operation. If Commit succeeds and Push fails, the successful Commit remains recorded and the user can retry only the Push without creating another Commit.
-- The Repository toolbar supports Fetch, Pull, and Push for the current Repository. Background Snapshot refresh never performs these operations automatically.
+- The Repository toolbar supports Fetch, Pull, Push, and explicit Stash/Unstash for the current Repository. Changes rows support explicit scoped Rollback; Background Snapshot refresh never performs these operations automatically.
 - The searchable Branch picker supports local and remote Branches. A remote Branch can create or reuse its local tracking Branch; local Branches can be checked out, pushed, merged into the current Branch, renamed, safely deleted, and compared with the current Branch.
 - Pull or Merge conflicts open an explicit conflict-resolution flow with current/incoming content, editable merge result, per-block or whole-file acceptance, Mark Resolved, Abort Merge, and Continue Merge.
 - Side-by-side Diff can independently show Git Blame for the old and new side. Committed lines show author/date/hash information and working-tree-only lines show an uncommitted state.
@@ -71,7 +73,7 @@ The Files page is no longer read-only. Git review remains non-destructive by def
 - Overview exists only for Workspace. It keeps an empty state when no Git Repository is registered and owns the Repository discovery entry.
 - Workspace Changes can display all registered repositories or one repository. Repository Changes is fixed to the current repository.
 - Workspace Files uses the Workspace root. Repository Files uses the current Repository root.
-- History exists only for Repository and uses an IDEA-style layout: selected-file Side-by-side Diff above, Commit list below-left, and changed-file list below-right.
+- History exists only for Repository and uses an IDEA-style layout: selected-file Diff above, Commit list below-left, and changed-file list below-right. Ordinary Commits use Side-by-side Diff; two-parent Merge Commits use Target Parent / Merge Result / Source Parent three-pane Diff.
 - The user-facing Tasks module is replaced by Maven. The generic task/process model can remain as an internal foundation, but v0.1 does not expose a separate generic task editor.
 - Workspace Maven owns Maven Home, JDK/JAVA_HOME, User settings file, Local repository, and default parameters. Repository Maven owns module discovery and Lifecycle execution.
 - Repository Maven presents clean, compile, package, install, and deploy; deploy requires confirmation. The Maven stage includes final-command preview, full process-group stopping, recent-run replay, log retention controls, and POM/Wrapper-driven project rescan.

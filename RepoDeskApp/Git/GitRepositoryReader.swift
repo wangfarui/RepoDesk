@@ -16,7 +16,23 @@ protocol GitRepositoryReading: Sendable {
     ) async throws -> [GitCommitSummary]
     func branches(repositoryURL: URL) async throws -> [GitBranch]
     func authors(repositoryURL: URL) async throws -> [String]
+    func currentUserName(repositoryURL: URL) async throws -> String?
     func commit(repositoryURL: URL, hash: String) async throws -> GitCommitDetail
+    func pushPreparation(
+        repositoryURL: URL,
+        targetRemoteBranch: String?
+    ) async throws -> GitPushPreparation
+    func pushCommitRange(
+        repositoryURL: URL,
+        commits: [GitCommitSummary]
+    ) async throws -> GitPushCommitRange
+    func mergeFileDiff(
+        repositoryURL: URL,
+        hash: String,
+        parentHashes: [String],
+        file: GitCommitFile,
+        ignoringWhitespace: Bool
+    ) async throws -> GitMergeFileDiff
     func compareBranches(repositoryURL: URL, base: String, compared: String) async throws -> GitBranchComparison
     func blame(
         repositoryURL: URL,
@@ -27,6 +43,28 @@ protocol GitRepositoryReading: Sendable {
 }
 
 extension GitRepositoryReading {
+    func currentUserName(repositoryURL: URL) async throws -> String? { nil }
+    func pushPreparation(
+        repositoryURL: URL,
+        targetRemoteBranch: String?
+    ) async throws -> GitPushPreparation {
+        throw GitRepositoryError.pushPreparationUnavailable
+    }
+    func pushCommitRange(
+        repositoryURL: URL,
+        commits: [GitCommitSummary]
+    ) async throws -> GitPushCommitRange {
+        throw GitRepositoryError.pushPreparationUnavailable
+    }
+    func mergeFileDiff(
+        repositoryURL: URL,
+        hash: String,
+        parentHashes: [String],
+        file: GitCommitFile,
+        ignoringWhitespace: Bool
+    ) async throws -> GitMergeFileDiff {
+        throw GitRepositoryError.unsupportedMergeParentCount(parentHashes.count)
+    }
     func compareBranches(repositoryURL: URL, base: String, compared: String) async throws -> GitBranchComparison {
         GitBranchComparison(baseBranch: base, comparedBranch: compared, commits: [], diffText: "")
     }
@@ -40,16 +78,25 @@ extension GitRepositoryReading {
 
 enum GitRepositoryError: LocalizedError {
     case commandFailed(arguments: [String], message: String)
+    case unsupportedMergeParentCount(Int)
+    case pushPreparationUnavailable
 
     var errorDescription: String? {
         switch self {
         case .commandFailed(let arguments, let message):
             "git \(arguments.joined(separator: " ")) failed: \(message)"
+        case .unsupportedMergeParentCount(let count):
+            "暂不支持 \(count) 个父提交的 Merge Diff。"
+        case .pushPreparationUnavailable:
+            "当前 Repository 无法生成 Push 预览。"
         }
     }
 }
 
 struct SystemGitRepositoryReader: GitRepositoryReading {
+    private static let emptyTreeHash = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    private static let maximumInitialDiffBlobBytes = 8 * 1_048_576
+
     private let commandRunner: any CommandRunning
     private let gitURL: URL
     private let diagnosticLogger: AppDiagnosticLogger
@@ -200,6 +247,14 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             return try await committedFileDiff(
                 repositoryURL: repositoryURL,
                 hash: hash,
+                file: file,
+                ignoringWhitespace: ignoringWhitespace
+            )
+        case .revisionRange(let base, let head, let file):
+            return try await revisionRangeFileDiff(
+                repositoryURL: repositoryURL,
+                base: base,
+                head: head,
                 file: file,
                 ignoringWhitespace: ignoringWhitespace
             )
@@ -359,7 +414,7 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         ignoringWhitespace: Bool
     ) async throws -> GitFileDiff {
         var arguments = [
-            "show", "--no-ext-diff", "--no-color", "--format=", "--unified=3"
+            "show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=", "--unified=3"
         ]
         if ignoringWhitespace {
             arguments.append("--ignore-all-space")
@@ -375,12 +430,146 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             as: UTF8.self
         )
         let oldPath = file.originalPath ?? file.path
-        let oldData = try await readBlob("\(hash)^:\(oldPath)", repositoryURL: repositoryURL)
-        let newData = try await readBlob("\(hash):\(file.path)", repositoryURL: repositoryURL)
+        async let oldData = readBlobIfReasonable(
+            "\(hash)^:\(oldPath)",
+            repositoryURL: repositoryURL
+        )
+        async let newData = readBlobIfReasonable(
+            "\(hash):\(file.path)",
+            repositoryURL: repositoryURL
+        )
+        let parsedHunks = GitDiffParser.parseHunks(patch)
+        let oldLineCount = parsedHunks.map {
+            $0.oldStart + max($0.oldCount, 1) - 1
+        }.max() ?? 0
+        let newLineCount = parsedHunks.map {
+            $0.newStart + max($0.newCount, 1) - 1
+        }.max() ?? 0
         return makeFileDiff(
             path: file.path,
             originalPath: file.originalPath,
             oldLabel: "\(hash.prefix(8))^",
+            newLabel: String(hash.prefix(8)),
+            oldData: try await oldData,
+            newData: try await newData,
+            oldLineCount: oldLineCount,
+            newLineCount: newLineCount,
+            patch: patch,
+            hunks: parsedHunks
+        )
+    }
+
+    private func revisionRangeFileDiff(
+        repositoryURL: URL,
+        base: String?,
+        head: String,
+        file: GitCommitFile,
+        ignoringWhitespace: Bool
+    ) async throws -> GitFileDiff {
+        let diffBase = base ?? Self.emptyTreeHash
+        var arguments = [
+            "diff", "--no-ext-diff", "--no-textconv", "--no-color", "-M",
+            "--unified=3"
+        ]
+        if ignoringWhitespace {
+            arguments.append("--ignore-all-space")
+        }
+        arguments.append(contentsOf: [diffBase, head, "--"])
+        if let originalPath = file.originalPath {
+            arguments.append(originalPath)
+        }
+        arguments.append(file.path)
+        let patch = String(
+            decoding: try await runGit(arguments, in: repositoryURL, allowsEmptyOutput: true),
+            as: UTF8.self
+        )
+        let oldPath = file.originalPath ?? file.path
+        async let oldData = readRangeBlobIfReasonable(
+            revision: base == nil ? nil : diffBase,
+            path: oldPath,
+            repositoryURL: repositoryURL
+        )
+        async let newData = readBlobIfReasonable(
+            "\(head):\(file.path)",
+            repositoryURL: repositoryURL
+        )
+        let parsedHunks = GitDiffParser.parseHunks(patch)
+        let oldLineCount = parsedHunks.map {
+            $0.oldStart + max($0.oldCount, 1) - 1
+        }.max() ?? 0
+        let newLineCount = parsedHunks.map {
+            $0.newStart + max($0.newCount, 1) - 1
+        }.max() ?? 0
+        return makeFileDiff(
+            path: file.path,
+            originalPath: file.originalPath,
+            oldLabel: base.map { String($0.prefix(8)) } ?? "Empty",
+            newLabel: String(head.prefix(8)),
+            oldData: try await oldData,
+            newData: try await newData,
+            oldLineCount: oldLineCount,
+            newLineCount: newLineCount,
+            patch: patch,
+            hunks: parsedHunks
+        )
+    }
+
+    func mergeFileDiff(
+        repositoryURL: URL,
+        hash: String,
+        parentHashes: [String],
+        file: GitCommitFile,
+        ignoringWhitespace: Bool
+    ) async throws -> GitMergeFileDiff {
+        guard parentHashes.count == 2 else {
+            throw GitRepositoryError.unsupportedMergeParentCount(parentHashes.count)
+        }
+        async let target = committedFileDiff(
+            repositoryURL: repositoryURL,
+            baseHash: parentHashes[0],
+            hash: hash,
+            file: file,
+            ignoringWhitespace: ignoringWhitespace
+        )
+        async let source = committedFileDiff(
+            repositoryURL: repositoryURL,
+            baseHash: parentHashes[1],
+            hash: hash,
+            file: file,
+            ignoringWhitespace: ignoringWhitespace
+        )
+        return try await GitMergeFileDiff(target: target, source: source)
+    }
+
+    private func committedFileDiff(
+        repositoryURL: URL,
+        baseHash: String,
+        hash: String,
+        file: GitCommitFile,
+        ignoringWhitespace: Bool
+    ) async throws -> GitFileDiff {
+        var arguments = [
+            "diff", "--no-ext-diff", "--no-color", "--unified=3"
+        ]
+        if ignoringWhitespace {
+            arguments.append("--ignore-all-space")
+        }
+        arguments.append(contentsOf: [baseHash, hash, "--"])
+        if let originalPath = file.originalPath {
+            arguments.append(originalPath)
+        }
+        arguments.append(file.path)
+        let patch = String(
+            decoding: try await runGit(arguments, in: repositoryURL, allowsEmptyOutput: true),
+            as: UTF8.self
+        )
+        let oldPath = file.originalPath ?? file.path
+        async let oldData = readBlob("\(baseHash):\(oldPath)", repositoryURL: repositoryURL)
+        async let newData = readBlob("\(hash):\(file.path)", repositoryURL: repositoryURL)
+        return try await makeFileDiff(
+            path: file.path,
+            originalPath: file.originalPath,
+            oldLabel: String(baseHash.prefix(8)),
             newLabel: String(hash.prefix(8)),
             oldData: oldData,
             newData: newData,
@@ -424,6 +613,158 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         return parseBranches(data)
     }
 
+    func pushPreparation(
+        repositoryURL: URL,
+        targetRemoteBranch: String?
+    ) async throws -> GitPushPreparation {
+        let localBranchData = try await runGit(
+            ["symbolic-ref", "--quiet", "--short", "HEAD"],
+            in: repositoryURL
+        )
+        let localBranch = decodedLine(localBranchData)
+        guard !localBranch.isEmpty else {
+            throw GitRepositoryError.commandFailed(
+                arguments: ["symbolic-ref", "--short", "HEAD"],
+                message: "Detached HEAD 状态下不能准备 Push。"
+            )
+        }
+
+        let remoteData = try await runGit(["remote"], in: repositoryURL)
+        let remotes = String(decoding: remoteData, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+        guard !remotes.isEmpty else {
+            throw GitRepositoryError.commandFailed(
+                arguments: ["remote"],
+                message: "当前 Repository 没有配置远程仓库。"
+            )
+        }
+
+        let upstream = try await optionalGitLine(
+            ["for-each-ref", "--format=%(upstream:short)", "refs/heads/\(localBranch)"],
+            in: repositoryURL
+        )
+        let upstreamComponents = upstream?.split(separator: "/", maxSplits: 1).map(String.init)
+        let branchPushRemote = try await optionalGitLine(
+            ["config", "--get", "branch.\(localBranch).pushRemote"],
+            in: repositoryURL
+        )
+        let remotePushDefault = try await optionalGitLine(
+            ["config", "--get", "remote.pushDefault"],
+            in: repositoryURL
+        )
+        let configuredRemote = branchPushRemote ?? remotePushDefault
+        let upstreamRemote = upstreamComponents?.count == 2 ? upstreamComponents?[0] : nil
+        let remote = configuredRemote
+            ?? upstreamRemote
+            ?? (remotes.contains("origin") ? "origin" : nil)
+            ?? (remotes.count == 1 ? remotes[0] : nil)
+        guard let remote, remotes.contains(remote) else {
+            throw GitRepositoryError.commandFailed(
+                arguments: ["config", "remote.pushDefault"],
+                message: "存在多个远程仓库，但当前 Branch 没有明确的 push remote。"
+            )
+        }
+
+        let remoteBranchNames = try await branches(repositoryURL: repositoryURL)
+            .filter { $0.isRemote && $0.name.hasPrefix("\(remote)/") && $0.name != "\(remote)/HEAD" }
+            .map { String($0.name.dropFirst(remote.count + 1)) }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let upstreamTarget = upstreamComponents?.count == 2 && upstreamRemote == remote
+            ? upstreamComponents?[1]
+            : nil
+        let requestedTarget = targetRemoteBranch?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = requestedTarget?.isEmpty == false
+            ? requestedTarget!
+            : (upstreamTarget ?? localBranch)
+
+        let validation = try await runGitResult(
+            ["check-ref-format", "--branch", target],
+            in: repositoryURL
+        )
+        guard validation.terminationStatus == 0 else {
+            return GitPushPreparation(
+                localBranch: localBranch,
+                remote: remote,
+                targetRemoteBranch: target,
+                remoteBranches: remoteBranchNames,
+                targetExists: remoteBranchNames.contains(target),
+                commits: [],
+                blockingMessage: "'\(target)' 不是有效的远程 Branch 名称。"
+            )
+        }
+
+        let targetExists = remoteBranchNames.contains(target)
+        let localRevision = "refs/heads/\(localBranch)"
+        let logRevision: [String]
+        var blockingMessage: String?
+        if targetExists {
+            let remoteRevision = "refs/remotes/\(remote)/\(target)"
+            let ancestry = try await runGitResult(
+                ["merge-base", "--is-ancestor", remoteRevision, localRevision],
+                in: repositoryURL
+            )
+            if ancestry.terminationStatus == 1 {
+                blockingMessage = "远程 Branch 包含当前本地 Branch 没有的提交，普通 Push 会被拒绝。请先 Pull 或合并远程改动。"
+            } else if ancestry.terminationStatus != 0 {
+                throw GitRepositoryError.commandFailed(
+                    arguments: ["merge-base", "--is-ancestor", remoteRevision, localRevision],
+                    message: decodedError(ancestry)
+                )
+            }
+            logRevision = ["\(remoteRevision)..\(localRevision)"]
+        } else {
+            logRevision = [localRevision, "--not", "--remotes=\(remote)"]
+        }
+        let commitData = try await runGit(
+            ["log", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D"] + logRevision,
+            in: repositoryURL,
+            allowsEmptyOutput: true
+        )
+        return GitPushPreparation(
+            localBranch: localBranch,
+            remote: remote,
+            targetRemoteBranch: target,
+            remoteBranches: remoteBranchNames,
+            targetExists: targetExists,
+            commits: GitHistoryParser.parse(commitData),
+            blockingMessage: blockingMessage
+        )
+    }
+
+    func pushCommitRange(
+        repositoryURL: URL,
+        commits: [GitCommitSummary]
+    ) async throws -> GitPushCommitRange {
+        guard let newest = commits.first, let oldest = commits.last else {
+            throw GitRepositoryError.commandFailed(
+                arguments: ["diff"],
+                message: "请至少选择一个 Commit。"
+            )
+        }
+        let parentData = try await runGit(
+            ["rev-list", "--parents", "--max-count=1", oldest.hash],
+            in: repositoryURL
+        )
+        let revisions = decodedLine(parentData).split(whereSeparator: \.isWhitespace).map(String.init)
+        let baseRevision = revisions.count > 1 ? revisions[1] : nil
+        let diffBase = baseRevision ?? Self.emptyTreeHash
+        let filesData = try await runGit(
+            [
+                "diff", "--name-status", "-z", "-M",
+                diffBase, newest.hash
+            ],
+            in: repositoryURL,
+            allowsEmptyOutput: true
+        )
+        return GitPushCommitRange(
+            commits: commits,
+            baseRevision: baseRevision,
+            headRevision: newest.hash,
+            files: parseCommitFiles(filesData)
+        )
+    }
+
     func authors(repositoryURL: URL) async throws -> [String] {
         let data = try await runGit(
             ["log", "--all", "--format=%an%x00"],
@@ -442,24 +783,55 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         ).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
+    func currentUserName(repositoryURL: URL) async throws -> String? {
+        let arguments = ["config", "--get", "user.name"]
+        let result = try await commandRunner.run(
+            CommandRequest(
+                executableURL: gitURL,
+                arguments: arguments,
+                workingDirectoryURL: repositoryURL,
+                environment: gitEnvironment
+            )
+        )
+        if result.terminationStatus == 1, result.standardOutput.isEmpty {
+            return nil
+        }
+        guard result.terminationStatus == 0 else {
+            let message = String(decoding: result.standardError, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw GitRepositoryError.commandFailed(arguments: arguments, message: message)
+        }
+        let name = String(decoding: result.standardOutput, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
     func commit(repositoryURL: URL, hash: String) async throws -> GitCommitDetail {
-        async let summaryData = runGit(
-            ["show", "-s", "--format=%H%x00%s%x00%an%x00%aI%x00%D", hash],
+        let summaryData = try await runGit(
+            ["show", "-s", "--format=%H%x00%s%x00%an%x00%aI%x00%D%x00%P", hash],
             in: repositoryURL
         )
-        async let filesData = runGit(
-            [
-                "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-z",
-                "-M", "-C", "--find-copies-harder", hash
-            ],
-            in: repositoryURL
-        )
-        guard let summary = parseCommit(try await summaryData) else {
+        guard let summary = parseCommit(summaryData) else {
             throw GitRepositoryError.commandFailed(arguments: ["show", hash], message: "Commit metadata was empty")
         }
+        let parentHashes = parseCommitParentHashes(summaryData)
+        let fileArguments: [String]
+        if parentHashes.count > 1 {
+            fileArguments = [
+                "diff-tree", "--root", "--cc", "--no-commit-id", "--name-status", "-r", "-z",
+                hash
+            ]
+        } else {
+            fileArguments = [
+                "diff-tree", "--root", "--no-commit-id", "--name-status", "-r", "-z",
+                "-M", "-C", "--find-copies-harder", hash
+            ]
+        }
+        let filesData = try await runGit(fileArguments, in: repositoryURL)
         return GitCommitDetail(
             summary: summary,
-            files: parseCommitFiles(try await filesData)
+            files: parseCommitFiles(filesData),
+            parentHashes: parentHashes
         )
     }
 
@@ -470,7 +842,10 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         newLabel: String,
         oldData: Data?,
         newData: Data?,
-        patch: String
+        oldLineCount: Int? = nil,
+        newLineCount: Int? = nil,
+        patch: String,
+        hunks: [GitDiffHunk]? = nil
     ) -> GitFileDiff {
         let isBinary = patch.contains("Binary files ")
             || patch.contains("GIT binary patch")
@@ -483,7 +858,9 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             newLabel: newLabel,
             oldLines: isBinary ? [] : GitDiffParser.lines(from: oldData),
             newLines: isBinary ? [] : GitDiffParser.lines(from: newData),
-            hunks: isBinary ? [] : GitDiffParser.parseHunks(patch),
+            oldLineCount: isBinary ? 0 : oldLineCount,
+            newLineCount: isBinary ? 0 : newLineCount,
+            hunks: isBinary ? [] : (hunks ?? GitDiffParser.parseHunks(patch)),
             isBinary: isBinary
         )
     }
@@ -518,6 +895,44 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         throw GitRepositoryError.commandFailed(arguments: arguments, message: message)
     }
 
+    private func readRangeBlobIfReasonable(
+        revision: String?,
+        path: String,
+        repositoryURL: URL
+    ) async throws -> Data? {
+        guard let revision else { return nil }
+        return try await readBlobIfReasonable(
+            "\(revision):\(path)",
+            repositoryURL: repositoryURL
+        )
+    }
+
+    private func readBlobIfReasonable(
+        _ revisionAndPath: String,
+        repositoryURL: URL
+    ) async throws -> Data? {
+        let sizeResult = try await runGitResult(
+            ["cat-file", "-s", revisionAndPath],
+            in: repositoryURL
+        )
+        guard sizeResult.terminationStatus == 0 else {
+            let message = decodedError(sizeResult)
+            if message.contains("does not exist")
+                || message.contains("exists on disk, but not in")
+                || message.contains("invalid object name")
+                || message.contains("bad revision") {
+                return nil
+            }
+            throw GitRepositoryError.commandFailed(
+                arguments: ["cat-file", "-s", revisionAndPath],
+                message: message
+            )
+        }
+        let size = Int(decodedLine(sizeResult.standardOutput)) ?? .max
+        guard size <= Self.maximumInitialDiffBlobBytes else { return nil }
+        return try await readBlob(revisionAndPath, repositoryURL: repositoryURL)
+    }
+
     private func runGit(
         _ arguments: [String],
         in repositoryURL: URL,
@@ -542,6 +957,49 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         return result.standardOutput
     }
 
+    private func runGitResult(
+        _ arguments: [String],
+        in repositoryURL: URL
+    ) async throws -> CommandResult {
+        try await commandRunner.run(
+            CommandRequest(
+                executableURL: gitURL,
+                arguments: arguments,
+                workingDirectoryURL: repositoryURL,
+                environment: gitEnvironment
+            )
+        )
+    }
+
+    private func optionalGitLine(
+        _ arguments: [String],
+        in repositoryURL: URL
+    ) async throws -> String? {
+        let result = try await runGitResult(arguments, in: repositoryURL)
+        if result.terminationStatus == 1, result.standardOutput.isEmpty {
+            return nil
+        }
+        guard result.terminationStatus == 0 else {
+            throw GitRepositoryError.commandFailed(
+                arguments: arguments,
+                message: decodedError(result)
+            )
+        }
+        let value = decodedLine(result.standardOutput)
+        return value.isEmpty ? nil : value
+    }
+
+    private func decodedLine(_ data: Data) -> String {
+        String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func decodedError(_ result: CommandResult) -> String {
+        let data = result.standardError.isEmpty ? result.standardOutput : result.standardError
+        let message = decodedLine(data)
+        return message.isEmpty ? "Git 未返回错误信息。" : message
+    }
+
     private func parseCommit(_ data: Data) -> GitCommitSummary? {
         let fields = data.split(separator: 0, omittingEmptySubsequences: false)
         guard fields.count >= 4 else { return nil }
@@ -560,6 +1018,15 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             authoredAt: ISO8601DateFormatter().date(from: dateText),
             refs: refs
         )
+    }
+
+    private func parseCommitParentHashes(_ data: Data) -> [String] {
+        let fields = data.split(separator: 0, omittingEmptySubsequences: false)
+        guard fields.count > 5 else { return [] }
+        return String(decoding: fields[5], as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
     }
 
     private var gitEnvironment: [String: String] {
@@ -599,7 +1066,7 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         var index = 0
         while index < records.count {
             let statusText = String(decoding: records[index], as: UTF8.self)
-            let status = GitStatusCode(character: statusText.first)
+            let status = parseCommitStatus(statusText)
             guard index + 1 < records.count else { break }
             let firstPath = String(decoding: records[index + 1], as: UTF8.self)
             if status == .renamed || status == .copied, index + 2 < records.count {
@@ -612,6 +1079,17 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             }
         }
         return files
+    }
+
+    private func parseCommitStatus(_ statusText: String) -> GitStatusCode {
+        guard statusText.count > 1,
+              !statusText.dropFirst().allSatisfy(\.isNumber) else {
+            return GitStatusCode(character: statusText.first)
+        }
+        let statuses = statusText.map { GitStatusCode(character: $0) }
+        if statuses.allSatisfy({ $0 == .added }) { return .added }
+        if statuses.allSatisfy({ $0 == .deleted }) { return .deleted }
+        return .modified
     }
 
     private func escapedExtendedRegularExpression(_ value: String) -> String {

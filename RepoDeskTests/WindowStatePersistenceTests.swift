@@ -16,12 +16,29 @@ struct WindowStatePersistenceTests {
             selectedSection: .changes,
             selectedFilePath: "/tmp/workspace/README.md",
             selectedFileShowsMarkdownPreview: true,
+            fileTabSessionsByContext: [
+                "workspace": FileTabSessionState(
+                    tabs: [
+                        PersistedFileTab(
+                            path: "/tmp/workspace/README.md",
+                            showsMarkdownPreview: true,
+                            visibleLine: 18
+                        ),
+                        PersistedFileTab(path: "/tmp/workspace/Sources/App.swift", visibleLine: 42)
+                    ],
+                    selectedFilePath: "/tmp/workspace/README.md"
+                ),
+                "repository:repo": FileTabSessionState(
+                    tabs: [PersistedFileTab(path: "/tmp/workspace/repo/pom.xml")],
+                    selectedFilePath: "/tmp/workspace/repo/pom.xml"
+                )
+            ],
             selectedChangesByRepository: [
                 "repo": GitChangeSelection(path: "file.swift", kind: .changes)
             ],
             selectedChangeRepositoryID: "repo",
             historyBranchFiltersByRepository: ["repo": .branch("release")],
-            historyAuthorFiltersByRepository: ["repo": "RepoDesk"],
+            historyAuthorFiltersByRepository: ["repo": .author("RepoDesk")],
             selectedCommitHashesByRepository: ["repo": "abc123"],
             selectedCommitFilesByRepository: [
                 "repo": HistoryCommitFileSelection(commitHash: "abc123", path: "Sources/App.swift")
@@ -29,6 +46,7 @@ struct WindowStatePersistenceTests {
             mavenSelectionsByRepository: ["repo": .recentRun(runID)],
             changesRepositoryScopeID: "repo",
             changesGrouping: [.directory, .module],
+            historyGrouping: .module,
             navigationRepositoryID: "repo",
             historyVerticalSplitFraction: 0.64,
             historyHorizontalSplitFraction: 0.43
@@ -52,13 +70,15 @@ struct WindowStatePersistenceTests {
                 selectedSection: .changes,
                 selectedFilePath: nil,
                 selectedChangesByRepository: [:],
-                changesGrouping: grouping
+                changesGrouping: grouping,
+                historyGrouping: grouping
             )
 
             let data = try JSONEncoder().encode(state)
             let decoded = try JSONDecoder().decode(WorkspaceWindowState.self, from: data)
 
             #expect(decoded.changesGrouping == grouping)
+            #expect(decoded.historyGrouping == grouping)
         }
     }
 
@@ -84,11 +104,45 @@ struct WindowStatePersistenceTests {
         #expect(state.mavenSelectionsByRepository.isEmpty)
         #expect(state.selectedChangeRepositoryID == nil)
         #expect(!state.selectedFileShowsMarkdownPreview)
+        #expect(state.fileTabSessionsByContext.isEmpty)
         #expect(state.changesRepositoryScopeID == nil)
         #expect(state.changesGrouping == .directory)
+        #expect(state.historyGrouping == .directory)
         #expect(state.navigationRepositoryID == nil)
         #expect(state.historyVerticalSplitFraction == HistorySplitLayout.defaultVerticalFraction)
         #expect(state.historyHorizontalSplitFraction == HistorySplitLayout.defaultHorizontalFraction)
+    }
+
+    @Test func selectMeAuthorFilterRoundTrips() throws {
+        let state = WorkspaceWindowState(
+            selectedSection: .history,
+            selectedFilePath: nil,
+            selectedChangesByRepository: [:],
+            historyAuthorFiltersByRepository: ["repo": .me]
+        )
+
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(WorkspaceWindowState.self, from: data)
+
+        #expect(decoded.historyAuthorFiltersByRepository["repo"] == .me)
+    }
+
+    @Test func legacyStringAuthorFilterDecodesAsNamedAuthor() throws {
+        let data = Data(
+            """
+            {
+              "selectedSection": "History",
+              "selectedChangesByRepository": {},
+              "historyAuthorFiltersByRepository": {
+                "repo": "RepoDesk"
+              }
+            }
+            """.utf8
+        )
+
+        let state = try JSONDecoder().decode(WorkspaceWindowState.self, from: data)
+
+        #expect(state.historyAuthorFiltersByRepository["repo"] == .author("RepoDesk"))
     }
 
     @Test func legacySingleGroupingValueStillDecodes() throws {
@@ -141,5 +195,16 @@ struct WindowStatePersistenceTests {
 
         #expect(state.historyVerticalSplitFraction == 0.95)
         #expect(state.historyHorizontalSplitFraction == 0.05)
+    }
+
+    @Test func persistedFileTabUsesDefaultsForLegacyFields() throws {
+        let tab = try JSONDecoder().decode(
+            PersistedFileTab.self,
+            from: Data(#"{"path":"/tmp/workspace/App.swift"}"#.utf8)
+        )
+
+        #expect(tab.path == "/tmp/workspace/App.swift")
+        #expect(!tab.showsMarkdownPreview)
+        #expect(tab.visibleLine == 1)
     }
 }

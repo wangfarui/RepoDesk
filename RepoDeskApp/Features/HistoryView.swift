@@ -8,6 +8,9 @@ struct HistoryView: View {
     @State private var showsUserFilter = false
     @State private var branchQuery = ""
     @State private var userQuery = ""
+    @State private var expandedCommitFileNodeIDs: Set<String> = []
+    @State private var isFlatCommitFileListExpanded = true
+    @State private var contextMenuCommitFileRowID: String?
 
     var body: some View {
         Group {
@@ -88,7 +91,7 @@ struct HistoryView: View {
             VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 8) {
                     Label("Commit 记录", systemImage: "clock.arrow.circlepath")
-                        .font(.headline)
+                        .fontWeight(.semibold)
                     Spacer()
                     if let repository = appState.selectedRepository {
                         Text(repository.name)
@@ -107,7 +110,7 @@ struct HistoryView: View {
                         branchFilterPopover
                     }
 
-                    filterButton(title: appState.historyAuthorFilter ?? "全部 User", icon: "person") {
+                    filterButton(title: authorFilterTitle, icon: "person") {
                         userQuery = ""
                         showsUserFilter.toggle()
                     }
@@ -116,7 +119,7 @@ struct HistoryView: View {
                     }
                 }
 
-                if appState.isLoadingBranches || appState.isLoadingHistoryAuthors {
+                if appState.showsHistoryLoadingIndicator {
                     ProgressView().controlSize(.small)
                 }
                 if let error = appState.branchesErrorMessage {
@@ -129,6 +132,12 @@ struct HistoryView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
+                if appState.historyAuthorFilter == .me,
+                   let error = appState.historyCurrentUserErrorMessage {
+                    Label(error, systemImage: "person.crop.circle.badge.questionmark")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
             .padding(10)
 
@@ -139,7 +148,7 @@ struct HistoryView: View {
                     ForEach(appState.commitHistory) { commit in
                         commitRow(commit)
                     }
-                    if appState.isLoadingHistory {
+                    if appState.showsHistoryLoadingIndicator {
                         ProgressView("正在加载 Commit…").padding(8)
                     } else if appState.hasMoreHistory {
                         Button("加载更多", systemImage: "arrow.down.circle") {
@@ -200,13 +209,37 @@ struct HistoryView: View {
 
     private var userFilterPopover: some View {
         SearchableFilterPopover(query: $userQuery, placeholder: "搜索 User") {
-            filterOption("全部 User", isSelected: appState.historyAuthorFilter == nil) {
-                appState.selectHistoryAuthorFilter(nil)
+            filterOption("全部 User", isSelected: appState.historyAuthorFilter == .all) {
+                appState.selectHistoryAuthorFilter(.all)
                 showsUserFilter = false
             }
+            filterOption("Select Me", isSelected: appState.historyAuthorFilter == .me) {
+                appState.selectHistoryAuthorFilter(.me)
+                showsUserFilter = false
+            }
+            .disabled(appState.historyCurrentUserName == nil)
+            .help(selectMeHelp)
+
+            if let userName = appState.historyCurrentUserName {
+                Text("当前 Git 用户：\(userName)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 27)
+                    .padding(.bottom, 4)
+            } else if let error = appState.historyCurrentUserErrorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 27)
+                    .padding(.bottom, 4)
+            }
+
+            if !filteredAuthors.isEmpty {
+                Divider().padding(.vertical, 3)
+            }
             ForEach(filteredAuthors, id: \.self) { author in
-                filterOption(author, isSelected: appState.historyAuthorFilter == author) {
-                    appState.selectHistoryAuthorFilter(author)
+                filterOption(author, isSelected: appState.historyAuthorFilter == .author(author)) {
+                    appState.selectHistoryAuthorFilter(.author(author))
                     showsUserFilter = false
                 }
             }
@@ -330,7 +363,7 @@ struct HistoryView: View {
     private func commitHeader(_ detail: GitCommitDetail) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(detail.summary.subject)
-                .font(.callout.weight(.semibold))
+                .fontWeight(.semibold)
                 .lineLimit(2)
             HStack(spacing: 8) {
                 Text(detail.summary.author)
@@ -351,48 +384,215 @@ struct HistoryView: View {
 
     private func commitFiles(_ detail: GitCommitDetail) -> some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("改动文件").font(.headline)
+            HStack(spacing: 8) {
+                Text("改动文件").fontWeight(.semibold)
                 Spacer()
+
+                Menu("Group By", systemImage: "eye") {
+                    Section("Group By") {
+                        Toggle("Directory", isOn: historyGroupingOptionBinding(.directory))
+                            .keyboardShortcut("p", modifiers: .control)
+                        Toggle("Module", isOn: historyGroupingOptionBinding(.module))
+                            .keyboardShortcut("m", modifiers: .control)
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .labelStyle(.iconOnly)
+                .frame(width: 24, height: 24)
+                .contentShape(.rect)
+                .help("Group By")
+
+                Button("展开全部", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    expandAllCommitFiles(detail)
+                }
+                .buttonStyle(.borderless)
+                .labelStyle(.iconOnly)
+                .frame(width: 24, height: 24)
+                .contentShape(.rect)
+                .disabled(detail.files.isEmpty)
+                .help("Expand All")
+
+                Button("折叠全部", systemImage: "arrow.down.right.and.arrow.up.left") {
+                    collapseAllCommitFiles()
+                }
+                .buttonStyle(.borderless)
+                .labelStyle(.iconOnly)
+                .frame(width: 24, height: 24)
+                .contentShape(.rect)
+                .disabled(detail.files.isEmpty)
+                .help("Collapse All")
+
                 Text("\(detail.files.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 10)
             .frame(height: 38)
             Divider()
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(detail.files) { file in
-                        Button {
-                            appState.selectCommitFile(file)
-                        } label: {
-                            HStack(spacing: 7) {
-                                FileTypeIcon(path: file.path)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(URL(fileURLWithPath: file.path).lastPathComponent).lineLimit(1)
-                                    Text(filePathDetail(file))
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
-                                Spacer(minLength: 4)
-                                CommitStatusBadge(status: file.status)
-                            }
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 5)
-                            .contentShape(.rect)
+            if !appState.historyGrouping.isEmpty || isFlatCommitFileListExpanded {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(commitFileOutlineRows(detail)) { row in
+                            commitFileOutlineRow(row)
                         }
-                        .buttonStyle(.plain)
-                        .background(
-                            appState.selectedCommitFile == file ? Color.accentColor.opacity(0.14) : .clear,
-                            in: .rect(cornerRadius: 5)
-                        )
-                        .help(file.path)
                     }
+                    .padding(6)
                 }
-                .padding(6)
             }
         }
+        .task(id: commitFileExpansionTaskID(detail)) {
+            isFlatCommitFileListExpanded = true
+            expandedCommitFileNodeIDs.removeAll()
+            if ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: detail.files.count) {
+                expandAllCommitFiles(detail)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func commitFileOutlineRow(_ row: HistoryFileOutlineRow) -> some View {
+        switch row {
+        case .directory(let id, let name, let path, let depth, let count, let modulePath):
+            commitFileGroupRow(
+                id: id,
+                title: name,
+                subtitle: nil,
+                count: count,
+                depth: depth,
+                icon: "folder",
+                pathCopyValues: commitPathCopyValues(
+                    FileSystemPathCopyValues.repositoryDirectoryPath(
+                        path: path,
+                        modulePath: modulePath
+                    )
+                )
+            )
+        case .module(let id, let name, let path, let count):
+            commitFileGroupRow(
+                id: id,
+                title: name,
+                subtitle: path == "." ? "Repository 根目录" : path,
+                count: count,
+                depth: 0,
+                icon: path == "." ? "shippingbox" : "shippingbox.fill",
+                pathCopyValues: nil
+            )
+        case .file(_, let file, let depth, let modulePath):
+            commitFileRow(file, depth: depth, modulePath: modulePath)
+        }
+    }
+
+    private func commitFileGroupRow(
+        id: String,
+        title: String,
+        subtitle: String?,
+        count: Int,
+        depth: Int,
+        icon: String,
+        pathCopyValues: FileSystemPathCopyValues?
+    ) -> some View {
+        let isExpanded = expandedCommitFileNodeIDs.contains(id)
+        return Button {
+            toggleCommitFileNode(id)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2)
+                    .frame(width: 10)
+                Image(systemName: icon == "folder" && isExpanded ? "folder.fill" : icon)
+                    .foregroundStyle(icon.hasPrefix("shippingbox") ? .orange : .blue)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).lineLimit(1)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Spacer(minLength: 4)
+                Text("\(count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .padding(.leading, CGFloat(depth) * 14)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .background(contextMenuBackground(for: id), in: .rect(cornerRadius: 5))
+        .help(isExpanded ? "折叠 \(title)" : "展开 \(title)")
+        .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+        .fileSystemPathCopyMenu(
+            pathCopyValues,
+            isContextMenuPresented: contextMenuPresentationBinding(for: id)
+        )
+    }
+
+    private func commitFileRow(
+        _ file: GitCommitFile,
+        depth: Int,
+        modulePath: String?
+    ) -> some View {
+        let rowID = "file:\(file.path)"
+        return Button {
+            appState.selectCommitFile(file)
+        } label: {
+            HStack(spacing: 7) {
+                FileTypeIcon(path: file.path)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(URL(fileURLWithPath: file.path).lastPathComponent).lineLimit(1)
+                    if let detail = commitFilePathDetail(file, modulePath: modulePath) {
+                        Text(detail)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Spacer(minLength: 4)
+                CommitStatusBadge(status: file.status)
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .padding(.leading, CGFloat(depth) * 14)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .background(
+            commitFileBackground(file, rowID: rowID),
+            in: .rect(cornerRadius: 5)
+        )
+        .help(file.path)
+        .fileSystemPathCopyMenu(
+            commitPathCopyValues(file.path),
+            isContextMenuPresented: contextMenuPresentationBinding(for: rowID)
+        )
+    }
+
+    private func commitFileBackground(_ file: GitCommitFile, rowID: String) -> Color {
+        if appState.selectedCommitFile == file {
+            return Color.accentColor.opacity(0.14)
+        }
+        return contextMenuBackground(for: rowID)
+    }
+
+    private func contextMenuBackground(for rowID: String) -> Color {
+        contextMenuCommitFileRowID == rowID ? Color.accentColor.opacity(0.06) : .clear
+    }
+
+    private func contextMenuPresentationBinding(for rowID: String) -> Binding<Bool> {
+        Binding(
+            get: { contextMenuCommitFileRowID == rowID },
+            set: { isPresented in
+                if isPresented {
+                    contextMenuCommitFileRowID = rowID
+                } else if contextMenuCommitFileRowID == rowID {
+                    contextMenuCommitFileRowID = nil
+                }
+            }
+        )
     }
 
     private var commitFileDiff: some View {
@@ -400,7 +600,19 @@ struct HistoryView: View {
             Group {
                 if let repository = appState.selectedRepository,
                    let file = appState.selectedCommitFile,
-                   let diff = appState.commitFileDiff {
+                   let diff = appState.mergeCommitFileDiff {
+                    GitMergeDiffView(
+                        diff: diff,
+                        ignoresWhitespace: appState.ignoresWhitespaceInDiff,
+                        toggleIgnoreWhitespace: appState.toggleIgnoreWhitespace,
+                        jumpToSource: { line in
+                            appState.jumpToSource(repositoryID: repository.id, path: file.path, line: line)
+                        },
+                        fontSize: CGFloat(appState.fileContentFontSize)
+                    )
+                } else if let repository = appState.selectedRepository,
+                          let file = appState.selectedCommitFile,
+                          let diff = appState.commitFileDiff {
                     GitDiffView(
                         diff: diff,
                         ignoresWhitespace: appState.ignoresWhitespaceInDiff,
@@ -408,7 +620,8 @@ struct HistoryView: View {
                         jumpToSource: { line in
                             appState.jumpToSource(repositoryID: repository.id, path: file.path, line: line)
                         },
-                        lockedPresentation: .sideBySide
+                        lockedPresentation: .sideBySide,
+                        fontSize: CGFloat(appState.fileContentFontSize)
                     )
                 } else {
                     ContentUnavailableView(
@@ -472,9 +685,135 @@ struct HistoryView: View {
         }
     }
 
-    private func filePathDetail(_ file: GitCommitFile) -> String {
-        if let originalPath = file.originalPath { return "\(originalPath) → \(file.path)" }
-        return file.path
+    private var authorFilterTitle: String {
+        switch appState.historyAuthorFilter {
+        case .all: "全部 User"
+        case .me: "Select Me"
+        case .author(let author): author
+        }
+    }
+
+    private var selectMeHelp: String {
+        if let userName = appState.historyCurrentUserName {
+            return "查看当前 Git 用户 \(userName) 的 Commit"
+        }
+        return appState.historyCurrentUserErrorMessage ?? "当前 Git 用户不可用"
+    }
+
+    private func historyGroupingOptionBinding(_ grouping: GitChangesGrouping) -> Binding<Bool> {
+        Binding(
+            get: { appState.historyGrouping.contains(grouping) },
+            set: { isEnabled in
+                guard isEnabled != appState.historyGrouping.contains(grouping) else { return }
+                appState.toggleHistoryGrouping(grouping)
+            }
+        )
+    }
+
+    private func commitFileOutlineRows(_ detail: GitCommitDetail) -> [HistoryFileOutlineRow] {
+        guard let repository = appState.selectedRepository,
+              let repositoryURL = selectedRepositoryURL else { return [] }
+        var resolver = ChangeModulePathResolver(repositoryURL: repositoryURL)
+        return HistoryFileOutlineBuilder.rows(
+            files: detail.files,
+            namespace: commitFileNamespace(detail),
+            repositoryName: repository.name,
+            grouping: appState.historyGrouping,
+            expandedNodeIDs: expandedCommitFileNodeIDs
+        ) { file in
+            resolver.modulePath(for: file.path)
+        }
+    }
+
+    private func expandAllCommitFiles(_ detail: GitCommitDetail) {
+        isFlatCommitFileListExpanded = true
+        guard let repositoryURL = selectedRepositoryURL else { return }
+        var resolver = ChangeModulePathResolver(repositoryURL: repositoryURL)
+        expandedCommitFileNodeIDs.formUnion(
+            HistoryFileOutlineBuilder.expandableNodeIDs(
+                files: detail.files,
+                namespace: commitFileNamespace(detail),
+                grouping: appState.historyGrouping
+            ) { file in
+                resolver.modulePath(for: file.path)
+            }
+        )
+    }
+
+    private func collapseAllCommitFiles() {
+        if appState.historyGrouping.isEmpty {
+            isFlatCommitFileListExpanded = false
+        } else {
+            expandedCommitFileNodeIDs.removeAll()
+        }
+    }
+
+    private func toggleCommitFileNode(_ id: String) {
+        if expandedCommitFileNodeIDs.remove(id) == nil {
+            expandedCommitFileNodeIDs.insert(id)
+        }
+    }
+
+    private func commitFileNamespace(_ detail: GitCommitDetail) -> String {
+        "history:\(detail.summary.hash)"
+    }
+
+    private func commitFileExpansionTaskID(_ detail: GitCommitDetail) -> String {
+        "\(detail.summary.hash)|\(appState.historyGrouping.rawValue)|\(detail.files.count)"
+    }
+
+    private var selectedRepositoryURL: URL? {
+        guard let workspace = appState.workspace,
+              let repository = appState.selectedRepository else { return nil }
+        let workspaceURL = URL(fileURLWithPath: workspace.path, isDirectory: true)
+        return repository.relativePath == "."
+            ? workspaceURL
+            : workspaceURL.appendingPathComponent(repository.relativePath, isDirectory: true)
+    }
+
+    private func commitPathCopyValues(
+        _ relativePath: String
+    ) -> FileSystemPathCopyValues? {
+        guard let selectedRepositoryURL else { return nil }
+        return FileSystemPathCopyValues(
+            relativePath: relativePath,
+            rootURL: selectedRepositoryURL
+        )
+    }
+
+    private func commitFilePathDetail(_ file: GitCommitFile, modulePath: String?) -> String? {
+        if let originalPath = file.originalPath {
+            return "\(originalPath) → \(file.path)"
+        }
+        if appState.historyGrouping == .module, let modulePath {
+            return moduleRelativePackage(file.path, modulePath: modulePath)
+        }
+        if appState.historyGrouping.isEmpty {
+            return parentPath(file.path)
+        }
+        return nil
+    }
+
+    private func moduleRelativePackage(_ path: String, modulePath: String) -> String {
+        var relative = path
+        if modulePath != ".", relative.hasPrefix(modulePath + "/") {
+            relative.removeFirst(modulePath.count + 1)
+        }
+        let directory = relative.split(separator: "/").dropLast().map(String.init)
+        let sourceRoots = ["src/main/java", "src/test/java", "src/main/kotlin", "src/test/kotlin"]
+        var display = directory.joined(separator: "/")
+        for root in sourceRoots where display == root || display.hasPrefix(root + "/") {
+            display = String(display.dropFirst(root.count)).trimmingCharacters(
+                in: CharacterSet(charactersIn: "/")
+            )
+            return display.isEmpty ? root : display.replacingOccurrences(of: "/", with: ".")
+        }
+        return display.isEmpty ? "Module 根目录" : display
+    }
+
+    private func parentPath(_ path: String) -> String? {
+        let components = path.split(separator: "/").dropLast()
+        return components.isEmpty ? nil : components.joined(separator: "/")
     }
 
     private func copy(_ value: String) {

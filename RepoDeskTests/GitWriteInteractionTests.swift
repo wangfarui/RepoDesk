@@ -206,13 +206,120 @@ struct GitWriteInteractionTests {
         state.selectSection(.history)
         state.historyBranchFilter = .all
 
-        await state.fetchCurrentRepository()
+        await state.performGitRemoteOperation(.fetch)
 
         #expect(await gitOperator.fetchCount() == 1)
         #expect((await gitOperator.switchedBranchNames()).isEmpty)
         #expect(state.branches == [remoteBranch])
         #expect(state.commitHistory.map(\.hash) == ["remote-tip"])
         #expect(await reader.historyRevisions() == ["--all"])
+        guard case .succeeded(let result) = state.gitRemoteOperationState else {
+            Issue.record("Fetch did not publish a success state")
+            return
+        }
+        #expect(result.context.kind == .fetch)
+        #expect(result.context.repositoryID == repository.id)
+        #expect(result.context.branch == "main")
+    }
+
+    @Test func remoteOperationPublishesRunningStateAndBlocksConcurrentGitActions() async {
+        let repository = makeRepository()
+        let gitOperator = ControlledFetchGitRepositoryOperator()
+        let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.repositorySnapshots[repository.id] = cleanSnapshot(branch: "main")
+        state.selectRepositoryContext(repository.id)
+
+        let operation = Task { await state.performGitRemoteOperation(.fetch) }
+        await gitOperator.waitUntilFetchStarts()
+
+        guard case .running(let context) = state.gitRemoteOperationState else {
+            Issue.record("Fetch did not publish a running state")
+            return
+        }
+        #expect(context.kind == .fetch)
+        #expect(context.repositoryName == repository.name)
+        #expect(context.branch == "main")
+        #expect(state.isGitWriteOperationRunning)
+
+        await state.performGitRemoteOperation(.push)
+        #expect(await gitOperator.pushCount() == 0)
+
+        await gitOperator.finishFetch()
+        await operation.value
+        guard case .succeeded(let result) = state.gitRemoteOperationState else {
+            Issue.record("Fetch did not publish a success state")
+            return
+        }
+        #expect(result.context.id == context.id)
+    }
+
+    @Test func failedRemoteOperationCanBeRetried() async {
+        let repository = makeRepository()
+        let gitOperator = RecordingGitRepositoryOperator(fetchFailures: 1)
+        let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.repositorySnapshots[repository.id] = cleanSnapshot(branch: "main")
+        state.selectRepositoryContext(repository.id)
+
+        await state.performGitRemoteOperation(.fetch)
+        guard case .failed(let context, let message) = state.gitRemoteOperationState else {
+            Issue.record("Fetch failure was not published")
+            return
+        }
+        #expect(context.kind == .fetch)
+        #expect(message == "remote unavailable")
+
+        await state.retryGitRemoteOperation()
+        #expect(await gitOperator.fetchCount() == 2)
+        guard case .succeeded(let result) = state.gitRemoteOperationState else {
+            Issue.record("Retried Fetch did not succeed")
+            return
+        }
+        #expect(result.context.kind == .fetch)
+    }
+
+    @Test func pullConflictPublishesPersistentConflictState() async {
+        let repository = makeRepository()
+        let conflict = GitConflictFile(
+            path: "Sources/App.swift",
+            ours: "ours",
+            theirs: "theirs",
+            result: "conflict",
+            isResolved: false
+        )
+        let gitOperator = RecordingGitRepositoryOperator(pullConflictFiles: [conflict])
+        let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.repositorySnapshots[repository.id] = cleanSnapshot(branch: "main")
+        state.selectRepositoryContext(repository.id)
+
+        await state.performGitRemoteOperation(.pull)
+
+        guard case .requiresConflictResolution(let context, let fileCount) = state.gitRemoteOperationState else {
+            Issue.record("Pull conflict state was not published")
+            return
+        }
+        #expect(context.kind == .pull)
+        #expect(fileCount == 1)
+        #expect(state.conflictFiles == [conflict])
+        #expect(state.mergeSourceBranch == "upstream")
+        #expect(state.isGitWriteOperationRunning)
+    }
+
+    @Test func pushWithNoNewCommitsPublishesInformationalState() async {
+        let repository = makeRepository()
+        let gitOperator = RecordingGitRepositoryOperator(pushOutcome: .upToDate)
+        let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.repositorySnapshots[repository.id] = cleanSnapshot(branch: "main")
+        state.selectRepositoryContext(repository.id)
+
+        await state.performGitRemoteOperation(.push)
+
+        #expect(await gitOperator.pushCount() == 1)
+        guard case .noChangesToPush(let context) = state.gitRemoteOperationState else {
+            Issue.record("Up-to-date Push did not publish the informational state")
+            return
+        }
+        #expect(context.kind == .push)
+        #expect(context.branch == "main")
     }
 
     private func makeState(
@@ -268,14 +375,26 @@ struct GitWriteInteractionTests {
 
 private actor RecordingGitRepositoryOperator: GitRepositoryOperating {
     private var remainingPushFailures: Int
+    private var remainingFetchFailures: Int
+    private let pullConflictFiles: [GitConflictFile]
+    private let pushOutcome: GitPushOutcome
     private var commitMessages: [String] = []
     private var pushes = 0
     private var fetches = 0
     private var branchNames: [String] = []
     private var commitPaths: [[String]] = []
 
-    init(failsPush: Bool = false, pushFailures: Int? = nil) {
+    init(
+        failsPush: Bool = false,
+        pushFailures: Int? = nil,
+        fetchFailures: Int = 0,
+        pullConflictFiles: [GitConflictFile] = [],
+        pushOutcome: GitPushOutcome = .pushed
+    ) {
         remainingPushFailures = pushFailures ?? (failsPush ? 1 : 0)
+        remainingFetchFailures = fetchFailures
+        self.pullConflictFiles = pullConflictFiles
+        self.pushOutcome = pushOutcome
     }
 
     func createCommit(repositoryURL: URL, message: String) async throws -> GitCreatedCommit {
@@ -301,9 +420,26 @@ private actor RecordingGitRepositoryOperator: GitRepositoryOperating {
         }
     }
 
+    func pushCurrentBranchOutcome(repositoryURL: URL) async throws -> GitPushOutcome {
+        try await pushCurrentBranch(repositoryURL: repositoryURL)
+        return pushOutcome
+    }
+
     func fetch(repositoryURL: URL) async throws {
         fetches += 1
+        if remainingFetchFailures > 0 {
+            remainingFetchFailures -= 1
+            throw GitWriteTestError.remoteFailed
+        }
     }
+
+    func pullCurrentBranch(repositoryURL: URL) async throws {
+        if !pullConflictFiles.isEmpty {
+            throw GitWriteTestError.remoteFailed
+        }
+    }
+
+    func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile] { pullConflictFiles }
 
     func switchBranch(repositoryURL: URL, branch: GitBranch) async throws {
         branchNames.append(branch.name)
@@ -314,6 +450,42 @@ private actor RecordingGitRepositoryOperator: GitRepositoryOperating {
     func fetchCount() -> Int { fetches }
     func switchedBranchNames() -> [String] { branchNames }
     func committedPaths() -> [[String]] { commitPaths }
+}
+
+private actor ControlledFetchGitRepositoryOperator: GitRepositoryOperating {
+    private var fetchStarted = false
+    private var fetchStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var fetchContinuation: CheckedContinuation<Void, Never>?
+    private var pushes = 0
+
+    func createCommit(repositoryURL: URL, message: String) async throws -> GitCreatedCommit {
+        GitCreatedCommit(hash: "unused")
+    }
+
+    func fetch(repositoryURL: URL) async throws {
+        fetchStarted = true
+        fetchStartWaiters.forEach { $0.resume() }
+        fetchStartWaiters = []
+        await withCheckedContinuation { fetchContinuation = $0 }
+    }
+
+    func pushCurrentBranch(repositoryURL: URL) async throws {
+        pushes += 1
+    }
+
+    func switchBranch(repositoryURL: URL, branch: GitBranch) async throws {}
+
+    func waitUntilFetchStarts() async {
+        guard !fetchStarted else { return }
+        await withCheckedContinuation { fetchStartWaiters.append($0) }
+    }
+
+    func finishFetch() {
+        fetchContinuation?.resume()
+        fetchContinuation = nil
+    }
+
+    func pushCount() -> Int { pushes }
 }
 
 private actor ControlledCommitGitRepositoryOperator: GitRepositoryOperating {
@@ -490,6 +662,7 @@ private struct GitWriteReader: GitRepositoryReading {
 
 private enum GitWriteTestError: LocalizedError {
     case pushFailed
+    case remoteFailed
 
     var errorDescription: String? { "remote unavailable" }
 }

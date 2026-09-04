@@ -45,6 +45,52 @@ struct GitRepositoryIntegrationTests {
         #expect(newLines[1].isUncommitted)
         #expect(newLines[1].author == "未提交")
     }
+
+    @Test func currentUserNameReadsEffectiveRepositoryConfiguration() async throws {
+        let fixture = try await GitRepositoryFixture()
+        defer { fixture.remove() }
+
+        let userName = try await SystemGitRepositoryReader().currentUserName(
+            repositoryURL: fixture.url
+        )
+
+        #expect(userName == "RepoDesk Tests")
+    }
+
+    @Test func currentUserNameReturnsNilWhenConfigurationIsMissing() async throws {
+        let repositoryURL = URL(fileURLWithPath: "/tmp/repository", isDirectory: true)
+        let runner = FixedCommandRunner(
+            result: CommandResult(
+                standardOutput: Data(),
+                standardError: Data(),
+                terminationStatus: 1
+            )
+        )
+        let reader = SystemGitRepositoryReader(commandRunner: runner)
+
+        let userName = try await reader.currentUserName(repositoryURL: repositoryURL)
+        let request = await runner.recordedRequest()
+
+        #expect(userName == nil)
+        #expect(request?.arguments == ["config", "--get", "user.name"])
+        #expect(request?.workingDirectoryURL == repositoryURL)
+    }
+}
+
+private actor FixedCommandRunner: CommandRunning {
+    private let result: CommandResult
+    private var request: CommandRequest?
+
+    init(result: CommandResult) {
+        self.result = result
+    }
+
+    func run(_ request: CommandRequest) async throws -> CommandResult {
+        self.request = request
+        return result
+    }
+
+    func recordedRequest() -> CommandRequest? { request }
 }
 
 private struct GitRepositoryFixture: Sendable {

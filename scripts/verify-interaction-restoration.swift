@@ -29,6 +29,22 @@ enum VerifyInteractionRestoration {
             selectedSection: .history,
             selectedFilePath: "/tmp/interaction-persistence/README.md",
             selectedFileShowsMarkdownPreview: true,
+            fileTabSessionsByContext: [
+                "workspace": FileTabSessionState(
+                    tabs: [
+                        PersistedFileTab(
+                            path: "/tmp/interaction-persistence/README.md",
+                            showsMarkdownPreview: true,
+                            visibleLine: 12
+                        ),
+                        PersistedFileTab(
+                            path: "/tmp/interaction-persistence/Sources/App.swift",
+                            visibleLine: 38
+                        )
+                    ],
+                    selectedFilePath: "/tmp/interaction-persistence/README.md"
+                )
+            ],
             selectedChangesByRepository: [
                 "repo": GitChangeSelection(path: "Sources/App.swift", kind: .changes)
             ],
@@ -38,6 +54,7 @@ enum VerifyInteractionRestoration {
                 "repo": HistoryCommitFileSelection(commitHash: "abc123", path: "Sources/App.swift")
             ],
             mavenSelectionsByRepository: ["repo": .recentRun(runID)],
+            historyGrouping: .all,
             navigationRepositoryID: "repo"
         )
         store.save(state, for: workspaceURL)
@@ -55,6 +72,7 @@ enum VerifyInteractionRestoration {
             )
         )
         try require(!legacy.selectedFileShowsMarkdownPreview, "Legacy Markdown state default changed")
+        try require(legacy.fileTabSessionsByContext.isEmpty, "Legacy file Tab state should be empty")
         try require(legacy.selectedChangeRepositoryID == nil, "Legacy Changes selection should be empty")
         try require(legacy.selectedCommitFilesByRepository.isEmpty, "Legacy History file state should be empty")
         try require(legacy.mavenSelectionsByRepository.isEmpty, "Legacy Maven state should be empty")
@@ -66,14 +84,29 @@ enum VerifyInteractionRestoration {
         let change = GitChangeSelection(path: "Sources/App.swift", kind: .changes)
         let mavenSelection = MavenWindowSelection.target(modulePath: "service", goal: .install)
         let markdownURL = workspaceURL.appendingPathComponent("README.md")
+        let sourceURL = workspaceURL.appendingPathComponent("Sources/App.swift")
         let windowStore = VerificationWindowStateStore(
             state: WorkspaceWindowState(
                 selectedSection: .changes,
                 selectedFilePath: markdownURL.path,
                 selectedFileShowsMarkdownPreview: true,
+                fileTabSessionsByContext: [
+                    "workspace": FileTabSessionState(
+                        tabs: [
+                            PersistedFileTab(
+                                path: markdownURL.path,
+                                showsMarkdownPreview: true,
+                                visibleLine: 14
+                            ),
+                            PersistedFileTab(path: sourceURL.path, visibleLine: 27)
+                        ],
+                        selectedFilePath: markdownURL.path
+                    )
+                ],
                 selectedChangesByRepository: [repository.id: change],
                 selectedChangeRepositoryID: repository.id,
-                mavenSelectionsByRepository: [repository.id: mavenSelection]
+                mavenSelectionsByRepository: [repository.id: mavenSelection],
+                historyGrouping: .module
             )
         )
         let state = AppState(
@@ -94,8 +127,19 @@ enum VerifyInteractionRestoration {
         try require(state.selectedChangeRepositoryID == repository.id, "Changes repository was not restored")
         try require(state.selectedChange == change, "Changes file was not restored")
         try require(state.mavenSelection(for: repository.id) == mavenSelection, "Maven selection was not restored")
+        try require(state.historyGrouping == .module, "History grouping was not restored")
+        state.toggleHistoryGrouping(.directory)
+        try require(windowStore.savedState?.historyGrouping == .all, "History grouping was not persisted")
         try require(state.selectedFileURL == markdownURL, "Selected file was not restored")
         try require(state.showsMarkdownPreview, "Markdown view mode was not restored")
+        try require(
+            state.openFileTabs.map(\.url) == [markdownURL, sourceURL],
+            "Open file Tabs were not restored in order"
+        )
+        try require(
+            state.openFileTabs.map(\.visibleLine) == [14, 27],
+            "Open file Tab line positions were not restored"
+        )
         try require(
             windowStore.savedState?.selectedFileShowsMarkdownPreview == true,
             "Restoring a file overwrote its Markdown view mode"

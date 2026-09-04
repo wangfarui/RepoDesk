@@ -140,7 +140,7 @@ struct MavenView: View {
                 }
 
                 Text("运行环境")
-                    .font(.headline)
+                    .fontWeight(.semibold)
 
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
                     mavenHomeConfigurationRows
@@ -166,7 +166,7 @@ struct MavenView: View {
                     .frame(maxWidth: 780)
 
                 Text("运行参数")
-                    .font(.headline)
+                    .fontWeight(.semibold)
 
                 Grid(alignment: .topLeading, horizontalSpacing: 12, verticalSpacing: 12) {
                     GridRow {
@@ -224,7 +224,7 @@ struct MavenView: View {
                     .frame(maxWidth: 780)
 
                 Text("运行记录")
-                    .font(.headline)
+                    .fontWeight(.semibold)
 
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 12) {
                     GridRow {
@@ -554,7 +554,7 @@ struct MavenView: View {
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(repositoryURL.lastPathComponent)
-                        .font(.headline)
+                        .fontWeight(.semibold)
                     Text("Maven 项目")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -611,7 +611,6 @@ struct MavenView: View {
                     .padding(.leading, 8)
                 } label: {
                     Label("Lifecycle", systemImage: "list.bullet.rectangle")
-                        .font(.callout)
                         .padding(.vertical, 3)
                 }
                 .padding(.leading, 8)
@@ -661,7 +660,6 @@ struct MavenView: View {
                 .foregroundStyle(goal == .deploy ? .orange : .secondary)
                 .frame(width: 12)
             Text(goal.rawValue)
-                .font(.callout)
             Spacer(minLength: 0)
         }
         .padding(.vertical, 4)

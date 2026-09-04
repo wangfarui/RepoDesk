@@ -447,7 +447,7 @@ struct AppStateTests {
         let selection = GitChangeSelection(path: "file.swift", kind: .changes)
         state.rememberedChangeSelections[repository.id] = selection
         state.rememberedHistoryBranchFilters[repository.id] = .branch("release")
-        state.rememberedHistoryAuthorFilters[repository.id] = "RepoDesk"
+        state.rememberedHistoryAuthorFilters[repository.id] = .author("RepoDesk")
         state.rememberedCommitHashes[repository.id] = "abc"
 
         state.relocateRepository(repository.id)
@@ -458,7 +458,7 @@ struct AppStateTests {
         #expect(state.selectedRepositoryID == "new")
         #expect(state.rememberedChangeSelections["new"] == selection)
         #expect(state.rememberedHistoryBranchFilters["new"] == .branch("release"))
-        #expect(state.rememberedHistoryAuthorFilters["new"] == "RepoDesk")
+        #expect(state.rememberedHistoryAuthorFilters["new"] == .author("RepoDesk"))
         #expect(state.rememberedCommitHashes["new"] == "abc")
         #expect(state.rememberedChangeSelections["old"] == nil)
     }
@@ -486,7 +486,7 @@ struct AppStateTests {
         #expect(state.modulePath(for: selection, repositoryID: repository.id) == "services/orders")
     }
 
-    @Test func unsavedDocumentBlocksFileSwitchUntilDiscardIsConfirmed() async {
+    @Test func fileSwitchActivatesAnotherTabWithoutUnsavedConfirmation() async {
         let firstURL = URL(fileURLWithPath: "/tmp/first.txt")
         let secondURL = URL(fileURLWithPath: "/tmp/second.txt")
         let state = AppState(
@@ -500,15 +500,191 @@ struct AppStateTests {
         state.documentText = "edited"
         state.selectFile(secondURL)
 
-        #expect(state.selectedFileURL == firstURL)
-        #expect(state.pendingFileSelectionURL == secondURL)
-        #expect(state.hasUnsavedDocumentChanges)
-
-        state.discardChangesAndOpenPendingFile()
         await waitForDocument(in: state)
         #expect(state.selectedFileURL == secondURL)
         #expect(state.documentText == "original")
         #expect(!state.hasUnsavedDocumentChanges)
+        #expect(state.openFileTabs.map(\.url) == [firstURL, secondURL])
+    }
+
+    @Test func fileTabsUseConfiguredLimitAndCloseActions() async {
+        let urls = (1...3).map { URL(fileURLWithPath: "/tmp/file\($0).txt") }
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "workspace", path: "/tmp"),
+            documentLoader: StaticDocumentLoader(),
+            restoresWorkspaceOnLaunch: false
+        )
+        state.setMaximumOpenFileTabs(2)
+
+        for url in urls {
+            state.selectFile(url)
+            await waitForDocument(in: state)
+        }
+
+        #expect(state.openFileTabs.map(\.url) == [urls[1], urls[2]])
+        #expect(state.selectedFileURL == urls[2])
+
+        state.closeSelectedFileTab()
+        #expect(state.openFileTabs.map(\.url) == [urls[1]])
+        #expect(state.selectedFileURL == urls[1])
+
+        state.closeAllFileTabs()
+        #expect(state.openFileTabs.isEmpty)
+        #expect(state.selectedFileURL == nil)
+    }
+
+    @Test func closingOtherFileTabsKeepsTargetAndActivatesIt() async throws {
+        let urls = (1...3).map { URL(fileURLWithPath: "/tmp/other-file\($0).txt") }
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "workspace", path: "/tmp"),
+            documentLoader: StaticDocumentLoader(),
+            restoresWorkspaceOnLaunch: false
+        )
+
+        for url in urls {
+            state.selectFile(url)
+            await waitForDocument(in: state)
+        }
+
+        let targetTab = try #require(state.openFileTabs.first { $0.url == urls[0] })
+        state.closeOtherFileTabs(keeping: targetTab.id)
+
+        #expect(state.openFileTabs.map(\.url) == [urls[0]])
+        #expect(state.selectedFileURL == urls[0])
+        #expect(state.documentText == "original")
+    }
+
+    @Test func fileTabsRestoreTheirLastVisibleLine() async throws {
+        let firstURL = URL(fileURLWithPath: "/tmp/first.txt")
+        let secondURL = URL(fileURLWithPath: "/tmp/second.txt")
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "workspace", path: "/tmp"),
+            documentLoader: StaticDocumentLoader(),
+            restoresWorkspaceOnLaunch: false
+        )
+
+        state.selectFile(firstURL)
+        await waitForDocument(in: state)
+        state.rememberSelectedFileVisibleLine(42)
+        state.selectFile(secondURL)
+        await waitForDocument(in: state)
+        state.rememberSelectedFileVisibleLine(7)
+
+        let firstTab = try #require(state.openFileTabs.first { $0.url == firstURL })
+        state.selectFileTab(firstTab)
+
+        #expect(state.selectedFileURL == firstURL)
+        #expect(state.selectedSourceNavigationRequest?.line == 42)
+        #expect(state.openFileTabs.first { $0.url == secondURL }?.visibleLine == 7)
+
+        state.selectFile(firstURL, line: 18)
+        #expect(state.selectedSourceNavigationRequest?.line == 18)
+        #expect(state.openFileTabs.first { $0.url == firstURL }?.visibleLine == 18)
+    }
+
+    @Test func fileTabsAreScopedToWorkspaceAndRepositoryContexts() async throws {
+        let workspaceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDeskTabContexts-\(UUID().uuidString)", isDirectory: true)
+        let repositoryAURL = workspaceURL.appendingPathComponent("repo-a", isDirectory: true)
+        let repositoryBURL = workspaceURL.appendingPathComponent("repo-b", isDirectory: true)
+        try FileManager.default.createDirectory(at: repositoryAURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: repositoryBURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        let workspaceFile = workspaceURL.appendingPathComponent("Workspace.txt")
+        let repositoryAFile = repositoryAURL.appendingPathComponent("A.txt")
+        let repositoryBFile = repositoryBURL.appendingPathComponent("B.txt")
+        for fileURL in [workspaceFile, repositoryAFile, repositoryBFile] {
+            try Data("original".utf8).write(to: fileURL)
+        }
+        let state = AppState(
+            workspace: WorkspaceSummary(url: workspaceURL),
+            repositories: [
+                RegisteredRepository(displayName: "repo-a", relativePath: "repo-a", isPinned: false),
+                RegisteredRepository(displayName: "repo-b", relativePath: "repo-b", isPinned: false)
+            ],
+            selectedRepositoryID: "repo-a",
+            documentLoader: StaticDocumentLoader(),
+            windowStateStore: WindowStateStoreDouble(selectedSection: .files),
+            restoresWorkspaceOnLaunch: false
+        )
+
+        state.selectFile(workspaceFile)
+        await waitForDocument(in: state)
+        state.rememberSelectedFileVisibleLine(11)
+        state.selectRepositoryContext("repo-a")
+        #expect(state.openFileTabs.isEmpty)
+
+        state.selectFile(repositoryAFile)
+        await waitForDocument(in: state)
+        state.rememberSelectedFileVisibleLine(22)
+        state.selectRepositoryContext("repo-b")
+        #expect(state.openFileTabs.isEmpty)
+
+        state.selectFile(repositoryBFile)
+        await waitForDocument(in: state)
+        state.selectWorkspaceContext()
+        #expect(state.openFileTabs.map(\.url) == [workspaceFile])
+        #expect(state.selectedSourceNavigationRequest?.line == 11)
+
+        state.selectRepositoryContext("repo-a")
+        #expect(state.openFileTabs.map(\.url) == [repositoryAFile])
+        #expect(state.selectedSourceNavigationRequest?.line == 22)
+
+        state.selectRepositoryContext("repo-b")
+        #expect(state.openFileTabs.map(\.url) == [repositoryBFile])
+    }
+
+    @Test func fileTabsRestoreAfterApplicationRelaunch() async throws {
+        let workspaceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDeskTabRelaunch-\(UUID().uuidString)", isDirectory: true)
+        let repositoryURL = workspaceURL.appendingPathComponent("repo", isDirectory: true)
+        try FileManager.default.createDirectory(at: repositoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        let firstURL = repositoryURL.appendingPathComponent("First.md")
+        let secondURL = repositoryURL.appendingPathComponent("Second.swift")
+        try Data("# First".utf8).write(to: firstURL)
+        try Data("let second = true".utf8).write(to: secondURL)
+        let repository = RegisteredRepository(displayName: "repo", relativePath: "repo", isPinned: false)
+        let windowStateStore = WindowStateStoreDouble(selectedSection: .files)
+        let repositoryStore = RepositoryStoreDouble()
+        repositoryStore.storedState = RepositoryWorkspaceState(
+            repositories: [repository],
+            selectedRepositoryID: repository.id
+        )
+        let firstState = AppState(
+            workspace: WorkspaceSummary(url: workspaceURL),
+            repositories: [repository],
+            selectedRepositoryID: repository.id,
+            selectedSection: .files,
+            repositoryStore: repositoryStore,
+            documentLoader: StaticDocumentLoader(),
+            windowStateStore: windowStateStore,
+            restoresWorkspaceOnLaunch: false
+        )
+        firstState.selectRepositoryContext(repository.id)
+        firstState.selectFile(firstURL)
+        await waitForDocument(in: firstState)
+        firstState.setMarkdownPreview(true)
+        firstState.rememberSelectedFileVisibleLine(17)
+        firstState.selectFile(secondURL)
+        await waitForDocument(in: firstState)
+        firstState.rememberSelectedFileVisibleLine(33)
+        firstState.persistStateBeforeTermination()
+
+        let restoredState = AppState(
+            workspaceStore: WorkspaceStoreDouble(restoredURL: workspaceURL),
+            repositoryStore: repositoryStore,
+            documentLoader: StaticDocumentLoader(),
+            windowStateStore: windowStateStore,
+            restoresWorkspaceOnLaunch: true
+        )
+
+        #expect(restoredState.navigationContext == .repository(repository.id))
+        #expect(restoredState.openFileTabs.map(\.url) == [firstURL, secondURL])
+        #expect(restoredState.selectedFileURL == secondURL)
+        #expect(restoredState.openFileTabs.first?.showsMarkdownPreview == true)
+        #expect(restoredState.openFileTabs.first?.visibleLine == 17)
+        #expect(restoredState.openFileTabs.last?.visibleLine == 33)
     }
 
     @Test func directoryLoadFailureCanBeRetried() async {
@@ -590,6 +766,49 @@ struct AppStateTests {
 
         #expect(state.fileChildren[sourcesURL]?.map(\.name) == ["main"])
         #expect(state.fileChildren[mainURL] == nil)
+    }
+
+    @Test func revealingSelectedFileLoadsAndExpandsItsDirectoryChain() async {
+        let workspaceURL = URL(fileURLWithPath: "/tmp/workspace", isDirectory: true)
+        let sourcesURL = workspaceURL.appendingPathComponent("Sources", isDirectory: true)
+        let featureURL = sourcesURL.appendingPathComponent("Feature", isDirectory: true)
+        let fileURL = featureURL.appendingPathComponent("Screen.swift")
+        let browser = DirectoryChainBrowser(
+            entriesByDirectory: [
+                workspaceURL: [WorkspaceFileEntry(url: sourcesURL, name: "Sources", isDirectory: true)],
+                sourcesURL: [WorkspaceFileEntry(url: featureURL, name: "Feature", isDirectory: true)],
+                featureURL: [WorkspaceFileEntry(url: fileURL, name: "Screen.swift", isDirectory: false)]
+            ]
+        )
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "workspace", path: workspaceURL.path),
+            workspaceFileBrowser: browser,
+            restoresWorkspaceOnLaunch: false
+        )
+        state.selectedFileURL = fileURL
+
+        #expect(state.canRevealSelectedFileInTree)
+        await state.revealSelectedFileInTree()
+
+        #expect(state.expandedDirectoryURLs == [sourcesURL, featureURL])
+        #expect(state.fileChildren[featureURL]?.map(\.name) == ["Screen.swift"])
+        #expect(state.fileTreeRevealRequest?.fileURL == fileURL)
+
+        let firstRequestID = state.fileTreeRevealRequest?.id
+        await state.revealSelectedFileInTree()
+        #expect(state.fileTreeRevealRequest?.id != firstRequestID)
+    }
+
+    @Test func revealingSelectedFileIsDisabledWithoutAnInScopeFile() {
+        let workspaceURL = URL(fileURLWithPath: "/tmp/workspace", isDirectory: true)
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "workspace", path: workspaceURL.path),
+            restoresWorkspaceOnLaunch: false
+        )
+
+        #expect(!state.canRevealSelectedFileInTree)
+        state.selectedFileURL = URL(fileURLWithPath: "/tmp/other/Outside.swift")
+        #expect(!state.canRevealSelectedFileInTree)
     }
 
     private func waitForDocument(in state: AppState) async {
@@ -908,19 +1127,21 @@ private final class RepositoryStoreDouble: RepositoryStoring {
 
 @MainActor
 private final class WindowStateStoreDouble: WindowStateStoring {
-    private let selectedSection: AppSection
+    private var storedState: WorkspaceWindowState
 
     init(selectedSection: AppSection) {
-        self.selectedSection = selectedSection
-    }
-
-    func state(for workspaceURL: URL) -> WorkspaceWindowState {
-        WorkspaceWindowState(
+        storedState = WorkspaceWindowState(
             selectedSection: selectedSection,
             selectedFilePath: nil,
             selectedChangesByRepository: [:]
         )
     }
 
-    func save(_ state: WorkspaceWindowState, for workspaceURL: URL) {}
+    func state(for workspaceURL: URL) -> WorkspaceWindowState {
+        storedState
+    }
+
+    func save(_ state: WorkspaceWindowState, for workspaceURL: URL) {
+        storedState = state
+    }
 }

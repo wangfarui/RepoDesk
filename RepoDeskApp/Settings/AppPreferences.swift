@@ -8,6 +8,10 @@ struct AppPreferences: Codable, Equatable, Sendable {
     var opensMarkdownInPreview: Bool
     var diffPresentation: GitDiffPresentation
     var ignoresWhitespaceInDiff: Bool
+    var sidebarFontSize: Double
+    var interfaceFontSize: Double
+    var fileContentFontSize: Double
+    var maximumOpenFileTabs: Int
 
     init(
         automaticallyRefreshesWorkspace: Bool = true,
@@ -16,7 +20,11 @@ struct AppPreferences: Codable, Equatable, Sendable {
         compactsSingleChildDirectories: Bool = true,
         opensMarkdownInPreview: Bool = false,
         diffPresentation: GitDiffPresentation = .unified,
-        ignoresWhitespaceInDiff: Bool = false
+        ignoresWhitespaceInDiff: Bool = false,
+        sidebarFontSize: Double = RepoDeskFontSize.default,
+        interfaceFontSize: Double = RepoDeskFontSize.default,
+        fileContentFontSize: Double = RepoDeskFontSize.default,
+        maximumOpenFileTabs: Int = 5
     ) {
         self.automaticallyRefreshesWorkspace = automaticallyRefreshesWorkspace
         self.refreshesWhenBecomingActive = refreshesWhenBecomingActive
@@ -25,6 +33,10 @@ struct AppPreferences: Codable, Equatable, Sendable {
         self.opensMarkdownInPreview = opensMarkdownInPreview
         self.diffPresentation = diffPresentation
         self.ignoresWhitespaceInDiff = ignoresWhitespaceInDiff
+        self.sidebarFontSize = RepoDeskFontSize.normalized(sidebarFontSize)
+        self.interfaceFontSize = RepoDeskFontSize.normalized(interfaceFontSize)
+        self.fileContentFontSize = RepoDeskFontSize.normalized(fileContentFontSize)
+        self.maximumOpenFileTabs = min(max(maximumOpenFileTabs, 1), 50)
     }
 
     init(from decoder: any Decoder) throws {
@@ -54,6 +66,22 @@ struct AppPreferences: Codable, Equatable, Sendable {
             Bool.self,
             forKey: .ignoresWhitespaceInDiff
         ) ?? false
+        sidebarFontSize = RepoDeskFontSize.normalized(
+            try container.decodeIfPresent(Double.self, forKey: .sidebarFontSize)
+                ?? RepoDeskFontSize.default
+        )
+        interfaceFontSize = RepoDeskFontSize.normalized(
+            try container.decodeIfPresent(Double.self, forKey: .interfaceFontSize)
+                ?? RepoDeskFontSize.default
+        )
+        fileContentFontSize = RepoDeskFontSize.normalized(
+            try container.decodeIfPresent(Double.self, forKey: .fileContentFontSize)
+                ?? RepoDeskFontSize.default
+        )
+        maximumOpenFileTabs = min(
+            max(try container.decodeIfPresent(Int.self, forKey: .maximumOpenFileTabs) ?? 5, 1),
+            50
+        )
     }
 
     static let `default` = AppPreferences()
