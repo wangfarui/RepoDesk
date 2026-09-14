@@ -68,6 +68,21 @@ swiftc \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \
+  "${project_dir}/scripts/verify-xml-syntax-highlighting.swift" \
+  -o "${project_dir}/build/verify-xml-syntax-highlighting"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-xml-syntax-highlighting"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
   "${project_dir}/scripts/verify-java-semantic-switching.swift" \
   -o "${project_dir}/build/verify-java-semantic-switching"
 
@@ -501,6 +516,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/JavaLanguage/JavaSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
+  "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
   "${project_dir}/RepoDeskApp/Features/StreamingOutputView.swift" \
   "${project_dir}/scripts/verify-output-follow.swift" \
@@ -518,6 +534,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/JavaLanguage/JavaSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
+  "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
   "${project_dir}/scripts/verify-source-editor-scroll-performance.swift" \
   -o "${project_dir}/build/verify-source-editor-scroll-performance"

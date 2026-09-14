@@ -1074,6 +1074,8 @@ private enum NativeTextStyler {
             if fileExtension == "java" {
                 applyJavaSyntaxHighlights(to: attributed, text: text, fontSize: fontSize)
                 applyJavaSemanticTokens(semanticTokens, to: attributed, text: text)
+            } else if fileExtension == "xml" {
+                applyXMLSyntaxHighlights(to: attributed, text: text)
             }
         }
         textView.textStorage?.setAttributedString(attributed)
@@ -1115,13 +1117,13 @@ private enum NativeTextStyler {
         text: String,
         fileExtension: String
     ) {
-        guard fileExtension != "java" else { return }
+        guard fileExtension != "java", fileExtension != "xml" else { return }
         enumerateLines(in: text) { line, range in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("//") || trimmed.hasPrefix("#") || trimmed.hasPrefix("<!--") {
                 let color: NSColor = fileExtension == "java" ? .secondaryLabelColor : .systemGreen
                 attributed.addAttribute(.foregroundColor, value: color, range: range)
-            } else if ["xml", "html"].contains(fileExtension), trimmed.hasPrefix("<") {
+            } else if fileExtension == "html", trimmed.hasPrefix("<") {
                 attributed.addAttribute(.foregroundColor, value: NSColor.systemPurple, range: range)
             } else if ["json", "yaml", "yml", "properties"].contains(fileExtension),
                       trimmed.contains(":") || trimmed.contains("=") {
@@ -1183,6 +1185,19 @@ private enum NativeTextStyler {
         }
     }
 
+    private static func applyXMLSyntaxHighlights(
+        to attributed: NSMutableAttributedString,
+        text: String
+    ) {
+        for span in XMLSyntaxHighlighter.highlights(in: text) {
+            attributed.addAttribute(
+                .foregroundColor,
+                value: XMLSyntaxColorPalette.color(for: span.style),
+                range: span.range
+            )
+        }
+    }
+
     private static func applyJavaSemanticTokens(
         _ tokens: [JavaSemanticToken],
         to attributed: NSMutableAttributedString,
@@ -1218,6 +1233,34 @@ private enum NativeTextStyler {
             body(fullText.substring(with: range), range)
             lineStart = NSMaxRange(range)
         }
+    }
+}
+
+enum XMLSyntaxColorPalette {
+    static func color(for style: XMLSyntaxHighlightStyle) -> NSColor {
+        switch style {
+        case .tagName:
+            muted(.systemBlue)
+        case .markupDelimiter:
+            .secondaryLabelColor
+        case .attributeName:
+            muted(.systemPurple)
+        case .attributeValue:
+            muted(.systemGreen)
+        case .declaration:
+            muted(.systemIndigo)
+        case .comment:
+            .secondaryLabelColor
+        case .cdata:
+            muted(.systemOrange)
+        case .entity:
+            muted(.systemCyan)
+        }
+    }
+
+    private static func muted(_ color: NSColor) -> NSColor {
+        let blended = color.blended(withFraction: 0.22, of: .textColor) ?? color
+        return blended.withAlphaComponent(0.86)
     }
 }
 
