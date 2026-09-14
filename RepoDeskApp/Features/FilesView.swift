@@ -1,5 +1,28 @@
 import SwiftUI
 
+struct DocumentHeaderActions: View {
+    let canRevealSelectedFile: Bool
+    let onRevealSelectedFile: () -> Void
+    let isReloadDisabled: Bool
+    let onReloadSelectedFile: () -> Void
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Button("在文件树中定位", systemImage: "scope", action: onRevealSelectedFile)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .disabled(!canRevealSelectedFile)
+                .help("在文件树中定位当前文件")
+
+            Button("重新加载", systemImage: "arrow.clockwise", action: onReloadSelectedFile)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .disabled(isReloadDisabled)
+                .help("从磁盘重新加载当前文件")
+        }
+    }
+}
+
 @MainActor
 struct FilesView: View {
     @Bindable var appState: AppState
@@ -36,27 +59,12 @@ struct FilesView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                Button("在文件树中定位", systemImage: "scope") {
-                    Task { await appState.revealSelectedFileInTree() }
-                }
-                .disabled(!appState.canRevealSelectedFileInTree)
-                .help("在文件树中定位当前文件")
-
-                if appState.selectedFileURL != nil {
-                    Button("重新加载", systemImage: "arrow.clockwise") {
-                        appState.requestReloadSelectedFile()
-                    }
-                    .disabled(appState.isLoadingDocument || appState.isSavingDocument)
-                    .help("从磁盘重新加载当前文件")
-
-                }
-
                 if appState.selectedFileURL?.pathExtension.lowercased() == "md" {
                     Picker(
                         "Markdown 视图",
                         selection: Binding(
                             get: { appState.showsMarkdownPreview },
-                            set: appState.setMarkdownPreview
+                            set: { appState.setMarkdownPreview($0) }
                         )
                     ) {
                         Text("源码").tag(false)
@@ -316,25 +324,46 @@ struct FilesView: View {
                     MarkdownDocumentView(
                         text: appState.documentText,
                         fileName: appState.selectedFileURL?.lastPathComponent ?? "",
-                        fontSize: appState.fileContentFontSize
+                        fontSize: appState.fileContentFontSize,
+                        headerActions: documentHeaderActions
                     )
                 } else {
                     SourceDocumentView(
                         text: Binding(
                             get: { appState.documentText },
-                            set: appState.updateSelectedDocumentText
+                            set: { appState.updateSelectedDocumentText($0) }
                         ),
                         isLarge: textDocument.isLarge,
                         fileIdentity: appState.selectedFileURL?.standardizedFileURL.path ?? "",
                         fileName: appState.selectedFileURL?.lastPathComponent ?? "",
                         fileExtension: appState.selectedFileURL?.pathExtension.lowercased() ?? "",
-                        encoding: textDocument.encoding,
                         isModified: appState.hasUnsavedDocumentChanges,
                         isSaving: appState.isSavingDocument,
+                        headerActions: documentHeaderActions,
                         navigationRequest: appState.selectedSourceNavigationRequest,
-                        onVisibleLineChange: appState.rememberSelectedFileVisibleLine,
-                        onNavigationHandled: appState.clearSelectedSourceNavigationRequest,
+                        onVisibleLineChange: { appState.rememberSelectedFileVisibleLine($0) },
+                        onNavigationHandled: { appState.clearSelectedSourceNavigationRequest($0) },
                         fontSize: appState.fileContentFontSize,
+                        semanticTokens: appState.javaSemanticTokens,
+                        javaNavigationPresentation: appState.javaNavigationResultPresentation,
+                        onJavaNavigation: { action, position, anchor in
+                            guard let fileURL = appState.selectedFileURL else { return }
+                            appState.performJavaNavigation(
+                                action: action,
+                                fileURL: fileURL,
+                                position: position,
+                                documentText: appState.documentText,
+                                anchor: anchor.map {
+                                    JavaNavigationPopupAnchor(x: $0.x, y: $0.y)
+                                }
+                            )
+                        },
+                        onJavaNavigationTargetSelected: appState.selectJavaNavigationTarget,
+                        onJavaNavigationDismissed: {
+                            appState.javaNavigationResultPresentation = nil
+                        },
+                        onNavigationBack: { appState.navigateFileBack() },
+                        onNavigationForward: { appState.navigateFileForward() },
                         loadGitBlame: selectedFileGitBlameLoader
                     )
                 }
@@ -384,6 +413,8 @@ struct FilesView: View {
                     }
                     .buttonStyle(.plain)
                     .help(tab.url.path)
+                    .accessibilityIdentifier("RepoDesk.FileTab.\(tab.url.lastPathComponent)")
+                    .accessibilityValue(appState.selectedFileURL == tab.url ? "selected" : "open")
 
                     Button {
                         appState.closeFileTab(id: tab.id)
@@ -444,6 +475,15 @@ struct FilesView: View {
     private var selectedFileGitBlameLoader: (() async throws -> [GitBlameLine])? {
         guard appState.canBlameSelectedFile else { return nil }
         return { try await appState.blameForSelectedFile() }
+    }
+
+    private var documentHeaderActions: DocumentHeaderActions {
+        DocumentHeaderActions(
+            canRevealSelectedFile: appState.canRevealSelectedFileInTree,
+            onRevealSelectedFile: { Task { await appState.revealSelectedFileInTree() } },
+            isReloadDisabled: appState.isLoadingDocument || appState.isSavingDocument,
+            onReloadSelectedFile: appState.requestReloadSelectedFile
+        )
     }
 
     private var pendingFilePasteBinding: Binding<Bool> {
@@ -1210,13 +1250,20 @@ struct SourceDocumentView: View {
     let fileIdentity: String
     let fileName: String
     let fileExtension: String
-    let encoding: DocumentTextEncoding
     let isModified: Bool
     let isSaving: Bool
+    let headerActions: DocumentHeaderActions
     let navigationRequest: NativeTextNavigationRequest?
     let onVisibleLineChange: (Int) -> Void
     let onNavigationHandled: (UUID) -> Void
     let fontSize: Double
+    let semanticTokens: [JavaSemanticToken]
+    let javaNavigationPresentation: JavaNavigationResultPresentation?
+    let onJavaNavigation: (JavaNavigationAction, JavaSourcePosition, CGPoint?) -> Void
+    let onJavaNavigationTargetSelected: (JavaNavigationTarget) -> Void
+    let onJavaNavigationDismissed: () -> Void
+    let onNavigationBack: () -> Void
+    let onNavigationForward: () -> Void
     let loadGitBlame: (() async throws -> [GitBlameLine])?
     @State private var showsGoToLine = false
     @State private var goToLineInput = ""
@@ -1260,14 +1307,12 @@ struct SourceDocumentView: View {
                         .lineLimit(1)
                         .help(gitBlameErrorMessage)
                 }
-                Text(encoding.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 if isLarge {
                     Text("只读")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
+                headerActions
             }
             .padding(.horizontal, 12)
             .frame(height: 38)
@@ -1290,40 +1335,66 @@ struct SourceDocumentView: View {
                 )
                 Divider()
             }
-            ZStack(alignment: .topTrailing) {
-                NativeCodeEditor(
-                    text: $text,
-                    isEditable: !isLarge,
-                    style: isLarge ? .plain : .source(fileExtension: fileExtension),
-                    navigationRequest: goToLineNavigationRequest ?? navigationRequest,
-                    showsLineNumbers: true,
-                    gitBlame: gitBlame,
-                    canToggleGitBlame: loadGitBlame != nil && !isLoadingGitBlame,
-                    onToggleGitBlame: toggleGitBlame,
-                    onRequestGoToLine: { _, lineCount in
-                        presentGoToLine(maximumLine: lineCount)
-                    },
-                    onVisibleLineChange: onVisibleLineChange,
-                    onNavigationHandled: { id in
-                        if let request = goToLineNavigationRequest, request.id == id {
-                            onVisibleLineChange(request.line)
-                            goToLineNavigationRequest = nil
-                        } else {
-                            onNavigationHandled(id)
-                        }
-                    },
-                    contentIdentity: fileIdentity,
-                    fontSize: CGFloat(fontSize),
-                    contentSearch: contentSearchPresentation
-                )
+            GeometryReader { geometry in
+                ZStack(alignment: .topLeading) {
+                    NativeCodeEditor(
+                        text: $text,
+                        isEditable: !isLarge,
+                        style: isLarge ? .plain : .source(fileExtension: fileExtension),
+                        navigationRequest: goToLineNavigationRequest ?? navigationRequest,
+                        showsLineNumbers: true,
+                        gitBlame: gitBlame,
+                        canToggleGitBlame: loadGitBlame != nil && !isLoadingGitBlame,
+                        onToggleGitBlame: toggleGitBlame,
+                        onRequestGoToLine: { _, lineCount in
+                            presentGoToLine(maximumLine: lineCount)
+                        },
+                        onVisibleLineChange: onVisibleLineChange,
+                        onNavigationHandled: { id in
+                            if let request = goToLineNavigationRequest, request.id == id {
+                                onVisibleLineChange(request.line)
+                                goToLineNavigationRequest = nil
+                            } else {
+                                onNavigationHandled(id)
+                            }
+                        },
+                        contentIdentity: fileIdentity,
+                        fontSize: CGFloat(fontSize),
+                        contentSearch: contentSearchPresentation,
+                        focusRequestID: contentFindState.contentFocusRequestID,
+                        semanticTokens: semanticTokens,
+                        isJavaNavigationEnabled: fileExtension == "java",
+                        onJavaNavigation: onJavaNavigation,
+                        onJavaPopupDismiss: onJavaNavigationDismissed,
+                        onNavigationBack: onNavigationBack,
+                        onNavigationForward: onNavigationForward
+                    )
 
-                if showsGoToLine {
-                    goToLinePanel
-                        .padding(10)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    if let presentation = javaNavigationPresentation {
+                        let popupSize = javaNavigationPopupSize(in: geometry.size)
+                        JavaNavigationResultsPopup(
+                            presentation: presentation,
+                            size: popupSize,
+                            selectTarget: onJavaNavigationTargetSelected,
+                            dismiss: onJavaNavigationDismissed
+                        )
+                        .offset(popupOffset(
+                            for: presentation,
+                            popupSize: popupSize,
+                            in: geometry.size
+                        ))
+                        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .topLeading)))
+                    }
+
+                    if showsGoToLine {
+                        goToLinePanel
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
                 }
+                .clipped()
             }
-            .clipped()
         }
         .background(ContentFindCommandListener(
             requestFind: presentContentFind,
@@ -1343,6 +1414,27 @@ struct SourceDocumentView: View {
             guard gitBlame != nil || isLoadingGitBlame else { return }
             resetGitBlame()
         }
+    }
+
+    private func popupOffset(
+        for presentation: JavaNavigationResultPresentation,
+        popupSize: CGSize,
+        in size: CGSize
+    ) -> CGSize {
+        let origin = JavaNavigationPopupLayout.origin(
+            anchor: presentation.anchor,
+            popupSize: popupSize,
+            availableSize: size
+        )
+        return CGSize(width: origin.x, height: origin.y)
+    }
+
+    private func javaNavigationPopupSize(in availableSize: CGSize) -> CGSize {
+        let preferred = JavaNavigationResultsPopup.preferredSize
+        return CGSize(
+            width: min(preferred.width, max(380, availableSize.width - 20)),
+            height: min(preferred.height, max(190, availableSize.height - 20))
+        )
     }
 
     private var contentSearchMatches: [ContentSearchMatch] {

@@ -17,16 +17,197 @@ struct NativeGitBlameAnnotation: Equatable, Sendable {
 @MainActor
 private final class NativeCodeTextView: NSTextView {
     var goToLineHandler: (() -> Void)?
+    var javaNavigationHandler: ((JavaNavigationAction, JavaSourcePosition, CGPoint?) -> Void)?
+    var javaPopupDismissHandler: (() -> Void)?
+    var navigationBackHandler: (() -> Void)?
+    var navigationForwardHandler: (() -> Void)?
+    var isJavaNavigationEnabled = false
+    private var javaTrackingArea: NSTrackingArea?
+    private var hoveredJavaRange: NSRange?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if window?.firstResponder === self,
            modifiers == .command,
            event.charactersIgnoringModifiers?.lowercased() == "l" {
             goToLineHandler?()
             return true
         }
+        if window?.firstResponder === self, modifiers == [.command, .option] {
+            if event.keyCode == 123, let navigationBackHandler {
+                navigationBackHandler()
+                return true
+            }
+            if event.keyCode == 124, let navigationForwardHandler {
+                navigationForwardHandler()
+                return true
+            }
+        }
+        if window?.firstResponder === self, isJavaNavigationEnabled {
+            let key = event.charactersIgnoringModifiers?.lowercased()
+            if modifiers == [.command, .option], key == "b" {
+                requestJavaNavigation(.implementation, at: selectedRange().location, anchor: nil)
+                return true
+            }
+            if modifiers == .command, key == "b" {
+                requestJavaNavigation(.declaration, at: selectedRange().location, anchor: nil)
+                return true
+            }
+            if modifiers == .command, key == "u" {
+                requestJavaNavigation(.superDeclaration, at: selectedRange().location, anchor: nil)
+                return true
+            }
+            if modifiers == [.command, .option], event.keyCode == 36 {
+                requestJavaNavigation(.implementation, at: selectedRange().location, anchor: nil)
+                return true
+            }
+        }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let javaTrackingArea { removeTrackingArea(javaTrackingArea) }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .mouseMoved, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        javaTrackingArea = trackingArea
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard isJavaNavigationEnabled,
+              event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command,
+              let range = javaIdentifierRange(at: event) else {
+            clearJavaHover()
+            super.mouseMoved(with: event)
+            return
+        }
+        applyJavaHover(range)
+        NSCursor.pointingHand.set()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        clearJavaHover()
+        super.mouseExited(with: event)
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        if !event.modifierFlags.contains(.command) { clearJavaHover() }
+        super.flagsChanged(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        javaPopupDismissHandler?()
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if isJavaNavigationEnabled,
+           modifiers == .command,
+           let range = javaIdentifierRange(at: event) {
+            setSelectedRange(NSRange(location: range.location, length: 0))
+            let point = convert(event.locationInWindow, from: nil)
+            requestJavaNavigation(
+                .contextual,
+                at: range.location,
+                anchor: popupAnchor(for: point)
+            )
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    private func requestJavaNavigation(
+        _ action: JavaNavigationAction,
+        at utf16Offset: Int,
+        anchor: CGPoint?
+    ) {
+        let index = SourceLineIndex(text: string)
+        let line = index.lineNumber(containingUTF16Offset: utf16Offset) - 1
+        guard index.lineStartOffsets.indices.contains(line) else { return }
+        javaNavigationHandler?(
+            action,
+            JavaSourcePosition(
+                line: line,
+                character: max(0, utf16Offset - index.lineStartOffsets[line])
+            ),
+            anchor
+        )
+    }
+
+    private func popupAnchor(for point: CGPoint) -> CGPoint {
+        guard let scrollView = enclosingScrollView else { return point }
+        let scrollPoint = convert(point, to: scrollView)
+        return CGPoint(
+            x: scrollPoint.x,
+            y: scrollView.isFlipped
+                ? scrollPoint.y
+                : scrollView.bounds.height - scrollPoint.y
+        )
+    }
+
+    private func javaIdentifierRange(at event: NSEvent) -> NSRange? {
+        guard let layoutManager, let textContainer, !string.isEmpty else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let containerPoint = NSPoint(
+            x: point.x - textContainerOrigin.x,
+            y: point.y - textContainerOrigin.y
+        )
+        let glyph = layoutManager.glyphIndex(
+            for: containerPoint,
+            in: textContainer,
+            fractionOfDistanceThroughGlyph: nil
+        )
+        guard glyph < layoutManager.numberOfGlyphs else { return nil }
+        let glyphRect = layoutManager.boundingRect(
+            forGlyphRange: NSRange(location: glyph, length: 1),
+            in: textContainer
+        )
+        guard glyphRect.insetBy(dx: -2, dy: -2).contains(containerPoint) else { return nil }
+        return javaIdentifierRange(atUTF16Offset: layoutManager.characterIndexForGlyph(at: glyph))
+    }
+
+    private func javaIdentifierRange(atUTF16Offset offset: Int) -> NSRange? {
+        let source = string as NSString
+        guard source.length > 0 else { return nil }
+        var location = min(max(0, offset), source.length - 1)
+        if !Self.isJavaIdentifier(source.character(at: location)), location > 0 {
+            location -= 1
+        }
+        guard Self.isJavaIdentifier(source.character(at: location)) else { return nil }
+        var start = location
+        var end = location + 1
+        while start > 0, Self.isJavaIdentifier(source.character(at: start - 1)) { start -= 1 }
+        while end < source.length, Self.isJavaIdentifier(source.character(at: end)) { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
+    private static func isJavaIdentifier(_ character: unichar) -> Bool {
+        if character == 95 || character == 36 { return true }
+        guard let scalar = UnicodeScalar(character) else { return false }
+        return CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    private func applyJavaHover(_ range: NSRange) {
+        guard hoveredJavaRange != range, let layoutManager else { return }
+        clearJavaHover()
+        hoveredJavaRange = range
+        layoutManager.addTemporaryAttributes(
+            [
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .foregroundColor: NSColor.linkColor
+            ],
+            forCharacterRange: range
+        )
+    }
+
+    private func clearJavaHover() {
+        guard let range = hoveredJavaRange, let layoutManager else { return }
+        layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+        hoveredJavaRange = nil
+        NSCursor.arrow.set()
     }
 }
 
@@ -238,6 +419,13 @@ struct NativeCodeEditor: NSViewRepresentable {
     var contentIdentity: String? = nil
     var fontSize: CGFloat = NSFont.systemFontSize
     var contentSearch: ContentSearchPresentation? = nil
+    var focusRequestID: UUID? = nil
+    var semanticTokens: [JavaSemanticToken] = []
+    var isJavaNavigationEnabled = false
+    var onJavaNavigation: ((JavaNavigationAction, JavaSourcePosition, CGPoint?) -> Void)? = nil
+    var onJavaPopupDismiss: (() -> Void)? = nil
+    var onNavigationBack: (() -> Void)? = nil
+    var onNavigationForward: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -252,7 +440,8 @@ struct NativeCodeEditor: NSViewRepresentable {
             followsTail: followsTail,
             contentIdentity: contentIdentity,
             fontSize: fontSize,
-            contentSearch: contentSearch
+            contentSearch: contentSearch,
+            semanticTokens: semanticTokens
         )
     }
 
@@ -274,6 +463,11 @@ struct NativeCodeEditor: NSViewRepresentable {
         textView.goToLineHandler = { [weak coordinator = context.coordinator] in
             coordinator?.requestGoToLine()
         }
+        textView.isJavaNavigationEnabled = isJavaNavigationEnabled
+        textView.javaNavigationHandler = onJavaNavigation
+        textView.javaPopupDismissHandler = onJavaPopupDismiss
+        textView.navigationBackHandler = onNavigationBack
+        textView.navigationForwardHandler = onNavigationForward
         context.coordinator.configureFont(in: textView)
         textView.textColor = .textColor
         textView.backgroundColor = .textBackgroundColor
@@ -311,17 +505,25 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.configureLineNumbers(showsLineNumbers, in: scrollView)
         context.coordinator.startObserving(scrollView)
-        NativeTextStyler.apply(text, style: style, fontSize: fontSize, to: textView)
+        NativeTextStyler.apply(
+            text,
+            style: style,
+            fontSize: fontSize,
+            semanticTokens: semanticTokens,
+            to: textView
+        )
+        context.coordinator.lastAppliedSemanticTokens = semanticTokens
         context.coordinator.refreshLineNumbers()
         context.coordinator.scrollIfNeeded(to: scrollToLine)
         context.coordinator.navigateIfNeeded(to: navigationRequest)
         context.coordinator.scrollToTailIfFollowing()
         context.coordinator.applyContentSearch(contentSearch)
+        context.coordinator.restoreFocusIfNeeded(focusRequestID)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = scrollView.documentView as? NSTextView else { return }
+        guard let textView = scrollView.documentView as? NativeCodeTextView else { return }
         context.coordinator.text = $text
         context.coordinator.gitBlame = gitBlame
         context.coordinator.canToggleGitBlame = canToggleGitBlame
@@ -331,8 +533,15 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.onNavigationHandled = onNavigationHandled
         context.coordinator.followsTail = followsTail
         context.coordinator.contentSearch = contentSearch
+        context.coordinator.semanticTokens = semanticTokens
+        textView.isJavaNavigationEnabled = isJavaNavigationEnabled
+        textView.javaNavigationHandler = onJavaNavigation
+        textView.javaPopupDismissHandler = onJavaPopupDismiss
+        textView.navigationBackHandler = onNavigationBack
+        textView.navigationForwardHandler = onNavigationForward
         let styleChanged = context.coordinator.style != style
             || context.coordinator.fontSize != fontSize
+            || context.coordinator.lastAppliedSemanticTokens != semanticTokens
         let contentIdentityChanged = context.coordinator.contentIdentity != contentIdentity
         context.coordinator.style = style
         context.coordinator.fontSize = fontSize
@@ -350,12 +559,14 @@ struct NativeCodeEditor: NSViewRepresentable {
                 text,
                 style: style,
                 fontSize: fontSize,
+                semanticTokens: semanticTokens,
                 styleChanged: styleChanged,
                 mode: contentIdentityChanged
                     ? .replace
                     : (contentIdentity == nil ? .verifyAppend : .appendOnly),
                 in: textView
             )
+            context.coordinator.lastAppliedSemanticTokens = semanticTokens
             context.coordinator.invalidateContentSearch()
             context.coordinator.resetExternalNavigation()
             context.coordinator.refreshLineNumbers()
@@ -376,6 +587,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.navigateIfNeeded(to: navigationRequest)
         context.coordinator.scrollToTailIfFollowing()
         context.coordinator.applyContentSearch(contentSearch)
+        context.coordinator.restoreFocusIfNeeded(focusRequestID)
     }
 
     @MainActor
@@ -392,6 +604,8 @@ struct NativeCodeEditor: NSViewRepresentable {
         var contentIdentity: String?
         var fontSize: CGFloat
         var contentSearch: ContentSearchPresentation?
+        var semanticTokens: [JavaSemanticToken]
+        var lastAppliedSemanticTokens: [JavaSemanticToken] = []
         weak var textView: NSTextView?
         private weak var scrollView: NSScrollView?
         private var lineNumberRuler: NativeLineNumberRulerView?
@@ -401,6 +615,8 @@ struct NativeCodeEditor: NSViewRepresentable {
         private var lastScrolledLine: Int?
         private var lastNavigationRequestID: UUID?
         private var lastContentSearchNavigationRequestID: UUID?
+        private var lastFocusRequestID: UUID?
+        private var pendingCenterRequestID: UUID?
         private var lastAppliedContentSearch: ContentSearchPresentation?
         private var hasAppliedContentSearch = false
         private var lastReportedVisibleLine: Int?
@@ -417,7 +633,8 @@ struct NativeCodeEditor: NSViewRepresentable {
             followsTail: Binding<Bool>?,
             contentIdentity: String?,
             fontSize: CGFloat,
-            contentSearch: ContentSearchPresentation?
+            contentSearch: ContentSearchPresentation?,
+            semanticTokens: [JavaSemanticToken]
         ) {
             self.text = text
             self.style = style
@@ -431,6 +648,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             self.contentIdentity = contentIdentity
             self.fontSize = fontSize
             self.contentSearch = contentSearch
+            self.semanticTokens = semanticTokens
         }
 
         deinit {
@@ -506,8 +724,10 @@ struct NativeCodeEditor: NSViewRepresentable {
                 textView.string,
                 style: style,
                 fontSize: fontSize,
+                semanticTokens: semanticTokens,
                 to: textView
             )
+            lastAppliedSemanticTokens = semanticTokens
             textView.setSelectedRange(selection)
             isApplyingStyle = false
             refreshLineNumbers()
@@ -550,8 +770,18 @@ struct NativeCodeEditor: NSViewRepresentable {
                 return
             }
             lastContentSearchNavigationRequestID = presentation.navigationRequestID
+            textView.setSelectedRange(activeRange)
             textView.showFindIndicator(for: activeRange)
             center(activeRange, in: textView)
+        }
+
+        func restoreFocusIfNeeded(_ requestID: UUID?) {
+            guard let requestID, requestID != lastFocusRequestID, let textView else { return }
+            lastFocusRequestID = requestID
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView, let window = textView.window else { return }
+                window.makeFirstResponder(textView)
+            }
         }
 
         func invalidateContentSearch() {
@@ -576,8 +806,13 @@ struct NativeCodeEditor: NSViewRepresentable {
 
         func navigateIfNeeded(to request: NativeTextNavigationRequest?) {
             guard let request, request.id != lastNavigationRequestID else { return }
-            navigate(to: request.line)
+            if let range = request.range {
+                navigate(to: range)
+            } else {
+                navigate(to: request.line)
+            }
             lastNavigationRequestID = request.id
+            restoreFocusIfNeeded(request.id)
             if let onNavigationHandled {
                 DispatchQueue.main.async {
                     onNavigationHandled(request.id)
@@ -598,7 +833,35 @@ struct NativeCodeEditor: NSViewRepresentable {
             textView.window?.makeFirstResponder(textView)
         }
 
+        private func navigate(to sourceRange: JavaSourceRange) {
+            guard let textView else { return }
+            let index = SourceLineIndex(text: textView.string)
+            guard let range = index.utf16Range(for: sourceRange, in: textView.string) else {
+                navigate(to: sourceRange.start.line + 1)
+                return
+            }
+            textView.setSelectedRange(range)
+            if range.length > 0 {
+                textView.showFindIndicator(for: range)
+            }
+            center(range, in: textView)
+            textView.window?.makeFirstResponder(textView)
+        }
+
         private func center(_ range: NSRange, in textView: NSTextView) {
+            let requestID = UUID()
+            pendingCenterRequestID = requestID
+            centerImmediately(range, in: textView)
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self,
+                      self.pendingCenterRequestID == requestID,
+                      let textView else { return }
+                textView.layoutSubtreeIfNeeded()
+                self.centerImmediately(range, in: textView)
+            }
+        }
+
+        private func centerImmediately(_ range: NSRange, in textView: NSTextView) {
             guard let scrollView,
                   let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer else {
@@ -730,6 +993,7 @@ enum NativeTextStorageUpdater {
         _ text: String,
         style: NativeTextStyle,
         fontSize: CGFloat = NSFont.systemFontSize,
+        semanticTokens: [JavaSemanticToken] = [],
         styleChanged: Bool,
         mode: Mode = .verifyAppend,
         in textView: NSTextView
@@ -745,7 +1009,13 @@ enum NativeTextStorageUpdater {
             NativeTextStyler.appendPlain(appendedText, fontSize: fontSize, to: textView)
             return
         }
-        NativeTextStyler.apply(text, style: style, fontSize: fontSize, to: textView)
+        NativeTextStyler.apply(
+            text,
+            style: style,
+            fontSize: fontSize,
+            semanticTokens: semanticTokens,
+            to: textView
+        )
     }
 
     private static func appendedSuffix(
@@ -787,6 +1057,7 @@ private enum NativeTextStyler {
         _ text: String,
         style: NativeTextStyle,
         fontSize: CGFloat,
+        semanticTokens: [JavaSemanticToken] = [],
         to textView: NSTextView
     ) {
         let attributed = NSMutableAttributedString(
@@ -800,6 +1071,10 @@ private enum NativeTextStyler {
             applyDiffStyle(to: attributed, text: text)
         case .source(let fileExtension):
             applySourceStyle(to: attributed, text: text, fileExtension: fileExtension)
+            if fileExtension == "java" {
+                applyJavaSyntaxHighlights(to: attributed, text: text, fontSize: fontSize)
+                applyJavaSemanticTokens(semanticTokens, to: attributed, text: text)
+            }
         }
         textView.textStorage?.setAttributedString(attributed)
     }
@@ -840,10 +1115,12 @@ private enum NativeTextStyler {
         text: String,
         fileExtension: String
     ) {
+        guard fileExtension != "java" else { return }
         enumerateLines(in: text) { line, range in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("//") || trimmed.hasPrefix("#") || trimmed.hasPrefix("<!--") {
-                attributed.addAttribute(.foregroundColor, value: NSColor.systemGreen, range: range)
+                let color: NSColor = fileExtension == "java" ? .secondaryLabelColor : .systemGreen
+                attributed.addAttribute(.foregroundColor, value: color, range: range)
             } else if ["xml", "html"].contains(fileExtension), trimmed.hasPrefix("<") {
                 attributed.addAttribute(.foregroundColor, value: NSColor.systemPurple, range: range)
             } else if ["json", "yaml", "yml", "properties"].contains(fileExtension),
@@ -856,8 +1133,8 @@ private enum NativeTextStyler {
         switch fileExtension {
         case "swift":
             keywords = ["import", "struct", "class", "actor", "enum", "func", "let", "var", "if", "else", "guard", "return", "async", "await", "throws"]
-        case "java", "kt":
-            keywords = ["package", "import", "public", "private", "class", "interface", "fun", "void", "return", "new", "if", "else", "try", "catch"]
+        case "kt":
+            keywords = ["package", "import", "public", "private", "class", "interface", "fun", "return", "if", "else", "try", "catch"]
         case "sh", "bash", "zsh":
             keywords = ["if", "then", "else", "fi", "for", "do", "done", "function", "case", "esac"]
         default:
@@ -867,10 +1144,67 @@ private enum NativeTextStyler {
         let escaped = keywords.map(NSRegularExpression.escapedPattern).joined(separator: "|")
         guard let expression = try? NSRegularExpression(pattern: "\\b(?:\(escaped))\\b") else { return }
         let range = NSRange(location: 0, length: (text as NSString).length)
+        let keywordColor: NSColor = .systemPurple
         expression.enumerateMatches(in: text, range: range) { match, _, _ in
             guard let match else { return }
-            attributed.addAttribute(.foregroundColor, value: NSColor.systemPurple, range: match.range)
+            attributed.addAttribute(.foregroundColor, value: keywordColor, range: match.range)
         }
+    }
+
+    private static func applyJavaSyntaxHighlights(
+        to attributed: NSMutableAttributedString,
+        text: String,
+        fontSize: CGFloat
+    ) {
+        let regularFont = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let italicFont = NSFontManager.shared.convert(regularFont, toHaveTrait: .italicFontMask)
+        for span in JavaSyntaxHighlighter.highlights(in: text) {
+            switch span.style {
+            case .annotation:
+                attributed.addAttribute(.foregroundColor, value: NSColor.systemBrown, range: span.range)
+            case .comment, .fieldDeclaration:
+                attributed.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: span.range)
+            case .constant:
+                attributed.addAttributes(
+                    [.foregroundColor: NSColor.systemPurple, .font: italicFont],
+                    range: span.range
+                )
+            case .fieldReference:
+                attributed.addAttribute(.foregroundColor, value: NSColor.systemPurple, range: span.range)
+            case .keyword, .number:
+                attributed.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: span.range)
+            case .methodCall:
+                attributed.addAttribute(.font, value: italicFont, range: span.range)
+            case .methodDeclaration:
+                attributed.addAttribute(.foregroundColor, value: NSColor.systemTeal, range: span.range)
+            case .string:
+                attributed.addAttribute(.foregroundColor, value: NSColor.systemGreen, range: span.range)
+            }
+        }
+    }
+
+    private static func applyJavaSemanticTokens(
+        _ tokens: [JavaSemanticToken],
+        to attributed: NSMutableAttributedString,
+        text: String
+    ) {
+        let index = SourceLineIndex(text: text)
+        let source = text as NSString
+        for token in tokens {
+            guard var range = index.utf16Range(for: token.range, in: text), range.length > 0 else {
+                continue
+            }
+            if token.style == .annotation,
+               range.location > 0,
+               source.substring(with: NSRange(location: range.location - 1, length: 1)) == "@" {
+                range = NSRange(location: range.location - 1, length: range.length + 1)
+            }
+            attributed.addAttribute(.foregroundColor, value: color(for: token.style), range: range)
+        }
+    }
+
+    private static func color(for style: JavaSemanticTokenStyle) -> NSColor {
+        JavaSemanticColorPalette.color(for: style)
     }
 
     private static func enumerateLines(
@@ -884,5 +1218,36 @@ private enum NativeTextStyler {
             body(fullText.substring(with: range), range)
             lineStart = NSMaxRange(range)
         }
+    }
+}
+
+enum JavaSemanticColorPalette {
+    static func color(for style: JavaSemanticTokenStyle) -> NSColor {
+        switch style {
+        case .class, .interface, .enum, .struct, .type, .typeParameter,
+             .parameter, .variable, .namespace:
+            .labelColor
+        case .annotation:
+            muted(.systemBrown)
+        case .method, .function:
+            muted(.systemTeal)
+        case .property, .enumMember:
+            muted(.systemPurple)
+        case .keyword, .modifier:
+            muted(.systemBlue)
+        case .comment:
+            .secondaryLabelColor
+        case .string, .regexp:
+            muted(.systemGreen)
+        case .number:
+            muted(.systemBlue)
+        case .operator, .event, .macro:
+            .secondaryLabelColor
+        }
+    }
+
+    private static func muted(_ color: NSColor) -> NSColor {
+        let blended = color.blended(withFraction: 0.22, of: .textColor) ?? color
+        return blended.withAlphaComponent(0.86)
     }
 }

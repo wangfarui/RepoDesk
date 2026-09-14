@@ -105,8 +105,15 @@ struct GitDiffSelectableTextModel: Equatable {
         rows.map { $0.text.isEmpty ? Self.emptyLineMarker : $0.text }.joined(separator: "\n")
     }
 
-    var searchableLines: [String] {
-        rows.map(\.text)
+    func searchMatches(
+        query: String,
+        options: ContentSearchOptions
+    ) -> [ContentSearchMatch] {
+        ContentSearchMatcher.matches(
+            in: storageText,
+            query: query,
+            options: options
+        )
     }
 
     func navigationTarget(
@@ -455,8 +462,9 @@ struct GitDiffView: View {
     let toggleNewBlame: (() -> Void)?
     let fontSize: CGFloat
     private let renderModel: GitDiffRenderModel
+    private let controlledExpandedGapIDs: Binding<Set<String>>?
 
-    @State private var expandedGapIDs: Set<String> = []
+    @State private var expandedGapIDs: Set<String>
     @State private var selectedNewLine: Int?
     @State private var selectedHunkIndex = 0
     @State private var scrollRequest: GitDiffScrollRequest?
@@ -482,7 +490,8 @@ struct GitDiffView: View {
         toggleOldBlame: (() -> Void)? = nil,
         toggleNewBlame: (() -> Void)? = nil,
         fontSize: CGFloat = NSFont.systemFontSize,
-        renderModel: GitDiffRenderModel? = nil
+        renderModel: GitDiffRenderModel? = nil,
+        expandedGapIDs: Binding<Set<String>>? = nil
     ) {
         self.diff = diff
         self.ignoresWhitespace = ignoresWhitespace
@@ -499,12 +508,16 @@ struct GitDiffView: View {
         self.fontSize = fontSize
         let resolvedRenderModel = renderModel ?? GitDiffRenderModel(diff: diff)
         self.renderModel = resolvedRenderModel
+        controlledExpandedGapIDs = expandedGapIDs
+        let resolvedExpandedGapIDs = (expandedGapIDs?.wrappedValue ?? [])
+            .intersection(resolvedRenderModel.gapIDs)
+        _expandedGapIDs = State(initialValue: resolvedExpandedGapIDs)
         let shouldBuildSelectableText = Self.shouldBuildSelectableText(for: resolvedRenderModel)
         _selectableTextModels = State(initialValue: shouldBuildSelectableText
             ? Self.makeSelectableTextModels(
                 diff: diff,
                 renderModel: resolvedRenderModel,
-                expandedGapIDs: [],
+                expandedGapIDs: resolvedExpandedGapIDs,
                 fontSize: fontSize,
                 lineHeight: Self.lineHeight(for: fontSize),
                 gapHeight: Self.gapHeight(for: fontSize)
@@ -553,7 +566,7 @@ struct GitDiffView: View {
             navigateMatch: navigateContentFind
         ))
         .onChange(of: diff) { _, _ in
-            expandedGapIDs = []
+            replaceExpandedGapIDs([])
             searchExpandedGapIDsSnapshot = nil
             contentFindState.dismiss()
             contentFindState.resetSelection()
@@ -574,6 +587,11 @@ struct GitDiffView: View {
             viewportAnchorRequestID = nil
             sideHorizontalScrollSynchronization.reset()
             selectedNewLine = firstNewLine
+        }
+        .onChange(of: currentExpandedGapIDs) { _, _ in
+            guard controlledExpandedGapIDs != nil else { return }
+            viewportAnchorRequestID = UUID()
+            refreshSelectableText(for: effectivePresentation)
         }
         .onAppear { selectedNewLine = firstNewLine }
         .onChange(of: fontSize) { _, _ in
@@ -618,7 +636,7 @@ struct GitDiffView: View {
                     "Diff 模式",
                     selection: Binding(
                         get: { presentation },
-                        set: setPresentation
+                        set: { setPresentation($0) }
                     )
                 ) {
                     ForEach(GitDiffPresentation.allCases) { mode in
@@ -730,7 +748,7 @@ struct GitDiffView: View {
                                     accessibilityIdentifier: "RepoDesk.UnifiedDiff.SelectableText",
                                     onSelectLine: { selectedNewLine = $0 },
                                     onActivateGap: { gapID in
-                                        setExpandedGapIDs(expandedGapIDs.union([gapID]))
+                                        setExpandedGapIDs(currentExpandedGapIDs.union([gapID]))
                                     },
                                     contentSearch: contentSearchPresentation(for: .unified)
                                 )
@@ -839,7 +857,7 @@ struct GitDiffView: View {
                                     contextAction: selectableTextContextAction(side),
                                     onSelectLine: { selectedNewLine = $0 },
                                     onActivateGap: { gapID in
-                                        setExpandedGapIDs(expandedGapIDs.union([gapID]))
+                                        setExpandedGapIDs(currentExpandedGapIDs.union([gapID]))
                                     },
                                     performContextAction: {
                                         if side == .old {
@@ -1046,7 +1064,7 @@ struct GitDiffView: View {
         renderModel.sideRows.reduce(CGFloat.zero) { height, row in
             guard let gap = row.gap else { return height + lineHeight }
             return height + (
-                expandedGapIDs.contains(gap.id)
+                currentExpandedGapIDs.contains(gap.id)
                     ? CGFloat(gap.count) * lineHeight
                     : gapRowHeight
             )
@@ -1179,7 +1197,7 @@ struct GitDiffView: View {
             rowHeight: unifiedRowHeight,
             expandedRowCount: { row in
                 guard case .gap(let gap) = row.content,
-                      expandedGapIDs.contains(gap.id) else { return nil }
+                      currentExpandedGapIDs.contains(gap.id) else { return nil }
                 return gap.count
             },
             expandedRow: { row, offset in
@@ -1197,7 +1215,7 @@ struct GitDiffView: View {
             rowHeight: sideRowHeight,
             expandedRowCount: { row in
                 guard let gap = row.gap,
-                      expandedGapIDs.contains(gap.id) else { return nil }
+                      currentExpandedGapIDs.contains(gap.id) else { return nil }
                 return gap.count
             },
             expandedRow: { row, offset in
@@ -1273,12 +1291,12 @@ struct GitDiffView: View {
 
     private func unifiedRowHeight(_ row: UnifiedRow) -> CGFloat {
         guard case .gap(let gap) = row.content else { return lineHeight }
-        return expandedGapIDs.contains(gap.id) ? CGFloat(gap.count) * lineHeight : gapRowHeight
+        return currentExpandedGapIDs.contains(gap.id) ? CGFloat(gap.count) * lineHeight : gapRowHeight
     }
 
     private func sideRowHeight(_ row: SideRow) -> CGFloat {
         guard let gap = row.gap else { return lineHeight }
-        return expandedGapIDs.contains(gap.id) ? CGFloat(gap.count) * lineHeight : gapRowHeight
+        return currentExpandedGapIDs.contains(gap.id) ? CGFloat(gap.count) * lineHeight : gapRowHeight
     }
 
     private var unifiedVerticalNavigationTargets: [GitDiffVerticalNavigationTarget] {
@@ -1339,7 +1357,7 @@ struct GitDiffView: View {
 
     private func gapRow(_ gap: DiffGap) -> some View {
         Button {
-            setExpandedGapIDs(expandedGapIDs.union([gap.id]))
+            setExpandedGapIDs(currentExpandedGapIDs.union([gap.id]))
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "ellipsis")
@@ -1363,7 +1381,7 @@ struct GitDiffView: View {
         side: GitBlameSide
     ) -> some View {
         Button {
-            setExpandedGapIDs(expandedGapIDs.union([gap.id]))
+            setExpandedGapIDs(currentExpandedGapIDs.union([gap.id]))
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "ellipsis")
@@ -1419,19 +1437,16 @@ struct GitDiffView: View {
     private var contentSearchMatches: [GitDiffContentSearchMatch] {
         switch effectivePresentation {
         case .unified:
-            return ContentSearchMatcher.matches(
-                in: selectableTextModels.unified.searchableLines,
+            return selectableTextModels.unified.searchMatches(
                 query: contentFindState.query,
                 options: contentFindState.options
             ).map { GitDiffContentSearchMatch(pane: .unified, match: $0) }
         case .sideBySide:
-            let oldMatches = ContentSearchMatcher.matches(
-                in: selectableTextModels.old.searchableLines,
+            let oldMatches = selectableTextModels.old.searchMatches(
                 query: contentFindState.query,
                 options: contentFindState.options
             )
-            let newMatches = ContentSearchMatcher.matches(
-                in: selectableTextModels.new.searchableLines,
+            let newMatches = selectableTextModels.new.searchMatches(
                 query: contentFindState.query,
                 options: contentFindState.options
             )
@@ -1496,7 +1511,7 @@ struct GitDiffView: View {
         contentFindState.present()
         if !contentFindState.query.isEmpty,
            searchExpandedGapIDsSnapshot == nil {
-            searchExpandedGapIDsSnapshot = expandedGapIDs
+            searchExpandedGapIDsSnapshot = currentExpandedGapIDs
             setExpandedGapIDs(gapIDs)
         }
     }
@@ -1521,7 +1536,7 @@ struct GitDiffView: View {
         nextQuery: String
     ) {
         if previousQuery.isEmpty, !nextQuery.isEmpty {
-            searchExpandedGapIDsSnapshot = expandedGapIDs
+            searchExpandedGapIDsSnapshot = currentExpandedGapIDs
             setExpandedGapIDs(gapIDs)
         } else if !previousQuery.isEmpty, nextQuery.isEmpty,
                   let snapshot = searchExpandedGapIDsSnapshot {
@@ -1537,7 +1552,7 @@ struct GitDiffView: View {
     private var gapExpansionAction: GitDiffGapExpansionAction {
         GitDiffGapExpansionAction.resolve(
             gapIDs: gapIDs,
-            expandedGapIDs: expandedGapIDs
+            expandedGapIDs: currentExpandedGapIDs
         )
     }
 
@@ -1551,10 +1566,22 @@ struct GitDiffView: View {
     }
 
     private func setExpandedGapIDs(_ nextGapIDs: Set<String>) {
-        guard nextGapIDs != expandedGapIDs else { return }
+        guard nextGapIDs != currentExpandedGapIDs else { return }
         viewportAnchorRequestID = UUID()
-        expandedGapIDs = nextGapIDs
+        replaceExpandedGapIDs(nextGapIDs)
         refreshSelectableText(for: effectivePresentation)
+    }
+
+    private var currentExpandedGapIDs: Set<String> {
+        controlledExpandedGapIDs?.wrappedValue ?? expandedGapIDs
+    }
+
+    private func replaceExpandedGapIDs(_ nextGapIDs: Set<String>) {
+        if let controlledExpandedGapIDs {
+            controlledExpandedGapIDs.wrappedValue = nextGapIDs
+        } else {
+            expandedGapIDs = nextGapIDs
+        }
     }
 
     private func refreshSelectableText(for presentation: GitDiffPresentation) {
@@ -1568,7 +1595,7 @@ struct GitDiffView: View {
                 unified: Self.makeUnifiedSelectableText(
                     diff: diff,
                     renderModel: renderModel,
-                    expandedGapIDs: expandedGapIDs,
+                    expandedGapIDs: currentExpandedGapIDs,
                     fontSize: fontSize,
                     lineHeight: lineHeight,
                     gapHeight: gapRowHeight
@@ -1583,7 +1610,7 @@ struct GitDiffView: View {
                     .old,
                     diff: diff,
                     renderModel: renderModel,
-                    expandedGapIDs: expandedGapIDs,
+                    expandedGapIDs: currentExpandedGapIDs,
                     fontSize: fontSize,
                     lineHeight: lineHeight,
                     gapHeight: gapRowHeight
@@ -1592,7 +1619,7 @@ struct GitDiffView: View {
                     .new,
                     diff: diff,
                     renderModel: renderModel,
-                    expandedGapIDs: expandedGapIDs,
+                    expandedGapIDs: currentExpandedGapIDs,
                     fontSize: fontSize,
                     lineHeight: lineHeight,
                     gapHeight: gapRowHeight
@@ -1691,6 +1718,8 @@ struct GitDiffRenderModel {
     fileprivate let unifiedRows: [UnifiedRow]
     fileprivate let sideRows: [SideRow]
     let navigationTargets: [GitDiffNavigationTarget]
+
+    var gapIDs: Set<String> { Set(gaps.map(\.id)) }
 
     init(diff: GitFileDiff) {
         requiredUnifiedWidth = GitDiffLayoutMetrics.requiredUnifiedWidth(
@@ -1961,6 +1990,7 @@ final class GitDiffHorizontalScrollSynchronization {
     private var entries: [ObjectIdentifier: Entry] = [:]
     private var currentOffset: CGFloat = 0
     private var isSynchronizing = false
+    var onOffsetChange: ((CGFloat) -> Void)?
 
     func register(_ scrollView: NSScrollView, contentWidth: CGFloat) {
         removeReleasedScrollViews()
@@ -1990,6 +2020,10 @@ final class GitDiffHorizontalScrollSynchronization {
         synchronize(to: 0)
     }
 
+    func scroll(to offset: CGFloat) {
+        synchronize(to: offset)
+    }
+
     private func synchronize(to requestedOffset: CGFloat) {
         removeReleasedScrollViews()
         let activeEntries = entries.values.compactMap { entry -> (Entry, NSScrollView)? in
@@ -2005,6 +2039,7 @@ final class GitDiffHorizontalScrollSynchronization {
             max(0, entry.contentWidth - scrollView.contentView.bounds.width)
         }.max() ?? 0
         let synchronizedOffset = min(max(0, requestedOffset), sharedMaximumOffset)
+        let offsetChanged = abs(currentOffset - synchronizedOffset) >= 0.5
         currentOffset = synchronizedOffset
         isSynchronizing = true
         defer { isSynchronizing = false }
@@ -2031,6 +2066,12 @@ final class GitDiffHorizontalScrollSynchronization {
                 )
             )
             scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+        if offsetChanged {
+            let onOffsetChange = onOffsetChange
+            DispatchQueue.main.async {
+                onOffsetChange?(synchronizedOffset)
+            }
         }
     }
 
@@ -2077,6 +2118,8 @@ struct GitDiffHorizontalScrollView<Content: View>: NSViewRepresentable {
     let contentWidth: CGFloat
     let contentHeight: CGFloat
     let synchronization: GitDiffHorizontalScrollSynchronization?
+    let showsHorizontalScroller: Bool
+    let autohidesHorizontalScroller: Bool
     let content: Content
 
     init(
@@ -2084,12 +2127,16 @@ struct GitDiffHorizontalScrollView<Content: View>: NSViewRepresentable {
         contentWidth: CGFloat,
         contentHeight: CGFloat,
         synchronization: GitDiffHorizontalScrollSynchronization? = nil,
+        showsHorizontalScroller: Bool = true,
+        autohidesHorizontalScroller: Bool = true,
         @ViewBuilder content: () -> Content
     ) {
         self.identifier = identifier
         self.contentWidth = contentWidth
         self.contentHeight = contentHeight
         self.synchronization = synchronization
+        self.showsHorizontalScroller = showsHorizontalScroller
+        self.autohidesHorizontalScroller = autohidesHorizontalScroller
         self.content = content()
     }
 
@@ -2100,8 +2147,11 @@ struct GitDiffHorizontalScrollView<Content: View>: NSViewRepresentable {
         scrollView.identifier = NSUserInterfaceItemIdentifier(identifier)
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = true
+        scrollView.hasHorizontalScroller = showsHorizontalScroller
+        scrollView.autohidesScrollers = autohidesHorizontalScroller
+        scrollView.scrollerStyle = autohidesHorizontalScroller
+            ? NSScroller.preferredScrollerStyle
+            : .legacy
         scrollView.verticalScrollElasticity = .none
         scrollView.horizontalScrollElasticity = .automatic
         scrollView.contentView.postsBoundsChangedNotifications = synchronization != nil
@@ -2130,6 +2180,11 @@ struct GitDiffHorizontalScrollView<Content: View>: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let hostingView = context.coordinator.hostingView,
               let documentView = context.coordinator.documentView else { return }
+        scrollView.hasHorizontalScroller = showsHorizontalScroller
+        scrollView.autohidesScrollers = autohidesHorizontalScroller
+        scrollView.scrollerStyle = autohidesHorizontalScroller
+            ? NSScroller.preferredScrollerStyle
+            : .legacy
         if let synchronization {
             scrollView.contentView.postsBoundsChangedNotifications = true
             context.coordinator.observe(

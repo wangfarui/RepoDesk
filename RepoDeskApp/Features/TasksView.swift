@@ -23,6 +23,7 @@ struct MavenView: View {
     @State private var scanErrorMessage: String?
     @State private var isScanning = false
     @State private var expandedModuleIDs: Set<MavenModule.ID> = []
+    @State private var expandedLifecycleModuleIDs: Set<MavenModule.ID> = []
     @State private var selectedTarget: MavenRunTarget?
     @State private var selectedRunID: MavenRunRecord.ID?
     @State private var activePreviewRequest: MavenRunRequest?
@@ -602,7 +603,15 @@ struct MavenView: View {
             )
         ) {
             VStack(alignment: .leading, spacing: 2) {
-                DisclosureGroup {
+                DisclosureGroup(
+                    isExpanded: Binding(
+                        get: { expandedLifecycleModuleIDs.contains(module.id) },
+                        set: { isExpanded in
+                            if isExpanded { expandedLifecycleModuleIDs.insert(module.id) }
+                            else { expandedLifecycleModuleIDs.remove(module.id) }
+                        }
+                    )
+                ) {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(MavenLifecycleGoal.allCases) { goal in
                             lifecycleRow(goal, module: module, repositoryURL: repositoryURL)
@@ -612,6 +621,10 @@ struct MavenView: View {
                 } label: {
                     Label("Lifecycle", systemImage: "list.bullet.rectangle")
                         .padding(.vertical, 3)
+                        .contentShape(.rect)
+                        .onTapGesture(count: 2) {
+                            toggleLifecycleExpansion(for: module.id)
+                        }
                 }
                 .padding(.leading, 8)
 
@@ -641,11 +654,31 @@ struct MavenView: View {
                 }
             }
             .padding(.vertical, 3)
+            .contentShape(.rect)
+            .onTapGesture(count: 2) {
+                toggleModuleExpansion(for: module.id)
+            }
         }
         .onAppear {
             if depth == 0 { expandedModuleIDs.insert(module.id) }
         }
         )
+    }
+
+    private func toggleModuleExpansion(for moduleID: MavenModule.ID) {
+        if expandedModuleIDs.contains(moduleID) {
+            expandedModuleIDs.remove(moduleID)
+        } else {
+            expandedModuleIDs.insert(moduleID)
+        }
+    }
+
+    private func toggleLifecycleExpansion(for moduleID: MavenModule.ID) {
+        if expandedLifecycleModuleIDs.contains(moduleID) {
+            expandedLifecycleModuleIDs.remove(moduleID)
+        } else {
+            expandedLifecycleModuleIDs.insert(moduleID)
+        }
     }
 
     private func lifecycleRow(
@@ -1328,18 +1361,18 @@ struct TasksView: View {
                 repositoryURL: selectedRepositoryURL,
                 settings: Binding(
                     get: { appState.mavenSettings },
-                    set: appState.updateMavenSettings
+                    set: { appState.updateMavenSettings($0) }
                 ),
                 projectRevision: appState.mavenProjectRevision(for: selectedRepositoryURL),
                 validationStore: appState.mavenEnvironmentValidationStore,
                 execution: appState.mavenExecution,
                 recentRuns: appState.recentMavenRuns,
-                run: appState.runMaven,
-                stop: appState.stopMaven,
-                clearLog: appState.clearMavenLog,
-                removeRun: appState.removeMavenRun,
-                clearPersistedLogs: appState.clearPersistedMavenLogs,
-                clearHistory: appState.clearMavenRunHistory,
+                run: { appState.runMaven($0) },
+                stop: { appState.stopMaven() },
+                clearLog: { appState.clearMavenLog() },
+                removeRun: { appState.removeMavenRun($0) },
+                clearPersistedLogs: { appState.clearPersistedMavenLogs() },
+                clearHistory: { appState.clearMavenRunHistory() },
                 persistedSelection: selectedRepositoryID.flatMap {
                     appState.mavenSelection(for: $0)
                 },

@@ -37,6 +37,14 @@ enum VerifySettings {
         state.setSidebarFontSize(10)
         state.setInterfaceFontSize(15)
         state.setFileContentFontSize(16)
+        state.setJavaIndexSettings(
+            JavaIndexSettings(
+                maximumJVMCount: 2,
+                processorCountPerJVM: 3,
+                maximumHeapMegabytes: 3_072,
+                cacheLimitGigabytes: 20
+            )
+        )
 
         let restored = AppState(
             appPreferencesStore: store,
@@ -52,6 +60,10 @@ enum VerifySettings {
         try require(restored.sidebarFontSize == 10, "Sidebar font size was not restored")
         try require(restored.interfaceFontSize == 15, "Interface font size was not restored")
         try require(restored.fileContentFontSize == 16, "File content font size was not restored")
+        try require(restored.javaIndexSettings.maximumJVMCount == 2, "Java JVM limit was not restored")
+        try require(restored.javaIndexSettings.processorCountPerJVM == 3, "Java CPU limit was not restored")
+        try require(restored.javaIndexSettings.maximumHeapMegabytes == 3_072, "Java heap was not restored")
+        try require(restored.javaIndexSettings.cacheLimitGigabytes == 20, "Java cache limit was not restored")
         try require(
             !RootView(appState: restored).workspaceMonitorTaskID.isEnabled,
             "Disabled automatic refresh did not stop the monitor task"

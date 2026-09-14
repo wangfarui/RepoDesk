@@ -24,7 +24,7 @@ struct FileSystemWorkspaceSearch: WorkspaceFileSearching {
                 return []
             }
             var matches: [(entry: WorkspaceFileEntry, score: Int)] = []
-            for case let url as URL in enumerator {
+            while let url = enumerator.nextObject() as? URL {
                 guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey]) else {
                     continue
                 }

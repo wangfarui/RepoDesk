@@ -45,4 +45,14 @@ struct ContentSearchTests {
         state.navigate(by: 1, matchCount: 3)
         #expect(state.currentMatchIndex == 1)
     }
+
+    @Test func dismissingPresentedFindRequestsContentFocusRestoration() {
+        var state = ContentFindState()
+        #expect(state.contentFocusRequestID == nil)
+
+        state.present()
+        state.dismiss()
+
+        #expect(state.contentFocusRequestID != nil)
+    }
 }

@@ -37,12 +37,32 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+  RepoDeskUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: RepoDeskUITests
+    dependencies:
+      - target: RepoDesk
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   RepoDesk:
     build:
       targets:
         RepoDesk: all
         RepoDeskTests: [test]
+        RepoDeskUITests: [test]
     test:
       targets:
         - RepoDeskTests
+        - RepoDeskUITests
+  RepoDeskUIAcceptance:
+    build:
+      targets:
+        RepoDesk: all
+        RepoDeskUITests: [test]
+    test:
+      targets:
+        - RepoDeskUITests

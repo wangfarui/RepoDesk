@@ -33,4 +33,25 @@ struct WorkspacePersistenceTests {
 
         #expect(store.recentWorkspaces().count == 1)
     }
+
+    @Test func removesOnlyTheSelectedWorkspaceRecord() throws {
+        let suiteName = "RepoDeskTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = UserDefaultsWorkspaceStore(defaults: defaults)
+        let first = URL(fileURLWithPath: "/tmp/first", isDirectory: true)
+        let second = URL(fileURLWithPath: "/tmp/second", isDirectory: true)
+
+        store.rememberWorkspace(first)
+        store.rememberWorkspace(second)
+        let selectedWorkspace = try #require(
+            store.recentWorkspaces().first(where: { $0.path == first.path })
+        )
+
+        store.removeWorkspace(selectedWorkspace)
+
+        #expect(store.recentWorkspaces().map(\.path) == [second.path])
+        #expect(store.restoreLastWorkspace()?.path == second.path)
+    }
 }

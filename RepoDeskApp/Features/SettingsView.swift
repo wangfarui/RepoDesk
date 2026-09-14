@@ -5,6 +5,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
     case appearance
     case files
     case diff
+    case java
     case maven
 
     var id: Self { self }
@@ -15,6 +16,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .appearance: "外观"
         case .files: "Files"
         case .diff: "Diff"
+        case .java: "Java"
         case .maven: "Maven"
         }
     }
@@ -25,6 +27,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .appearance: "分区域字体大小"
         case .files: "文件树与编辑器"
         case .diff: "差异显示偏好"
+        case .java: "索引资源与缓存"
         case .maven: "运行环境与记录"
         }
     }
@@ -35,6 +38,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .appearance: "textformat.size"
         case .files: "folder"
         case .diff: "rectangle.split.2x1"
+        case .java: "cup.and.heat.waves"
         case .maven: "shippingbox"
         }
     }
@@ -44,10 +48,13 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
 struct RepoDeskSettingsView: View {
     @Bindable var appState: AppState
     @State private var selectedTab: RepoDeskSettingsTab
+    @State private var javaIndexSettingsDraft: JavaIndexSettings
+    @State private var showsRepositoryDiscoveryIgnoredDirectories = false
 
     init(appState: AppState, initialTab: RepoDeskSettingsTab = .general) {
         self.appState = appState
         _selectedTab = State(initialValue: initialTab)
+        _javaIndexSettingsDraft = State(initialValue: appState.javaIndexSettings)
     }
 
     var body: some View {
@@ -57,10 +64,20 @@ struct RepoDeskSettingsView: View {
             detail
         }
         .frame(minWidth: 760, idealWidth: 840, minHeight: 600, idealHeight: 660)
+        .sheet(isPresented: $showsRepositoryDiscoveryIgnoredDirectories) {
+            RepositoryDiscoveryIgnoredDirectoriesSheet(appState: appState)
+        }
         .alert("Maven 配置无法保存", isPresented: mavenSettingsErrorAlertBinding) {
             Button("确定", role: .cancel) { appState.mavenSettingsErrorMessage = nil }
         } message: {
             Text(appState.mavenSettingsErrorMessage ?? "未知错误")
+        }
+        .alert("无法更新扫描忽略目录", isPresented: repositoryDiscoverySettingsErrorAlertBinding) {
+            Button("确定", role: .cancel) {
+                appState.repositoryDiscoverySettingsErrorMessage = nil
+            }
+        } message: {
+            Text(appState.repositoryDiscoverySettingsErrorMessage ?? "未知错误")
         }
     }
 
@@ -145,7 +162,7 @@ struct RepoDeskSettingsView: View {
                             "监听 Workspace 文件变化",
                             isOn: Binding(
                                 get: { appState.automaticallyRefreshesWorkspace },
-                                set: appState.setAutomaticallyRefreshesWorkspace
+                                set: { appState.setAutomaticallyRefreshesWorkspace($0) }
                             )
                         )
                         .labelsHidden()
@@ -159,7 +176,7 @@ struct RepoDeskSettingsView: View {
                             "切回 RepoDesk 时检查外部变化",
                             isOn: Binding(
                                 get: { appState.refreshesWhenBecomingActive },
-                                set: appState.setRefreshesWhenBecomingActive
+                                set: { appState.setRefreshesWhenBecomingActive($0) }
                             )
                         )
                         .labelsHidden()
@@ -195,6 +212,57 @@ struct RepoDeskSettingsView: View {
                     }
                 }
 
+                SettingsSection(title: "Git 仓库发现", systemImage: "magnifyingglass") {
+                    SettingsRow(
+                        title: "自定义忽略目录",
+                        description: "扫描时跳过所选目录及其子目录；不影响已经注册的 Repository。"
+                    ) {
+                        HStack {
+                            Button("查看忽略目录", systemImage: "list.bullet") {
+                                showsRepositoryDiscoveryIgnoredDirectories = true
+                            }
+                            .accessibilityIdentifier(
+                                "RepoDesk.RepositoryDiscovery.ViewIgnoredDirectories"
+                            )
+
+                            Button("添加目录…", systemImage: "folder.badge.plus") {
+                                appState.chooseRepositoryDiscoveryIgnoredDirectory()
+                            }
+                        }
+                        .disabled(appState.workspace?.isAvailable != true)
+                    }
+
+                    SettingsRow(
+                        title: "内置忽略规则",
+                        description: ".git、.gradle、.idea、build、node_modules、target、隐藏目录和 macOS 文件包。"
+                    ) {
+                        Text("始终启用")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    SettingsRow(
+                        title: "扫描操作",
+                        description: "配置会立即保存，并从下一次发现 Repository 开始生效。"
+                    ) {
+                        HStack {
+                            Button("清空自定义规则", systemImage: "arrow.counterclockwise") {
+                                appState.resetRepositoryDiscoveryIgnoredDirectories()
+                            }
+                            .disabled(
+                                appState.repositoryDiscoverySettings.ignoredDirectoryPaths.isEmpty
+                            )
+
+                            Button("重新扫描", systemImage: "magnifyingglass") {
+                                appState.discoverRepositories()
+                            }
+                            .disabled(
+                                appState.workspace?.isAvailable != true
+                                    || appState.isDiscoveringRepositories
+                            )
+                        }
+                    }
+                }
+
                 SettingsSection(title: "关于", systemImage: "info.circle") {
                     SettingsRow(title: "版本", description: "本地 v0.1 交付版本") {
                         Text(appVersion)
@@ -222,7 +290,7 @@ struct RepoDeskSettingsView: View {
                         FontSizeStepper(
                             value: Binding(
                                 get: { appState.sidebarFontSize },
-                                set: appState.setSidebarFontSize
+                                set: { appState.setSidebarFontSize($0) }
                             )
                         )
                     }
@@ -234,7 +302,7 @@ struct RepoDeskSettingsView: View {
                         FontSizeStepper(
                             value: Binding(
                                 get: { appState.interfaceFontSize },
-                                set: appState.setInterfaceFontSize
+                                set: { appState.setInterfaceFontSize($0) }
                             )
                         )
                     }
@@ -246,7 +314,7 @@ struct RepoDeskSettingsView: View {
                         FontSizeStepper(
                             value: Binding(
                                 get: { appState.fileContentFontSize },
-                                set: appState.setFileContentFontSize
+                                set: { appState.setFileContentFontSize($0) }
                             )
                         )
                     }
@@ -276,7 +344,7 @@ struct RepoDeskSettingsView: View {
                             "显示隐藏文件",
                             isOn: Binding(
                                 get: { appState.showsHiddenFiles },
-                                set: appState.setShowsHiddenFiles
+                                set: { appState.setShowsHiddenFiles($0) }
                             )
                         )
                         .labelsHidden()
@@ -289,7 +357,7 @@ struct RepoDeskSettingsView: View {
                             "折叠单子目录",
                             isOn: Binding(
                                 get: { appState.compactsSingleChildDirectories },
-                                set: appState.setCompactsSingleChildDirectories
+                                set: { appState.setCompactsSingleChildDirectories($0) }
                             )
                         )
                         .labelsHidden()
@@ -304,7 +372,7 @@ struct RepoDeskSettingsView: View {
                         Stepper(
                             value: Binding(
                                 get: { appState.maximumOpenFileTabs },
-                                set: appState.setMaximumOpenFileTabs
+                                set: { appState.setMaximumOpenFileTabs($0) }
                             ),
                             in: 1...50
                         ) {
@@ -321,7 +389,7 @@ struct RepoDeskSettingsView: View {
                             "Markdown 默认打开预览",
                             isOn: Binding(
                                 get: { appState.opensMarkdownInPreview },
-                                set: appState.setOpensMarkdownInPreview
+                                set: { appState.setOpensMarkdownInPreview($0) }
                             )
                         )
                         .labelsHidden()
@@ -354,7 +422,7 @@ struct RepoDeskSettingsView: View {
                             "默认 Diff 模式",
                             selection: Binding(
                                 get: { appState.diffPresentation },
-                                set: appState.setDiffPresentation
+                                set: { appState.setDiffPresentation($0) }
                             )
                         ) {
                             ForEach(GitDiffPresentation.allCases) { presentation in
@@ -374,7 +442,7 @@ struct RepoDeskSettingsView: View {
                             "忽略空白变化",
                             isOn: Binding(
                                 get: { appState.ignoresWhitespaceInDiff },
-                                set: appState.setIgnoresWhitespaceInDiff
+                                set: { appState.setIgnoresWhitespaceInDiff($0) }
                             )
                         )
                         .labelsHidden()
@@ -392,6 +460,125 @@ struct RepoDeskSettingsView: View {
                 }
             }
 
+        case .java:
+            settingsPage(
+                title: "Java",
+                description: "控制 Eclipse JDT Language Server 的并发、CPU、内存和持久化索引缓存。修改只在显式应用后生效。"
+            ) {
+                SettingsSection(title: "运行资源", systemImage: "cpu") {
+                    SettingsRow(
+                        title: "最大 JVM 数量",
+                        description: "多个 Java Repository 可并行索引；前台 Repository 会优先占用名额。"
+                    ) {
+                        Stepper(value: maximumJVMCountBinding, in: 1...4) {
+                            Text("\(javaIndexSettingsDraft.maximumJVMCount)")
+                                .monospacedDigit()
+                                .frame(width: 28, alignment: .trailing)
+                        }
+                    }
+                    SettingsRow(
+                        title: "每个 JVM 的 CPU",
+                        description: "通过 ActiveProcessorCount 限制每个 Java 进程可使用的处理器数量。"
+                    ) {
+                        Stepper(
+                            value: processorCountBinding,
+                            in: 1...max(1, ProcessInfo.processInfo.activeProcessorCount)
+                        ) {
+                            Text("\(javaIndexSettingsDraft.processorCountPerJVM) 核")
+                                .monospacedDigit()
+                                .frame(width: 48, alignment: .trailing)
+                        }
+                    }
+                    SettingsRow(
+                        title: "每个 JVM 最大堆内存",
+                        description: "大型 Spring 多模块项目可能需要更高上限；默认 2 GB。"
+                    ) {
+                        Stepper(value: maximumHeapBinding, in: 1_024...8_192, step: 1_024) {
+                            Text("\(javaIndexSettingsDraft.maximumHeapMegabytes / 1_024) GB")
+                                .monospacedDigit()
+                                .frame(width: 48, alignment: .trailing)
+                        }
+                    }
+                    SettingsRow(
+                        title: "最大合计堆内存",
+                        description: "所有允许同时运行的 Java language server 的理论上限。"
+                    ) {
+                        Text(combinedHeapText)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                SettingsSection(title: "缓存", systemImage: "externaldrive") {
+                    SettingsRow(
+                        title: "磁盘缓存总量",
+                        description: "按 Repository 保存并使用 LRU 清理；正在使用的缓存不会被删除。"
+                    ) {
+                        Stepper(value: cacheLimitBinding, in: 1...100) {
+                            Text("\(javaIndexSettingsDraft.cacheLimitGigabytes) GB")
+                                .monospacedDigit()
+                                .frame(width: 58, alignment: .trailing)
+                        }
+                    }
+                    SettingsRow(
+                        title: "当前使用量",
+                        description: "所有已识别 Java Repository 的索引缓存合计。"
+                    ) {
+                        Text(javaCacheUsageText)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    SettingsRow(
+                        title: "清理未使用缓存",
+                        description: "删除当前未由 Java language server 使用的 Repository 缓存。"
+                    ) {
+                        Button("清理", systemImage: "trash") {
+                            appState.clearUnusedJavaCaches()
+                        }
+                    }
+                }
+
+                SettingsSection(title: "索引控制", systemImage: "arrow.triangle.2.circlepath") {
+                    SettingsRow(
+                        title: "运行状态",
+                        description: "非 Java Repository 不启动 JVM；前台操作始终优先于后台预索引。"
+                    ) {
+                        Text(javaRuntimeStatusText)
+                            .foregroundStyle(.secondary)
+                    }
+                    SettingsRow(
+                        title: "后台索引",
+                        description: "暂停只影响后台任务，当前查看的 Java Repository 仍可按需加载。"
+                    ) {
+                        Toggle(
+                            "后台索引",
+                            isOn: Binding(
+                                get: { !appState.javaIndexSnapshot.isBackgroundIndexingPaused },
+                                set: { appState.setJavaBackgroundIndexingPaused(!$0) }
+                            )
+                        )
+                        .labelsHidden()
+                    }
+                    SettingsRow(
+                        title: "资源默认值",
+                        description: "恢复为 1 个 JVM、每个 2 核、2 GB 堆内存和 10 GB 缓存。"
+                    ) {
+                        Button("恢复", systemImage: "arrow.counterclockwise") {
+                            javaIndexSettingsDraft = .default
+                        }
+                    }
+                    SettingsRow(
+                        title: "应用配置",
+                        description: "保存设置并重启当前 Java 索引进程；未保存的文件内容不会丢失。"
+                    ) {
+                        Button("应用并重启 Java 索引", systemImage: "checkmark.circle") {
+                            appState.setJavaIndexSettings(javaIndexSettingsDraft)
+                        }
+                        .disabled(javaIndexSettingsDraft == appState.javaIndexSettings)
+                    }
+                }
+            }
+
         case .maven:
             if let workspaceURL = appState.currentWorkspaceURL {
                 MavenView(
@@ -399,18 +586,18 @@ struct RepoDeskSettingsView: View {
                     repositoryURL: nil,
                     settings: Binding(
                         get: { appState.mavenSettings },
-                        set: appState.updateMavenSettings
+                        set: { appState.updateMavenSettings($0) }
                     ),
                     projectRevision: 0,
                     validationStore: appState.mavenEnvironmentValidationStore,
                     execution: appState.mavenExecution,
                     recentRuns: appState.recentMavenRuns,
-                    run: appState.runMaven,
-                    stop: appState.stopMaven,
-                    clearLog: appState.clearMavenLog,
-                    removeRun: appState.removeMavenRun,
-                    clearPersistedLogs: appState.clearPersistedMavenLogs,
-                    clearHistory: appState.clearMavenRunHistory
+                    run: { appState.runMaven($0) },
+                    stop: { appState.stopMaven() },
+                    clearLog: { appState.clearMavenLog() },
+                    removeRun: { appState.removeMavenRun($0) },
+                    clearPersistedLogs: { appState.clearPersistedMavenLogs() },
+                    clearHistory: { appState.clearMavenRunHistory() }
                 )
             } else {
                 ContentUnavailableView(
@@ -458,11 +645,217 @@ struct RepoDeskSettingsView: View {
         Bundle.main.bundleIdentifier ?? "com.wangfarui.RepoDesk"
     }
 
+    private var maximumJVMCountBinding: Binding<Int> {
+        Binding(
+            get: { javaIndexSettingsDraft.maximumJVMCount },
+            set: {
+                javaIndexSettingsDraft = JavaIndexSettings(
+                    maximumJVMCount: $0,
+                    processorCountPerJVM: javaIndexSettingsDraft.processorCountPerJVM,
+                    maximumHeapMegabytes: javaIndexSettingsDraft.maximumHeapMegabytes,
+                    cacheLimitGigabytes: javaIndexSettingsDraft.cacheLimitGigabytes
+                )
+            }
+        )
+    }
+
+    private var processorCountBinding: Binding<Int> {
+        Binding(
+            get: { javaIndexSettingsDraft.processorCountPerJVM },
+            set: {
+                javaIndexSettingsDraft = JavaIndexSettings(
+                    maximumJVMCount: javaIndexSettingsDraft.maximumJVMCount,
+                    processorCountPerJVM: $0,
+                    maximumHeapMegabytes: javaIndexSettingsDraft.maximumHeapMegabytes,
+                    cacheLimitGigabytes: javaIndexSettingsDraft.cacheLimitGigabytes
+                )
+            }
+        )
+    }
+
+    private var maximumHeapBinding: Binding<Int> {
+        Binding(
+            get: { javaIndexSettingsDraft.maximumHeapMegabytes },
+            set: {
+                javaIndexSettingsDraft = JavaIndexSettings(
+                    maximumJVMCount: javaIndexSettingsDraft.maximumJVMCount,
+                    processorCountPerJVM: javaIndexSettingsDraft.processorCountPerJVM,
+                    maximumHeapMegabytes: $0,
+                    cacheLimitGigabytes: javaIndexSettingsDraft.cacheLimitGigabytes
+                )
+            }
+        )
+    }
+
+    private var cacheLimitBinding: Binding<Int> {
+        Binding(
+            get: { javaIndexSettingsDraft.cacheLimitGigabytes },
+            set: {
+                javaIndexSettingsDraft = JavaIndexSettings(
+                    maximumJVMCount: javaIndexSettingsDraft.maximumJVMCount,
+                    processorCountPerJVM: javaIndexSettingsDraft.processorCountPerJVM,
+                    maximumHeapMegabytes: javaIndexSettingsDraft.maximumHeapMegabytes,
+                    cacheLimitGigabytes: $0
+                )
+            }
+        )
+    }
+
+    private var combinedHeapText: String {
+        let value = javaIndexSettingsDraft.maximumCombinedHeapGigabytes
+        return value.rounded() == value ? "\(Int(value)) GB" : String(format: "%.1f GB", value)
+    }
+
+    private var javaCacheUsageText: String {
+        ByteCountFormatter.string(
+            fromByteCount: appState.javaIndexSnapshot.cacheBytes,
+            countStyle: .file
+        )
+    }
+
+    private var javaRuntimeStatusText: String {
+        let snapshot = appState.javaIndexSnapshot
+        return "\(snapshot.runningJVMCount) JVM · \(snapshot.readyRepositoryCount)/\(snapshot.javaRepositoryCount) Repository 就绪"
+    }
+
     private var mavenSettingsErrorAlertBinding: Binding<Bool> {
         Binding(
             get: { appState.mavenSettingsErrorMessage != nil },
             set: { if !$0 { appState.mavenSettingsErrorMessage = nil } }
         )
+    }
+
+    private var repositoryDiscoverySettingsErrorAlertBinding: Binding<Bool> {
+        Binding(
+            get: { appState.repositoryDiscoverySettingsErrorMessage != nil },
+            set: {
+                if !$0 {
+                    appState.repositoryDiscoverySettingsErrorMessage = nil
+                }
+            }
+        )
+    }
+}
+
+private struct RepositoryDiscoveryIgnoredDirectoriesSheet: View {
+    @Bindable var appState: AppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "folder.badge.minus")
+                    .font(.title2)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 36, height: 36)
+                    .background(Color.accentColor.opacity(0.12), in: .rect(cornerRadius: 8))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("忽略目录")
+                        .font(.title2.weight(.semibold))
+                    Text("管理当前 Workspace 在发现 Git 仓库时跳过的目录。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+            .padding(20)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Workspace 根路径")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(workspaceRootPath)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .background(Color(nsColor: .controlBackgroundColor))
+
+            Divider()
+
+            Group {
+                if ignoredDirectoryPaths.isEmpty {
+                    ContentUnavailableView(
+                        "没有自定义忽略目录",
+                        systemImage: "folder",
+                        description: Text("可返回设置页，通过“添加目录…”创建扫描忽略规则。")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            ForEach(ignoredDirectoryPaths, id: \.self) { relativePath in
+                                ignoredDirectoryRow(relativePath)
+                            }
+                        }
+                        .padding(20)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+
+            HStack {
+                Text("共 \(ignoredDirectoryPaths.count) 个目录")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("完成") {
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+        }
+        .frame(width: 620, height: 460)
+        .accessibilityIdentifier("RepoDesk.RepositoryDiscovery.IgnoredDirectoriesSheet")
+    }
+
+    private var ignoredDirectoryPaths: [String] {
+        appState.repositoryDiscoverySettings.ignoredDirectoryPaths
+    }
+
+    private var workspaceRootPath: String {
+        appState.currentWorkspaceURL?.path ?? "当前没有打开 Workspace。"
+    }
+
+    private func ignoredDirectoryRow(_ relativePath: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "folder")
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(relativePath)
+                    .font(.body.weight(.medium))
+                    .textSelection(.enabled)
+                Text("相对于 Workspace 根路径")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button(role: .destructive) {
+                appState.removeRepositoryDiscoveryIgnoredDirectory(relativePath)
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color(nsColor: .controlBackgroundColor), in: .rect(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator.opacity(0.7), lineWidth: 1)
+        }
     }
 }
 

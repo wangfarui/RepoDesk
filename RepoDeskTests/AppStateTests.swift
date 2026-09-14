@@ -190,6 +190,38 @@ struct AppStateTests {
         #expect(repositoryStore.savedState?.selectedRepositoryID == "second")
     }
 
+    @Test func ignoredDiscoveryDirectoryPersistsWithoutBlockingManualRegistration() throws {
+        let workspaceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDeskDiscoverySettings-\(UUID().uuidString)", isDirectory: true)
+        let repositoryURL = workspaceURL.appendingPathComponent("generated/repo", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: repositoryURL.appendingPathComponent(".git", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+        let repositoryStore = RepositoryStoreDouble()
+        let state = AppState(
+            workspace: WorkspaceSummary(url: workspaceURL),
+            repositoryStore: repositoryStore,
+            repositoryPicker: FixedRepositoryPicker(selectedURL: repositoryURL),
+            gitRepositoryReader: PagedGitReader(),
+            restoresWorkspaceOnLaunch: false
+        )
+
+        state.chooseRepositoryDiscoveryIgnoredDirectory()
+
+        #expect(state.repositoryDiscoverySettings.ignoredDirectoryPaths == ["generated/repo"])
+        #expect(
+            repositoryStore.savedState?.discoverySettings.ignoredDirectoryPaths
+                == ["generated/repo"]
+        )
+
+        state.chooseRepository()
+
+        #expect(state.repositories.map(\.relativePath) == ["generated/repo"])
+        #expect(state.repositoryDiscoverySettings.ignoredDirectoryPaths == ["generated/repo"])
+    }
+
     @Test func pinnedRepositoriesSortBeforeUnpinnedRepositories() {
         let state = AppState(
             workspace: WorkspaceSummary(name: "workspace", path: "/tmp/workspace"),
@@ -1098,6 +1130,8 @@ private final class WorkspaceStoreDouble: WorkspaceStoring {
     func rememberWorkspace(_ url: URL) {
         rememberedURLs.append(url)
     }
+
+    func removeWorkspace(_ workspace: RecentWorkspace) {}
 
     func resolve(_ workspace: RecentWorkspace) -> URL {
         URL(fileURLWithPath: workspace.path, isDirectory: true)

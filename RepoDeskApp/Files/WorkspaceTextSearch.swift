@@ -33,7 +33,7 @@ struct FileSystemWorkspaceTextSearch: WorkspaceTextSearching {
             }
 
             var results: [WorkspaceTextSearchResult] = []
-            for case let url as URL in enumerator {
+            while let url = enumerator.nextObject() as? URL {
                 guard let values = try? url.resourceValues(
                     forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
                 ) else { continue }

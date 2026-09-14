@@ -6,6 +6,7 @@ struct MarkdownDocumentView: View {
     let text: String
     let fileName: String
     let fontSize: Double
+    let headerActions: DocumentHeaderActions
     @State private var contentFindState = ContentFindState()
 
     private var blocks: [MarkdownPreviewBlock] {
@@ -24,6 +25,7 @@ struct MarkdownDocumentView: View {
                 Text("预览")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                headerActions
             }
             .padding(.horizontal, 12)
             .frame(height: 38)

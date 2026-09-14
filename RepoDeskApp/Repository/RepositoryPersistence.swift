@@ -3,11 +3,34 @@ import Foundation
 struct RepositoryWorkspaceState: Codable, Equatable {
     var repositories: [RegisteredRepository]
     var selectedRepositoryID: RegisteredRepository.ID?
+    var discoverySettings: RepositoryDiscoverySettings = .default
 
     static let empty = RepositoryWorkspaceState(
         repositories: [],
-        selectedRepositoryID: nil
+        selectedRepositoryID: nil,
+        discoverySettings: .default
     )
+}
+
+extension RepositoryWorkspaceState {
+    private enum CodingKeys: String, CodingKey {
+        case repositories
+        case selectedRepositoryID
+        case discoverySettings
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        repositories = try container.decode([RegisteredRepository].self, forKey: .repositories)
+        selectedRepositoryID = try container.decodeIfPresent(
+            RegisteredRepository.ID.self,
+            forKey: .selectedRepositoryID
+        )
+        discoverySettings = try container.decodeIfPresent(
+            RepositoryDiscoverySettings.self,
+            forKey: .discoverySettings
+        ) ?? .default
+    }
 }
 
 @MainActor
@@ -19,7 +42,8 @@ protocol RepositoryStoring: AnyObject {
 @MainActor
 final class UserDefaultsRepositoryStore: RepositoryStoring {
     private enum Keys {
-        static let repositoriesByWorkspace = "repository.registrations.v1"
+        static let workspaceState = "repository.workspace-state.v2"
+        static let legacyRegistrations = "repository.registrations.v1"
     }
 
     private let defaults: UserDefaults
@@ -29,26 +53,32 @@ final class UserDefaultsRepositoryStore: RepositoryStoring {
     }
 
     func state(for workspaceURL: URL) -> RepositoryWorkspaceState {
-        allRegistrations()[workspaceURL.standardizedFileURL.path] ?? .empty
+        allWorkspaceStates()[workspaceURL.standardizedFileURL.path] ?? .empty
     }
 
     func save(_ state: RepositoryWorkspaceState, for workspaceURL: URL) {
-        var registrations = allRegistrations()
-        registrations[workspaceURL.standardizedFileURL.path] = state
-        guard let data = try? JSONEncoder().encode(registrations) else { return }
-        defaults.set(data, forKey: Keys.repositoriesByWorkspace)
+        var states = allWorkspaceStates()
+        states[workspaceURL.standardizedFileURL.path] = state
+        guard let data = try? JSONEncoder().encode(states) else { return }
+        defaults.set(data, forKey: Keys.workspaceState)
     }
 
-    private func allRegistrations() -> [String: RepositoryWorkspaceState] {
+    private func allWorkspaceStates() -> [String: RepositoryWorkspaceState] {
+        var states = decodedStates(forKey: Keys.legacyRegistrations)
+        states.merge(decodedStates(forKey: Keys.workspaceState)) { _, current in current }
+        return states
+    }
+
+    private func decodedStates(forKey key: String) -> [String: RepositoryWorkspaceState] {
         guard
-            let data = defaults.data(forKey: Keys.repositoriesByWorkspace),
-            let registrations = try? JSONDecoder().decode(
+            let data = defaults.data(forKey: key),
+            let states = try? JSONDecoder().decode(
                 [String: RepositoryWorkspaceState].self,
                 from: data
             )
         else {
             return [:]
         }
-        return registrations
+        return states
     }
 }

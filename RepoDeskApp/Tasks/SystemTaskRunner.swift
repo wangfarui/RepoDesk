@@ -150,7 +150,11 @@ private final class TaskProcessExecution: @unchecked Sendable {
             )
         )
         try task.workingDirectoryURL.path.withCString { path in
-            try check(posix_spawn_file_actions_addchdir_np(&fileActions, path))
+            if #available(macOS 26.0, *) {
+                try check(posix_spawn_file_actions_addchdir(&fileActions, path))
+            } else {
+                try check(posix_spawn_file_actions_addchdir_np(&fileActions, path))
+            }
         }
         let flags = Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
         try check(posix_spawnattr_setflags(&attributes, flags))

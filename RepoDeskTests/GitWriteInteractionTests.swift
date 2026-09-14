@@ -304,6 +304,94 @@ struct GitWriteInteractionTests {
         #expect(state.isGitWriteOperationRunning)
     }
 
+    @Test func applyingConflictResultStagesAndRemovesTheFileFromThePendingList() async {
+        let repository = makeRepository()
+        let conflict = GitConflictFile(
+            path: "Sources/App.swift",
+            ours: "ours\n",
+            theirs: "theirs\n",
+            result: "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n",
+            isResolved: false
+        )
+        let gitOperator = RecordingGitRepositoryOperator()
+        let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.conflictFiles = [conflict]
+        state.mergeSourceBranch = "feature"
+
+        let didResolve = await state.resolveConflict(
+            path: conflict.path,
+            result: "merged\n"
+        )
+
+        #expect(didResolve)
+        #expect(state.conflictFiles.isEmpty)
+        #expect(state.mergeSourceBranch == "feature")
+        let resolvedFiles = await gitOperator.resolvedConflictFiles()
+        #expect(resolvedFiles.count == 1)
+        #expect(resolvedFiles.first?.path == conflict.path)
+        #expect(resolvedFiles.first?.result == "merged\n")
+        #expect(resolvedFiles.first?.isResolved == true)
+    }
+
+    @Test func acceptingWholeConflictFileUsesTheRequestedSideAndRemovesIt() async {
+        let repository = makeRepository()
+        let conflict = GitConflictFile(
+            path: "pom.xml",
+            ours: "<version>main</version>\n",
+            theirs: "<version>feature</version>\n",
+            result: "conflict",
+            isResolved: false
+        )
+        let gitOperator = RecordingGitRepositoryOperator()
+        let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.conflictFiles = [conflict]
+        state.mergeSourceBranch = "feature"
+
+        let didResolve = await state.acceptConflictFile(path: conflict.path, side: .theirs)
+
+        #expect(didResolve)
+        #expect(state.conflictFiles.isEmpty)
+        let resolvedFiles = await gitOperator.resolvedConflictFiles()
+        #expect(resolvedFiles.first?.result == conflict.theirs)
+    }
+
+    @Test func closingWithPendingConflictsAbortsTheWholeMerge() async {
+        let repository = makeRepository()
+        let gitOperator = RecordingGitRepositoryOperator()
+        let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.conflictFiles = [
+            GitConflictFile(
+                path: "pom.xml",
+                ours: "ours",
+                theirs: "theirs",
+                result: "conflict",
+                isResolved: false
+            )
+        ]
+        state.mergeSourceBranch = "feature"
+
+        await state.closeMergeConflictResolution()
+
+        let abortCount = await gitOperator.abortMergeCount()
+        #expect(abortCount == 1)
+        #expect(state.conflictFiles.isEmpty)
+        #expect(state.mergeSourceBranch == nil)
+    }
+
+    @Test func continueMergeIsAvailableAfterAllPendingFilesAreRemoved() async {
+        let repository = makeRepository()
+        let gitOperator = RecordingGitRepositoryOperator()
+        let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.mergeSourceBranch = "feature"
+
+        await state.continueMerge()
+
+        let continueCount = await gitOperator.continueMergeCount()
+        #expect(continueCount == 1)
+        #expect(state.mergeSourceBranch == nil)
+        #expect(state.branchOperationStatusMessage == "Merge 完成。")
+    }
+
     @Test func pushWithNoNewCommitsPublishesInformationalState() async {
         let repository = makeRepository()
         let gitOperator = RecordingGitRepositoryOperator(pushOutcome: .upToDate)
@@ -383,6 +471,9 @@ private actor RecordingGitRepositoryOperator: GitRepositoryOperating {
     private var fetches = 0
     private var branchNames: [String] = []
     private var commitPaths: [[String]] = []
+    private var resolvedConflicts: [GitConflictFile] = []
+    private var abortMerges = 0
+    private var continueMerges = 0
 
     init(
         failsPush: Bool = false,
@@ -441,6 +532,18 @@ private actor RecordingGitRepositoryOperator: GitRepositoryOperating {
 
     func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile] { pullConflictFiles }
 
+    func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws {
+        resolvedConflicts.append(file)
+    }
+
+    func abortMerge(repositoryURL: URL) async throws {
+        abortMerges += 1
+    }
+
+    func continueMerge(repositoryURL: URL) async throws {
+        continueMerges += 1
+    }
+
     func switchBranch(repositoryURL: URL, branch: GitBranch) async throws {
         branchNames.append(branch.name)
     }
@@ -450,6 +553,9 @@ private actor RecordingGitRepositoryOperator: GitRepositoryOperating {
     func fetchCount() -> Int { fetches }
     func switchedBranchNames() -> [String] { branchNames }
     func committedPaths() -> [[String]] { commitPaths }
+    func resolvedConflictFiles() -> [GitConflictFile] { resolvedConflicts }
+    func abortMergeCount() -> Int { abortMerges }
+    func continueMergeCount() -> Int { continueMerges }
 }
 
 private actor ControlledFetchGitRepositoryOperator: GitRepositoryOperating {

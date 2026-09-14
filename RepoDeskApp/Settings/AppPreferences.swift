@@ -12,6 +12,7 @@ struct AppPreferences: Codable, Equatable, Sendable {
     var interfaceFontSize: Double
     var fileContentFontSize: Double
     var maximumOpenFileTabs: Int
+    var javaIndexSettings: JavaIndexSettings
 
     init(
         automaticallyRefreshesWorkspace: Bool = true,
@@ -24,7 +25,8 @@ struct AppPreferences: Codable, Equatable, Sendable {
         sidebarFontSize: Double = RepoDeskFontSize.default,
         interfaceFontSize: Double = RepoDeskFontSize.default,
         fileContentFontSize: Double = RepoDeskFontSize.default,
-        maximumOpenFileTabs: Int = 5
+        maximumOpenFileTabs: Int = 5,
+        javaIndexSettings: JavaIndexSettings = .default
     ) {
         self.automaticallyRefreshesWorkspace = automaticallyRefreshesWorkspace
         self.refreshesWhenBecomingActive = refreshesWhenBecomingActive
@@ -37,6 +39,7 @@ struct AppPreferences: Codable, Equatable, Sendable {
         self.interfaceFontSize = RepoDeskFontSize.normalized(interfaceFontSize)
         self.fileContentFontSize = RepoDeskFontSize.normalized(fileContentFontSize)
         self.maximumOpenFileTabs = min(max(maximumOpenFileTabs, 1), 50)
+        self.javaIndexSettings = javaIndexSettings
     }
 
     init(from decoder: any Decoder) throws {
@@ -82,6 +85,10 @@ struct AppPreferences: Codable, Equatable, Sendable {
             max(try container.decodeIfPresent(Int.self, forKey: .maximumOpenFileTabs) ?? 5, 1),
             50
         )
+        javaIndexSettings = try container.decodeIfPresent(
+            JavaIndexSettings.self,
+            forKey: .javaIndexSettings
+        ) ?? .default
     }
 
     static let `default` = AppPreferences()

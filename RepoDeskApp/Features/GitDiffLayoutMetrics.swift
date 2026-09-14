@@ -5,7 +5,10 @@ enum GitDiffLayoutMetrics {
     static let minimumUnifiedWidth: CGFloat = 720
     static let minimumSidePaneWidth: CGFloat = 320
     static let sideDividerWidth: CGFloat = 1
-    static let horizontalScrollerReserve: CGFloat = 16
+    static let horizontalScrollerReserve = NSScroller.scrollerWidth(
+        for: .regular,
+        scrollerStyle: .legacy
+    )
 
     static func sidePaneViewportWidth(containerWidth: CGFloat) -> CGFloat {
         max(0, (containerWidth - sideDividerWidth) / 2)

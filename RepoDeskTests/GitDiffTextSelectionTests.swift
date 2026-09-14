@@ -56,4 +56,23 @@ struct GitDiffTextSelectionTests {
         #expect(model.row(atVerticalOffset: 50) == trailingRow)
         #expect(model.row(atVerticalOffset: 80) == nil)
     }
+
+    @Test func searchRangesStayAlignedAfterEmptyRows() {
+        let query = "queryInventoryGoodsPurchaseCost"
+        let model = GitDiffSelectableTextModel(rows: [
+            GitDiffSelectableTextRow(text: "before"),
+            GitDiffSelectableTextRow(text: ""),
+            GitDiffSelectableTextRow(text: "public func \(query)()")
+        ])
+
+        let match = model.searchMatches(
+            query: query,
+            options: ContentSearchOptions()
+        ).first
+        let matchedText = match.map {
+            (model.storageText as NSString).substring(with: $0.range)
+        }
+
+        #expect(matchedText == query)
+    }
 }

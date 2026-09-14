@@ -6,6 +6,18 @@ struct RepositorySnapshotTaskID: Equatable {
     let repositoryIDs: [RegisteredRepository.ID]
 }
 
+private extension View {
+    func repoDeskToolbarControlChrome() -> some View {
+        padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(.quaternary, in: .capsule)
+            .overlay {
+                Capsule()
+                    .stroke(.separator.opacity(0.55), lineWidth: 0.5)
+            }
+    }
+}
+
 struct WorkspaceMonitorTaskID: Equatable {
     let workspacePath: String?
     let isEnabled: Bool
@@ -18,7 +30,9 @@ struct RootView: View {
     @State private var showsFileSearch = false
     @State private var showsFullTextSearch = false
     @State private var showsPushSheet = false
+    @State private var showsRepositoryPicker = false
     @State private var showsBranchPicker = false
+    @State private var repositoryQuery = ""
     @State private var branchQuery = ""
     @State private var branchToRename: GitBranch?
     @State private var branchToDelete: GitBranch?
@@ -27,6 +41,8 @@ struct RootView: View {
     @State private var showsStashMessagePrompt = false
     @State private var stashMessage = ""
     @State private var stashToDelete: GitStash?
+    @State private var showsJavaSymbolSearch = false
+    @State private var javaSymbolSearchScope = JavaSymbolSearchScope.types
 
     var body: some View {
         NavigationSplitView {
@@ -90,6 +106,9 @@ struct RootView: View {
         }
         .sheet(isPresented: $showsFullTextSearch) {
             FullTextSearchSheet(appState: appState)
+        }
+        .sheet(isPresented: $showsJavaSymbolSearch) {
+            JavaSymbolSearchSheet(appState: appState, initialScope: javaSymbolSearchScope)
         }
         .sheet(isPresented: $showsPushSheet) {
             GitPushSheet(appState: appState)
@@ -208,16 +227,11 @@ struct RootView: View {
             Text(appState.branchOperationErrorMessage ?? "未知错误")
         }
         .toolbar {
-            ToolbarItemGroup(placement: .navigation) {
-                repositoryContextMenu
-                if appState.isRepositoryContext {
-                    branchPickerButton
-                    gitOperationsButton
-                }
+            ToolbarItem(placement: .navigation) {
+                repositoryNavigationControls
             }
             ToolbarItem(placement: .principal) {
-                Spacer()
-                    .frame(maxWidth: .infinity)
+                JavaIndexStatusView(appState: appState)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button("刷新", systemImage: "arrow.clockwise") {
@@ -313,6 +327,16 @@ struct RootView: View {
             showsFullTextSearch = false
             showsFileSearch = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .repoDeskJavaTypeSearchRequested)) { _ in
+            guard appState.workspace != nil else { return }
+            javaSymbolSearchScope = .types
+            showsJavaSymbolSearch = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .repoDeskJavaSymbolSearchRequested)) { _ in
+            guard appState.workspace != nil else { return }
+            javaSymbolSearchScope = .all
+            showsJavaSymbolSearch = true
+        }
     }
 
     private var gitOperationsButton: some View {
@@ -369,23 +393,15 @@ struct RootView: View {
                 Label("恢复暂存", systemImage: "tray.and.arrow.down")
             }
         } label: {
-            Group {
-                if appState.gitRemoteOperationState.isRunning {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if case .requiresConflictResolution = appState.gitRemoteOperationState {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                } else {
-                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                }
-            }
-            .frame(width: 18, height: 18)
+            Text("Git")
+                .fontWeight(.semibold)
+                .repoDeskToolbarControlChrome()
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .disabled(appState.selectedRepository == nil || appState.isGitWriteOperationRunning)
         .help(gitOperationsHelp)
+        .accessibilityIdentifier("RepoDesk.GitOperations")
         .accessibilityLabel("Git 操作")
     }
 
@@ -503,12 +519,12 @@ struct RootView: View {
                         validationStore: appState.mavenEnvironmentValidationStore,
                         execution: appState.mavenExecution,
                         recentRuns: appState.recentMavenRuns,
-                        run: appState.runMaven,
-                        stop: appState.stopMaven,
-                        clearLog: appState.clearMavenLog,
-                        removeRun: appState.removeMavenRun,
-                        clearPersistedLogs: appState.clearPersistedMavenLogs,
-                        clearHistory: appState.clearMavenRunHistory,
+                        run: { appState.runMaven($0) },
+                        stop: { appState.stopMaven() },
+                        clearLog: { appState.clearMavenLog() },
+                        removeRun: { appState.removeMavenRun($0) },
+                        clearPersistedLogs: { appState.clearPersistedMavenLogs() },
+                        clearHistory: { appState.clearMavenRunHistory() },
                         persistedSelection: selectedMavenRepositoryID.flatMap {
                             appState.mavenSelection(for: $0)
                         },
@@ -532,39 +548,13 @@ struct RootView: View {
         KeyEquivalent(Character(String(sectionShortcutNumber(for: section))))
     }
 
-    private var repositoryContextMenu: some View {
-        Menu {
-            Button {
-                appState.selectWorkspaceContext()
-            } label: {
-                Label(
-                    "全部 Git 仓库",
-                    systemImage: appState.isWorkspaceContext ? "checkmark" : "square.stack.3d.up"
-                )
-            }
-
-            if !appState.repositories.isEmpty {
-                Divider()
-                ForEach(appState.repositories) { repository in
-                    Button {
-                        showsBranchPicker = false
-                        appState.selectRepositoryContext(repository.id)
-                    } label: {
-                        Label(
-                            repository.name,
-                            systemImage: appState.isRepositoryContext && appState.selectedRepositoryID == repository.id
-                                ? "checkmark"
-                                : "point.3.connected.trianglepath.dotted"
-                        )
-                    }
-                }
-            }
+    private var repositoryContextButton: some View {
+        Button {
+            showsBranchPicker = false
+            repositoryQuery = ""
+            showsRepositoryPicker.toggle()
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: appState.isWorkspaceContext
-                    ? "square.stack.3d.up"
-                    : "point.3.connected.trianglepath.dotted")
-                    .foregroundStyle(.secondary)
                 Text(repositoryContextTitle)
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
@@ -573,18 +563,101 @@ struct RootView: View {
             }
             .fontWeight(.semibold)
             .frame(maxWidth: 280)
+            .repoDeskToolbarControlChrome()
             .contentShape(.rect)
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
         .fixedSize(horizontal: true, vertical: false)
         .disabled(appState.workspace == nil)
         .help("切换工作区范围或 Git 仓库")
+        .accessibilityIdentifier("RepoDesk.RepositoryContextPicker")
         .accessibilityLabel("Git 仓库")
         .accessibilityValue(repositoryContextTitle)
+        .popover(isPresented: $showsRepositoryPicker, arrowEdge: .bottom) {
+            repositoryPickerPopover
+        }
+    }
+
+    private var repositoryPickerPopover: some View {
+        SearchableFilterPopover(
+            query: $repositoryQuery,
+            placeholder: "搜索 Git 仓库",
+            autoFocus: true
+        ) {
+            repositoryPickerRow(
+                title: "全部 Git 仓库",
+                isSelected: appState.isWorkspaceContext
+            ) {
+                showsRepositoryPicker = false
+                appState.selectWorkspaceContext()
+            }
+
+            if !appState.repositories.isEmpty {
+                Divider()
+                    .padding(.vertical, 4)
+                ForEach(filteredRepositories) { repository in
+                    repositoryPickerRow(
+                        title: repository.name,
+                        isSelected: appState.isRepositoryContext
+                            && appState.selectedRepositoryID == repository.id
+                    ) {
+                        showsRepositoryPicker = false
+                        appState.selectRepositoryContext(repository.id)
+                    }
+                }
+
+                if filteredRepositories.isEmpty {
+                    Text("没有匹配的 Git 仓库")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(16)
+                }
+            }
+        }
+    }
+
+    private func repositoryPickerRow(
+        title: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark")
+                    .opacity(isSelected ? 1 : 0)
+                    .frame(width: 14)
+                Text(title)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+            }
+            .contentShape(.rect)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+        }
+        .buttonStyle(.plain)
     }
 
     private var selectedMavenRepositoryID: RegisteredRepository.ID? {
         appState.isRepositoryContext ? appState.selectedRepositoryID : nil
+    }
+
+    private var filteredRepositories: [RegisteredRepository] {
+        FuzzySearch.filteredAndSorted(
+            appState.repositories,
+            query: repositoryQuery,
+            text: \.name
+        )
+    }
+
+    private var repositoryNavigationControls: some View {
+        HStack(spacing: 8) {
+            repositoryContextButton
+            if appState.isRepositoryContext {
+                branchPickerButton
+                gitOperationsButton
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var branchPickerButton: some View {
@@ -597,21 +670,20 @@ struct RootView: View {
             }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "arrow.triangle.branch")
-                    .foregroundStyle(.secondary)
                 Text(currentBranchTitle)
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: 220)
+            .repoDeskToolbarControlChrome()
             .contentShape(.rect)
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.plain)
         .fixedSize(horizontal: true, vertical: false)
         .disabled(appState.selectedRepository == nil)
         .help("切换 Git Branch")
+        .accessibilityIdentifier("RepoDesk.BranchPicker")
         .popover(isPresented: $showsBranchPicker, arrowEdge: .bottom) {
             branchPickerPopover
         }
@@ -791,7 +863,7 @@ struct RootView: View {
 
     private var mergeConflictPresented: Binding<Bool> {
         Binding(
-            get: { !appState.conflictFiles.isEmpty },
+            get: { appState.mergeSourceBranch != nil },
             set: { _ in }
         )
     }

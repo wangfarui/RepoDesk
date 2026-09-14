@@ -14,6 +14,7 @@ protocol WorkspaceStoring: AnyObject {
     func restoreLastWorkspace() -> URL?
     func recentWorkspaces() -> [RecentWorkspace]
     func rememberWorkspace(_ url: URL)
+    func removeWorkspace(_ workspace: RecentWorkspace)
     func resolve(_ workspace: RecentWorkspace) -> URL
 }
 
@@ -63,6 +64,12 @@ final class UserDefaultsWorkspaceStore: WorkspaceStoring {
         workspaces.insert(workspace, at: 0)
         workspaces = Array(workspaces.prefix(maximumRecentWorkspaceCount))
 
+        guard let data = try? JSONEncoder().encode(workspaces) else { return }
+        defaults.set(data, forKey: Keys.recentWorkspaces)
+    }
+
+    func removeWorkspace(_ workspace: RecentWorkspace) {
+        let workspaces = recentWorkspaces().filter { $0.path != workspace.path }
         guard let data = try? JSONEncoder().encode(workspaces) else { return }
         defaults.set(data, forKey: Keys.recentWorkspaces)
     }

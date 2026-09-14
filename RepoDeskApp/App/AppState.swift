@@ -94,6 +94,8 @@ final class AppState {
     var lastRefreshed: Date?
     var recentWorkspaces: [RecentWorkspace]
     var discoveredRepositories: [RegisteredRepository] = []
+    var repositoryDiscoverySettings = RepositoryDiscoverySettings.default
+    var repositoryDiscoverySettingsErrorMessage: String?
     var isDiscoveringRepositories = false
     var isShowingDiscoveryResults = false
     var presentedRepositoryError: RepositoryRegistrationError?
@@ -124,6 +126,7 @@ final class AppState {
     var isLoadingBranchComparison = false
     var conflictFiles: [GitConflictFile] = []
     var mergeSourceBranch: String?
+    var isResolvingMergeConflict = false
     var fileChildren: [URL: [WorkspaceFileEntry]] = [:]
     var expandedDirectoryURLs: Set<URL> = []
     var loadingDirectoryURLs: Set<URL> = []
@@ -139,6 +142,12 @@ final class AppState {
     var interfaceFontSize = RepoDeskFontSize.default
     var fileContentFontSize = RepoDeskFontSize.default
     var maximumOpenFileTabs = 5
+    var javaIndexSettings = JavaIndexSettings.default
+    var javaIndexSnapshot = JavaIndexSnapshot.idle
+    var javaSemanticTokens: [JavaSemanticToken] = []
+    var javaNavigationResultPresentation: JavaNavigationResultPresentation?
+    var javaSymbolSearchResults: [JavaNavigationTarget] = []
+    var isSearchingJavaSymbols = false
     var openFileTabs: [OpenFileTab] = []
     var fileTabSessionsByContext: [String: FileTabSessionState] = [:]
     var selectedFileURL: URL?
@@ -227,6 +236,7 @@ final class AppState {
     private let workspaceTextSearch: any WorkspaceTextSearching
     private let windowStateStore: WindowStateStoring
     private let appPreferencesStore: AppPreferencesStoring
+    private let javaLanguageProvider: any JavaLanguageProviding
     private let diagnosticLogger: AppDiagnosticLogger
     private var repositoryDiscoveryID: UUID?
     private var diffRequestID: UUID?
@@ -238,6 +248,7 @@ final class AppState {
     private var commitDiffRequestID: UUID?
     private var fileSearchRequestID: UUID?
     private var textSearchRequestID: UUID?
+    private var javaSymbolSearchRequestID: UUID?
     private var mavenRunID: UUID?
     private var repositoryRefreshContextID = UUID()
     private let repositoryRefreshLimiter = RepositoryRefreshLimiter(limit: 4)
@@ -249,10 +260,22 @@ final class AppState {
     @ObservationIgnored private var documentAutoSaveRequestIDs: [URL: UUID] = [:]
     @ObservationIgnored private var windowStatePersistenceTask: Task<Void, Never>?
     @ObservationIgnored private var gitRemoteOperationSuccessDismissTask: Task<Void, Never>?
+    @ObservationIgnored private var javaLanguageEventTask: Task<Void, Never>?
+    @ObservationIgnored private var javaSemanticTokensTask: Task<Void, Never>?
+    @ObservationIgnored private var javaSemanticTokenCacheByFile: [URL: JavaSemanticTokenCacheEntry] = [:]
+    @ObservationIgnored private var fileNavigationBackStack: [JavaNavigationHistoryEntry] = []
+    @ObservationIgnored private var fileNavigationForwardStack: [JavaNavigationHistoryEntry] = []
+    @ObservationIgnored private var currentFileNavigationLocation: JavaNavigationHistoryEntry?
+    @ObservationIgnored private var javaIndexPhases: [RegisteredRepository.ID: JavaRepositoryIndexPhase] = [:]
 
     private enum DiffLoadPresentation {
         case foreground
         case background
+    }
+
+    private struct JavaSemanticTokenCacheEntry: Sendable {
+        let text: String
+        let tokens: [JavaSemanticToken]
     }
 
     init(
@@ -279,6 +302,7 @@ final class AppState {
         workspaceTextSearch: (any WorkspaceTextSearching)? = nil,
         windowStateStore: WindowStateStoring? = nil,
         appPreferencesStore: AppPreferencesStoring? = nil,
+        javaLanguageProvider: (any JavaLanguageProviding)? = nil,
         diagnosticLogger: AppDiagnosticLogger = .shared,
         repositorySnapshotRetryDelays: [Duration] = [.milliseconds(250), .seconds(1)],
         restoresWorkspaceOnLaunch: Bool = true
@@ -309,6 +333,8 @@ final class AppState {
         self.workspaceTextSearch = workspaceTextSearch ?? FileSystemWorkspaceTextSearch()
         self.windowStateStore = windowStateStore ?? UserDefaultsWindowStateStore()
         self.appPreferencesStore = appPreferencesStore
+        self.javaLanguageProvider = javaLanguageProvider
+            ?? JavaLanguageEngine(settings: appPreferences.javaIndexSettings)
         self.diagnosticLogger = diagnosticLogger
         self.repositorySnapshotRetryDelays = repositorySnapshotRetryDelays
         automaticallyRefreshesWorkspace = appPreferences.automaticallyRefreshesWorkspace
@@ -322,6 +348,7 @@ final class AppState {
         interfaceFontSize = appPreferences.interfaceFontSize
         fileContentFontSize = appPreferences.fileContentFontSize
         maximumOpenFileTabs = appPreferences.maximumOpenFileTabs
+        javaIndexSettings = appPreferences.javaIndexSettings
         recentTaskRuns = self.taskStore.recentRuns()
         repositoryDiscoveryID = nil
         diffRequestID = nil
@@ -346,6 +373,8 @@ final class AppState {
             mavenSettings = self.mavenSettingsStore.settings(for: workspaceURL)
             recentMavenRuns = self.mavenRunHistoryStore.recentRuns(for: workspaceURL)
         }
+        observeJavaLanguageEvents()
+        reloadJavaWorkspaceConfiguration()
     }
 
     var selectedRepository: RegisteredRepository? {
@@ -461,6 +490,11 @@ final class AppState {
         guard case .text(let document) = loadedDocument else { return nil }
         return document.encoding
     }
+
+    var canNavigateFileBack: Bool { !fileNavigationBackStack.isEmpty }
+    var canNavigateFileForward: Bool { !fileNavigationForwardStack.isEmpty }
+    var canNavigateJavaBack: Bool { canNavigateFileBack }
+    var canNavigateJavaForward: Bool { canNavigateFileForward }
 
     func refreshCurrentRepository() async {
         guard let repository = selectedRepository else { return }
@@ -605,6 +639,8 @@ final class AppState {
         selectedSection = .overview
         lastRefreshed = nil
         discoveredRepositories = []
+        repositoryDiscoverySettings = .default
+        repositoryDiscoverySettingsErrorMessage = nil
         repositorySnapshots = [:]
         repositorySnapshotErrors = [:]
         refreshingRepositoryIDs = []
@@ -681,12 +717,23 @@ final class AppState {
         restoreWindowState(for: url)
         loadTaskCatalog()
         loadMavenSettings(for: url)
+        javaIndexSnapshot = .idle
+        javaIndexPhases = [:]
+        javaSemanticTokens = []
+        javaSemanticTokenCacheByFile = [:]
+        resetFileNavigationHistory()
+        reloadJavaWorkspaceConfiguration()
         Task { await loadDirectory(url.standardizedFileURL) }
     }
 
     func openRecentWorkspace(_ recentWorkspace: RecentWorkspace) {
         guard !isGitWriteOperationRunning else { return }
         requestOpenWorkspace(at: workspaceStore.resolve(recentWorkspace))
+    }
+
+    func removeRecentWorkspace(_ recentWorkspace: RecentWorkspace) {
+        workspaceStore.removeWorkspace(recentWorkspace)
+        recentWorkspaces = workspaceStore.recentWorkspaces()
     }
 
     func closeWorkspace() {
@@ -733,6 +780,8 @@ final class AppState {
         repositoryRefreshContextID = UUID()
         workspace = nil
         repositories = []
+        repositoryDiscoverySettings = .default
+        repositoryDiscoverySettingsErrorMessage = nil
         selectedRepositoryID = nil
         navigationContext = .workspace
         selectedSection = .overview
@@ -787,6 +836,14 @@ final class AppState {
         isLoadingBranchComparison = false
         conflictFiles = []
         mergeSourceBranch = nil
+        javaIndexSnapshot = .idle
+        javaIndexPhases = [:]
+        javaSemanticTokens = []
+        javaSemanticTokenCacheByFile = [:]
+        javaNavigationResultPresentation = nil
+        javaSymbolSearchResults = []
+        resetFileNavigationHistory()
+        Task { await javaLanguageProvider.shutdown() }
     }
 
     func chooseRepository() {
@@ -812,12 +869,16 @@ final class AppState {
     func discoverRepositories() {
         guard let workspaceURL = availableWorkspaceURL() else { return }
         let discoveryID = UUID()
+        let settings = repositoryDiscoverySettings
         repositoryDiscoveryID = discoveryID
         isDiscoveringRepositories = true
 
         Task { [weak self] in
             guard let self else { return }
-            let discovered = await repositoryDiscoverer.discoverRepositories(in: workspaceURL)
+            let discovered = await repositoryDiscoverer.discoverRepositories(
+                in: workspaceURL,
+                settings: settings
+            )
             guard repositoryDiscoveryID == discoveryID else { return }
             let registeredIDs = Set(repositories.map(\.id))
             discoveredRepositories = discovered.filter { !registeredIDs.contains($0.id) }
@@ -825,6 +886,47 @@ final class AppState {
             isDiscoveringRepositories = false
             isShowingDiscoveryResults = true
         }
+    }
+
+    func chooseRepositoryDiscoveryIgnoredDirectory() {
+        guard let workspaceURL = availableWorkspaceURL() else { return }
+        guard let directoryURL = repositoryPicker.chooseRepository(
+            in: workspaceURL,
+            purpose: .ignoreForDiscovery
+        ) else { return }
+
+        do {
+            var settings = repositoryDiscoverySettings
+            guard try settings.addIgnoredDirectory(directoryURL, in: workspaceURL) else { return }
+            repositoryDiscoverySettings = settings
+            repositoryDiscoverySettingsErrorMessage = nil
+            invalidateRepositoryDiscoveryResults()
+            persistRepositoryState()
+        } catch {
+            repositoryDiscoverySettingsErrorMessage = error.localizedDescription
+        }
+    }
+
+    func removeRepositoryDiscoveryIgnoredDirectory(_ relativePath: String) {
+        var settings = repositoryDiscoverySettings
+        guard settings.removeIgnoredDirectory(relativePath: relativePath) else { return }
+        repositoryDiscoverySettings = settings
+        invalidateRepositoryDiscoveryResults()
+        persistRepositoryState()
+    }
+
+    func resetRepositoryDiscoveryIgnoredDirectories() {
+        guard !repositoryDiscoverySettings.ignoredDirectoryPaths.isEmpty else { return }
+        repositoryDiscoverySettings.removeAllIgnoredDirectories()
+        invalidateRepositoryDiscoveryResults()
+        persistRepositoryState()
+    }
+
+    private func invalidateRepositoryDiscoveryResults() {
+        repositoryDiscoveryID = nil
+        isDiscoveringRepositories = false
+        isShowingDiscoveryResults = false
+        discoveredRepositories = []
     }
 
     func registerDiscoveredRepositories(_ repositories: [RegisteredRepository]) {
@@ -878,6 +980,7 @@ final class AppState {
         selectedCommitHash = rememberedCommitHashes[id]
         persistRepositoryState()
         persistWindowState()
+        Task { await javaLanguageProvider.prioritize(repositoryID: id) }
         loadTaskCatalog()
     }
 
@@ -1187,6 +1290,8 @@ final class AppState {
             return false
         }
 
+        await javaLanguageProvider.notifyFilesChanged([repositoryURL])
+
         guard selectedRepositoryID == repositoryID else {
             await refreshRepository(repository)
             return true
@@ -1389,14 +1494,38 @@ final class AppState {
         }
     }
 
-    func resolveConflict(at index: Int) async {
-        guard conflictFiles.indices.contains(index), let repositoryURL = activeRepositoryURL else { return }
+    @discardableResult
+    func resolveConflict(path: String, result: String) async -> Bool {
+        guard let file = conflictFiles.first(where: { $0.path == path }),
+              let repositoryURL = activeRepositoryURL,
+              !isResolvingMergeConflict else { return false }
+        guard GitConflictParser.blocks(in: result).isEmpty else {
+            branchOperationErrorMessage = "合并结果中仍包含未解决的冲突标记。"
+            return false
+        }
+
+        isResolvingMergeConflict = true
+        branchOperationErrorMessage = nil
+        defer { isResolvingMergeConflict = false }
+
+        var resolvedFile = file
+        resolvedFile.result = result
+        resolvedFile.isResolved = true
         do {
-            try await gitRepositoryOperator.resolveConflict(repositoryURL: repositoryURL, file: conflictFiles[index])
-            conflictFiles[index].isResolved = true
+            try await gitRepositoryOperator.resolveConflict(repositoryURL: repositoryURL, file: resolvedFile)
+            conflictFiles.removeAll { $0.path == path }
+            return true
         } catch {
             branchOperationErrorMessage = error.localizedDescription
+            return false
         }
+    }
+
+    @discardableResult
+    func acceptConflictFile(path: String, side: GitConflictSide) async -> Bool {
+        guard let file = conflictFiles.first(where: { $0.path == path }) else { return false }
+        let result = side == .ours ? file.ours : file.theirs
+        return await resolveConflict(path: path, result: result)
     }
 
     func acceptConflictBlock(fileIndex: Int, blockIndex: Int, side: GitConflictSide) {
@@ -1409,8 +1538,15 @@ final class AppState {
         conflictFiles[fileIndex].result = resolved
     }
 
+    func closeMergeConflictResolution() async {
+        guard !conflictFiles.isEmpty else { return }
+        await abortMerge()
+    }
+
     func abortMerge() async {
-        guard let repositoryURL = activeRepositoryURL else { return }
+        guard let repositoryURL = activeRepositoryURL, !isResolvingMergeConflict else { return }
+        isResolvingMergeConflict = true
+        defer { isResolvingMergeConflict = false }
         let remoteContext: GitRemoteOperationContext?
         if case .requiresConflictResolution(let context, _) = gitRemoteOperationState {
             remoteContext = context
@@ -1434,7 +1570,12 @@ final class AppState {
     }
 
     func continueMerge() async {
-        guard conflictFiles.allSatisfy(\.isResolved), let repositoryURL = activeRepositoryURL else { return }
+        guard conflictFiles.isEmpty,
+              let repositoryURL = activeRepositoryURL,
+              mergeSourceBranch != nil,
+              !isResolvingMergeConflict else { return }
+        isResolvingMergeConflict = true
+        defer { isResolvingMergeConflict = false }
         let remoteContext: GitRemoteOperationContext?
         if case .requiresConflictResolution(let context, _) = gitRemoteOperationState {
             remoteContext = context
@@ -1722,6 +1863,9 @@ final class AppState {
     }
 
     private func refreshAfterGitRemoteOperation(_ repository: RegisteredRepository) async {
+        if let repositoryURL = repositoryURL(for: repository) {
+            await javaLanguageProvider.notifyFilesChanged([repositoryURL])
+        }
         await refreshRepository(repository)
         guard selectedRepositoryID == repository.id else { return }
         if selectedSection == .history {
@@ -1733,6 +1877,9 @@ final class AppState {
 
     private func refreshAfterBranchOperation() async {
         guard let repository = selectedRepository else { return }
+        if let repositoryURL = repositoryURL(for: repository) {
+            await javaLanguageProvider.notifyFilesChanged([repositoryURL])
+        }
         await refreshRepository(repository)
         if selectedSection == .history {
             await refreshHistory()
@@ -2058,6 +2205,379 @@ final class AppState {
         persistWindowState()
     }
 
+    func setJavaIndexSettings(_ settings: JavaIndexSettings) {
+        guard javaIndexSettings != settings else { return }
+        javaIndexSettings = settings
+        persistAppPreferences()
+        Task { await javaLanguageProvider.configure(settings) }
+    }
+
+    func setJavaBackgroundIndexingPaused(_ paused: Bool) {
+        Task { await javaLanguageProvider.setBackgroundIndexingPaused(paused) }
+    }
+
+    func rebuildJavaIndex(repositoryID: RegisteredRepository.ID) {
+        Task { await javaLanguageProvider.rebuildIndex(repositoryID: repositoryID) }
+    }
+
+    func clearUnusedJavaCaches() {
+        Task { await javaLanguageProvider.clearUnusedCaches() }
+    }
+
+    func performJavaNavigation(
+        action: JavaNavigationAction,
+        fileURL: URL,
+        position: JavaSourcePosition,
+        documentText: String,
+        anchor: JavaNavigationPopupAnchor? = nil
+    ) {
+        guard fileURL.pathExtension.lowercased() == "java",
+              let repositoryID = repositoryID(containing: fileURL) else { return }
+        let origin = JavaNavigationHistoryEntry(
+            fileURL: fileURL.standardizedFileURL,
+            range: JavaSourceRange(start: position, end: position)
+        )
+        currentFileNavigationLocation = origin
+        Task {
+            let targets = await javaLanguageProvider.navigationTargets(
+                repositoryID: repositoryID,
+                request: JavaNavigationRequest(
+                    action: action,
+                    fileURL: fileURL.standardizedFileURL,
+                    position: position,
+                    documentText: documentText
+                )
+            )
+            let filteredTargets = await filterJavaNavigationTargets(targets, action: action)
+            guard !filteredTargets.isEmpty else { return }
+            if filteredTargets.count == 1, let target = filteredTargets.first {
+                navigateToJavaTarget(target, origin: origin)
+            } else {
+                javaNavigationResultPresentation = JavaNavigationResultPresentation(
+                    title: filteredTargets.first?.kind == .enum
+                        ? javaEnumNavigationTitle(documentText: documentText, position: position)
+                        : javaNavigationTitle(action),
+                    targets: filteredTargets,
+                    origin: origin,
+                    anchor: anchor
+                )
+            }
+        }
+    }
+
+    func selectJavaNavigationTarget(_ target: JavaNavigationTarget) {
+        let origin = javaNavigationResultPresentation?.origin
+        javaNavigationResultPresentation = nil
+        navigateToJavaTarget(target, origin: origin)
+    }
+
+    func searchJavaSymbols(query: String, scope: JavaSymbolSearchScope) {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestID = UUID()
+        javaSymbolSearchRequestID = requestID
+        guard !query.isEmpty,
+              let repositoryID = selectedFileURL.flatMap(repositoryID(containing:))
+                ?? selectedRepositoryID else {
+            javaSymbolSearchResults = []
+            isSearchingJavaSymbols = false
+            return
+        }
+        isSearchingJavaSymbols = true
+        Task {
+            let targets = await javaLanguageProvider.searchSymbols(
+                JavaSymbolSearchRequest(repositoryID: repositoryID, query: query, scope: scope)
+            )
+            guard javaSymbolSearchRequestID == requestID else { return }
+            javaSymbolSearchResults = JavaSymbolMatcher.sorted(targets, query: query)
+            isSearchingJavaSymbols = false
+        }
+    }
+
+    func selectJavaSymbolTarget(_ target: JavaNavigationTarget) {
+        navigateToJavaTarget(target, origin: currentJavaNavigationLocation())
+    }
+
+    @discardableResult
+    func navigateFileBack() -> Bool {
+        let current = currentNavigationLocation()
+        guard let target = Self.popValidNavigationTarget(
+            from: &fileNavigationBackStack,
+            excluding: current
+        ) else { return false }
+        if let current {
+            Self.appendNavigationLocation(current, to: &fileNavigationForwardStack)
+        }
+        navigateToFile(target.fileURL, range: target.range, recordsHistory: false)
+        selectSection(.files)
+        return true
+    }
+
+    @discardableResult
+    func navigateFileForward() -> Bool {
+        let current = currentNavigationLocation()
+        guard let target = Self.popValidNavigationTarget(
+            from: &fileNavigationForwardStack,
+            excluding: current
+        ) else { return false }
+        if let current {
+            Self.appendNavigationLocation(current, to: &fileNavigationBackStack)
+        }
+        navigateToFile(target.fileURL, range: target.range, recordsHistory: false)
+        selectSection(.files)
+        return true
+    }
+
+    @discardableResult
+    func navigateJavaBack() -> Bool {
+        navigateFileBack()
+    }
+
+    @discardableResult
+    func navigateJavaForward() -> Bool {
+        navigateFileForward()
+    }
+
+    private func navigateToJavaTarget(
+        _ target: JavaNavigationTarget,
+        origin: JavaNavigationHistoryEntry?
+    ) {
+        if let origin, selectedFileURL == origin.fileURL {
+            currentFileNavigationLocation = origin
+        }
+        selectFile(target.fileURL, range: target.selectionRange ?? target.range)
+    }
+
+    private func currentJavaNavigationLocation() -> JavaNavigationHistoryEntry? {
+        currentNavigationLocation()
+    }
+
+    private func currentNavigationLocation() -> JavaNavigationHistoryEntry? {
+        guard let selectedFileURL else { return nil }
+        if currentFileNavigationLocation?.fileURL == selectedFileURL {
+            return currentFileNavigationLocation
+        }
+        let line = max(0, (openFileTabs.first { $0.url == selectedFileURL }?.visibleLine ?? 1) - 1)
+        let position = JavaSourcePosition(line: line, character: 0)
+        return JavaNavigationHistoryEntry(
+            fileURL: selectedFileURL,
+            range: JavaSourceRange(start: position, end: position)
+        )
+    }
+
+    private static func appendNavigationLocation(
+        _ location: JavaNavigationHistoryEntry,
+        to stack: inout [JavaNavigationHistoryEntry]
+    ) {
+        guard stack.last != location else { return }
+        stack.append(location)
+        let maximumHistoryCount = 100
+        if stack.count > maximumHistoryCount {
+            stack.removeFirst(stack.count - maximumHistoryCount)
+        }
+    }
+
+    private static func popValidNavigationTarget(
+        from stack: inout [JavaNavigationHistoryEntry],
+        excluding current: JavaNavigationHistoryEntry?
+    ) -> JavaNavigationHistoryEntry? {
+        while let target = stack.popLast() {
+            guard target != current,
+                  FileManager.default.fileExists(atPath: target.fileURL.path) else { continue }
+            return target
+        }
+        return nil
+    }
+
+    private func resetFileNavigationHistory() {
+        fileNavigationBackStack = []
+        fileNavigationForwardStack = []
+        currentFileNavigationLocation = nil
+    }
+
+    private func javaNavigationTitle(_ action: JavaNavigationAction) -> String {
+        switch action {
+        case .contextual: "选择跳转目标"
+        case .declaration: "选择声明"
+        case .implementation: "选择实现"
+        case .incomingCalls: "选择调用方或使用位置"
+        case .references: "选择使用位置"
+        case .superDeclaration: "选择父类、接口或父方法"
+        }
+    }
+
+    private func javaEnumNavigationTitle(
+        documentText: String,
+        position: JavaSourcePosition
+    ) -> String {
+        let symbol = javaIdentifier(at: position, in: documentText) ?? "枚举"
+        let packageName = documentText
+            .components(separatedBy: .newlines)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.hasPrefix("package ") else { return nil }
+                return trimmed
+                    .dropFirst("package ".count)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "; "))
+            }
+            .first
+        if let packageName, !packageName.isEmpty {
+            return "Enum \(packageName).\(symbol)"
+        }
+        return "Enum \(symbol)"
+    }
+
+    private func javaIdentifier(
+        at position: JavaSourcePosition,
+        in text: String
+    ) -> String? {
+        let source = text as NSString
+        let index = SourceLineIndex(text: text)
+        guard index.lineStartOffsets.indices.contains(position.line) else { return nil }
+        let lineStart = index.lineStartOffsets[position.line]
+        let lineEnd = position.line + 1 < index.lineStartOffsets.count
+            ? index.lineStartOffsets[position.line + 1]
+            : source.length
+        let lineRange = NSRange(location: lineStart, length: max(0, lineEnd - lineStart))
+        let line = source.substring(with: lineRange)
+        let localPosition = min(max(0, position.character), (line as NSString).length)
+        let regex = try? NSRegularExpression(pattern: "[A-Za-z_$][A-Za-z0-9_$]*")
+        let matches = regex?.matches(
+            in: line,
+            range: NSRange(location: 0, length: (line as NSString).length)
+        ) ?? []
+        guard let match = matches.first(where: {
+            NSLocationInRange(localPosition, $0.range)
+                || localPosition == NSMaxRange($0.range)
+        }) else { return nil }
+        return (line as NSString).substring(with: match.range)
+    }
+
+    private func filterJavaNavigationTargets(
+        _ targets: [JavaNavigationTarget],
+        action: JavaNavigationAction
+    ) async -> [JavaNavigationTarget] {
+        guard action == .incomingCalls || action == .references else { return targets }
+        return await Task.detached(priority: .utility) {
+            targets.filter { target in
+                guard let data = try? Data(contentsOf: target.fileURL),
+                      let text = String(data: data, encoding: .utf8) else { return true }
+                let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+                guard lines.indices.contains(target.range.start.line) else { return true }
+                let line = lines[target.range.start.line]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return !line.hasPrefix("import ") && !line.hasPrefix("package ")
+            }
+        }.value
+    }
+
+    private func observeJavaLanguageEvents() {
+        let events = javaLanguageProvider.events
+        javaLanguageEventTask = Task { [weak self] in
+            for await event in events {
+                guard let self else { return }
+                switch event {
+                case .snapshot(let snapshot):
+                    let previousPhases = javaIndexPhases
+                    javaIndexSnapshot = snapshot
+                    javaIndexPhases = snapshot.repositories.reduce(into: [:]) { phases, repository in
+                        phases[repository.repositoryID] = repository.phase
+                    }
+                    if let selectedFileURL,
+                       let repositoryID = repositoryID(containing: selectedFileURL),
+                       let phase = snapshot.repositories.first(where: { $0.repositoryID == repositoryID })?.phase,
+                       Self.shouldScheduleJavaSemanticTokens(
+                           previousPhase: previousPhases[repositoryID],
+                           currentPhase: phase
+                       ) {
+                        scheduleJavaSemanticTokens(after: nil)
+                    }
+                }
+            }
+        }
+    }
+
+    nonisolated static func shouldScheduleJavaSemanticTokens(
+        previousPhase: JavaRepositoryIndexPhase?,
+        currentPhase: JavaRepositoryIndexPhase
+    ) -> Bool {
+        currentPhase == .ready && previousPhase != .ready
+    }
+
+    private func reloadJavaWorkspaceConfiguration() {
+        let workspaceURL = self.workspaceURL
+        let repositories = self.repositories
+        let javaHome = mavenSettings.javaHome.trimmingCharacters(in: .whitespacesAndNewlines)
+        let settingsFile = mavenSettings.userSettingsFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            await javaLanguageProvider.configure(javaIndexSettings)
+            await javaLanguageProvider.updateWorkspace(
+                workspaceURL: workspaceURL,
+                repositories: repositories,
+                projectJavaHome: javaHome.isEmpty ? nil : NSString(string: javaHome).expandingTildeInPath,
+                mavenUserSettingsFile: settingsFile.isEmpty
+                    ? nil
+                    : NSString(string: settingsFile).expandingTildeInPath
+            )
+        }
+    }
+
+    private func scheduleJavaSemanticTokens(after delay: Duration? = .milliseconds(150)) {
+        javaSemanticTokensTask?.cancel()
+        javaSemanticTokensTask = nil
+        guard let selectedFileURL,
+              selectedFileURL.pathExtension.lowercased() == "java",
+              let repositoryID = repositoryID(containing: selectedFileURL),
+              case .text = loadedDocument else {
+            javaSemanticTokens = []
+            return
+        }
+        let fileURL = selectedFileURL.standardizedFileURL
+        let text = documentText
+        if let cached = javaSemanticTokenCacheByFile[fileURL], cached.text == text {
+            javaSemanticTokens = cached.tokens
+            return
+        }
+        javaSemanticTokens = []
+        javaSemanticTokensTask = Task { [weak self] in
+            if let delay {
+                try? await Task.sleep(for: delay)
+            }
+            guard !Task.isCancelled, let self else { return }
+            let tokens = await javaLanguageProvider.semanticTokens(
+                repositoryID: repositoryID,
+                fileURL: fileURL,
+                text: text
+            )
+            guard selectedFileURL == fileURL, documentText == text else { return }
+            if tokens.isEmpty {
+                javaSemanticTokenCacheByFile.removeValue(forKey: fileURL)
+            } else {
+                javaSemanticTokenCacheByFile[fileURL] = JavaSemanticTokenCacheEntry(
+                    text: text,
+                    tokens: tokens
+                )
+            }
+            javaSemanticTokens = tokens
+        }
+    }
+
+    private func clearJavaSemanticTokensForFileTransition() {
+        javaSemanticTokensTask?.cancel()
+        javaSemanticTokensTask = nil
+        javaSemanticTokens = []
+    }
+
+    private func repositoryID(containing fileURL: URL) -> RegisteredRepository.ID? {
+        let fileURL = fileURL.standardizedFileURL
+        return repositories.compactMap { repository -> (RegisteredRepository.ID, Int)? in
+            guard let repositoryURL = repositoryURL(for: repository)?.standardizedFileURL,
+                  WorkspaceTreeRefreshPlanner.isSameOrDescendant(fileURL, of: repositoryURL) else {
+                return nil
+            }
+            return (repository.id, repositoryURL.path.count)
+        }.max { $0.1 < $1.1 }?.0
+    }
+
     func resetFontSizes() {
         setSidebarFontSize(RepoDeskFontSize.default)
         setInterfaceFontSize(RepoDeskFontSize.default)
@@ -2094,12 +2614,48 @@ final class AppState {
     }
 
     func selectFile(_ fileURL: URL, line: Int? = nil) {
+        let range = line.map { line in
+            let position = JavaSourcePosition(line: max(0, line - 1), character: 0)
+            return JavaSourceRange(start: position, end: position)
+        }
+        navigateToFile(fileURL, range: range, recordsHistory: true)
+    }
+
+    func selectFile(_ fileURL: URL, range: JavaSourceRange) {
+        navigateToFile(fileURL, range: range, recordsHistory: true)
+    }
+
+    private func navigateToFile(
+        _ fileURL: URL,
+        range requestedRange: JavaSourceRange?,
+        recordsHistory: Bool
+    ) {
         let fileURL = fileURL.standardizedFileURL
-        let targetLine = line.map { max(1, $0) }
+        let destinationRange = requestedRange ?? navigationRange(for: fileURL)
+        let destination = JavaNavigationHistoryEntry(fileURL: fileURL, range: destinationRange)
+        let current = currentNavigationLocation()
+        if recordsHistory, current != destination {
+            if let current {
+                Self.appendNavigationLocation(current, to: &fileNavigationBackStack)
+            }
+            fileNavigationForwardStack = []
+        }
+        currentFileNavigationLocation = destination
+        if fileURL != selectedFileURL {
+            clearJavaSemanticTokensForFileTransition()
+        }
+        if fileURL.pathExtension.lowercased() == "java",
+           let repositoryID = repositoryID(containing: fileURL) {
+            Task { await javaLanguageProvider.prioritize(repositoryID: repositoryID) }
+        } else {
+            clearJavaSemanticTokensForFileTransition()
+        }
+        let targetLine = requestedRange.map { max(1, $0.start.line + 1) }
         if fileURL == selectedFileURL {
             if let targetLine {
                 rememberSelectedFileVisibleLine(targetLine)
-                selectedSourceNavigationRequest = NativeTextNavigationRequest(line: targetLine)
+                currentFileNavigationLocation = destination
+                selectedSourceNavigationRequest = NativeTextNavigationRequest(range: destinationRange)
             }
             return
         }
@@ -2109,6 +2665,9 @@ final class AppState {
                 openFileTabs[existingIndex].visibleLine = targetLine
             }
             activateFileTab(openFileTabs[existingIndex])
+            if requestedRange != nil {
+                selectedSourceNavigationRequest = NativeTextNavigationRequest(range: destinationRange)
+            }
             return
         }
         openFileTabs.append(
@@ -2124,17 +2683,23 @@ final class AppState {
             )
         )
         trimOpenFileTabsIfNeeded()
-        selectedSourceNavigationRequest = NativeTextNavigationRequest(line: targetLine ?? 1)
+        selectedSourceNavigationRequest = NativeTextNavigationRequest(range: destinationRange)
         loadFile(fileURL)
+    }
+
+    private func navigationRange(for fileURL: URL) -> JavaSourceRange {
+        if fileURL == selectedFileURL, let current = currentNavigationLocation() {
+            return current.range
+        }
+        let line = max(0, (openFileTabs.first { $0.url == fileURL }?.visibleLine ?? 1) - 1)
+        let position = JavaSourcePosition(line: line, character: 0)
+        return JavaSourceRange(start: position, end: position)
     }
 
     func selectFileTab(_ tab: OpenFileTab) {
         guard openFileTabs.contains(where: { $0.id == tab.id }) else { return }
         guard tab.url != selectedFileURL else { return }
-        syncActiveFileTab()
-        if let index = openFileTabs.firstIndex(where: { $0.id == tab.id }) {
-            activateFileTab(openFileTabs[index])
-        }
+        selectFile(tab.url)
     }
 
     func closeSelectedFileTab() {
@@ -2145,6 +2710,7 @@ final class AppState {
     func closeAllFileTabs() {
         openFileTabs = []
         selectedFileURL = nil
+        currentFileNavigationLocation = nil
         loadedDocument = nil
         resetDocumentEditingState()
         persistWindowState()
@@ -2155,6 +2721,7 @@ final class AppState {
         syncActiveFileTab()
         let targetTab = openFileTabs[targetIndex]
         openFileTabs = [targetTab]
+        trimJavaSemanticTokenCacheToOpenTabs()
         if selectedFileURL != targetTab.url {
             activateFileTab(targetTab)
         } else {
@@ -2168,6 +2735,7 @@ final class AppState {
         openFileTabs.removeAll {
             $0.url == itemURL || WorkspaceTreeRefreshPlanner.isSameOrDescendant($0.url, of: itemURL)
         }
+        trimJavaSemanticTokenCacheToOpenTabs()
         guard let selectedFileURL else {
             persistWindowState()
             return
@@ -2178,6 +2746,7 @@ final class AppState {
             activateFileTab(replacement)
         } else {
             self.selectedFileURL = nil
+            currentFileNavigationLocation = nil
             loadedDocument = nil
             resetDocumentEditingState()
             persistWindowState()
@@ -2188,6 +2757,7 @@ final class AppState {
         guard let index = openFileTabs.firstIndex(where: { $0.id == id }) else { return }
         let wasSelected = selectedFileURL == id
         openFileTabs.remove(at: index)
+        trimJavaSemanticTokenCacheToOpenTabs()
         guard wasSelected else {
             persistWindowState()
             return
@@ -2196,6 +2766,7 @@ final class AppState {
             activateFileTab(nextTab)
         } else {
             selectedFileURL = nil
+            currentFileNavigationLocation = nil
             loadedDocument = nil
             resetDocumentEditingState()
             persistWindowState()
@@ -2260,14 +2831,23 @@ final class AppState {
     func updateSelectedDocumentText(_ text: String) {
         guard text != documentText else { return }
         documentText = text
+        if let selectedFileURL {
+            javaSemanticTokenCacheByFile.removeValue(forKey: selectedFileURL.standardizedFileURL)
+        }
         syncActiveFileTab()
         scheduleDocumentAutoSave()
+        scheduleJavaSemanticTokens()
     }
 
     func rememberSelectedFileVisibleLine(_ line: Int) {
         guard let selectedFileURL,
               let index = openFileTabs.firstIndex(where: { $0.url == selectedFileURL }) else { return }
         let line = max(1, line)
+        let position = JavaSourcePosition(line: line - 1, character: 0)
+        currentFileNavigationLocation = JavaNavigationHistoryEntry(
+            fileURL: selectedFileURL,
+            range: JavaSourceRange(start: position, end: position)
+        )
         guard openFileTabs[index].visibleLine != line else { return }
         openFileTabs[index].visibleLine = line
         scheduleWindowStatePersistence()
@@ -2279,6 +2859,7 @@ final class AppState {
     }
 
     private func loadFile(_ fileURL: URL, preservesMarkdownPreview: Bool = false) {
+        clearJavaSemanticTokensForFileTransition()
         let previewWasVisible = showsMarkdownPreview
         if selectedSourceNavigationRequest == nil,
            let tab = openFileTabs.first(where: { $0.url == fileURL }) {
@@ -2323,11 +2904,20 @@ final class AppState {
             syncActiveFileTab()
             documentRequestID = nil
             isLoadingDocument = false
+            scheduleJavaSemanticTokens(after: nil)
         }
     }
 
     private func activateFileTab(_ tab: OpenFileTab) {
+        clearJavaSemanticTokensForFileTransition()
         selectedFileURL = tab.url
+        if currentFileNavigationLocation?.fileURL != tab.url {
+            let position = JavaSourcePosition(line: max(0, tab.visibleLine - 1), character: 0)
+            currentFileNavigationLocation = JavaNavigationHistoryEntry(
+                fileURL: tab.url,
+                range: JavaSourceRange(start: position, end: position)
+            )
+        }
         selectedFileFingerprint = tab.fingerprint
         loadedDocument = tab.loadedDocument
         documentText = tab.text
@@ -2343,6 +2933,8 @@ final class AppState {
         selectedSourceNavigationRequest = NativeTextNavigationRequest(line: tab.visibleLine)
         if tab.loadedDocument == nil && !tab.isLoading {
             loadFile(tab.url, preservesMarkdownPreview: true)
+        } else {
+            scheduleJavaSemanticTokens(after: nil)
         }
         persistWindowState()
     }
@@ -2362,15 +2954,24 @@ final class AppState {
         while openFileTabs.count > maximumOpenFileTabs {
             openFileTabs.removeFirst()
         }
+        trimJavaSemanticTokenCacheToOpenTabs()
         if let selectedFileURL,
            !openFileTabs.contains(where: { $0.url == selectedFileURL }) {
             if let replacement = openFileTabs.last {
                 activateFileTab(replacement)
             } else {
                 self.selectedFileURL = nil
+                currentFileNavigationLocation = nil
                 loadedDocument = nil
                 resetDocumentEditingState()
             }
+        }
+    }
+
+    private func trimJavaSemanticTokenCacheToOpenTabs() {
+        let openURLs = Set(openFileTabs.map { $0.url.standardizedFileURL })
+        javaSemanticTokenCacheByFile = javaSemanticTokenCacheByFile.filter {
+            openURLs.contains($0.key)
         }
     }
 
@@ -2482,6 +3083,7 @@ final class AppState {
             )
         }
         reloadSelectedFileIfChanged()
+        await javaLanguageProvider.notifyFilesChanged(Array(batch.changedURLs))
 
         let changeScope = WorkspaceChangeScope(batch)
         markMavenProjectRevisions(for: changeScope)
@@ -3142,6 +3744,7 @@ final class AppState {
         guard let workspaceURL else { return }
         if environmentChanged {
             mavenEnvironmentValidationStore.invalidate(workspaceURL: workspaceURL)
+            reloadJavaWorkspaceConfiguration()
         }
         do {
             try mavenSettingsStore.save(settings, for: workspaceURL)
@@ -3352,7 +3955,8 @@ final class AppState {
                 sidebarFontSize: sidebarFontSize,
                 interfaceFontSize: interfaceFontSize,
                 fileContentFontSize: fileContentFontSize,
-                maximumOpenFileTabs: maximumOpenFileTabs
+                maximumOpenFileTabs: maximumOpenFileTabs,
+                javaIndexSettings: javaIndexSettings
             )
         )
     }
@@ -3391,6 +3995,7 @@ final class AppState {
             mavenProjectRevisions[removedRepositoryURL.standardizedFileURL.path] = nil
         }
         persistWindowState()
+        reloadJavaWorkspaceConfiguration()
     }
 
     func relocateRepository(_ id: RegisteredRepository.ID) {
@@ -3448,6 +4053,7 @@ final class AppState {
             mavenProjectRevisions[repositoryURL.standardizedFileURL.path, default: 0] += 1
             persistRepositoryState()
             persistWindowState()
+            reloadJavaWorkspaceConfiguration()
             Task { await refreshRepository(relocatedRepository) }
         } catch let error as RepositoryRegistrationError {
             presentedRepositoryError = error
@@ -3517,11 +4123,13 @@ final class AppState {
             repositorySnapshots[$0.id] == nil
         }
         Task { await refreshRepositories(repositoriesNeedingSnapshot) }
+        reloadJavaWorkspaceConfiguration()
     }
 
     private func loadRepositoryState(for workspaceURL: URL) {
         let state = repositoryStore.state(for: workspaceURL)
         repositories = state.repositories
+        repositoryDiscoverySettings = state.discoverySettings
         normalizeRepositoryOrder()
         selectedRepositoryID = repositories.contains { $0.id == state.selectedRepositoryID }
             ? state.selectedRepositoryID
@@ -3534,7 +4142,8 @@ final class AppState {
         repositoryStore.save(
             RepositoryWorkspaceState(
                 repositories: repositories,
-                selectedRepositoryID: selectedRepositoryID
+                selectedRepositoryID: selectedRepositoryID,
+                discoverySettings: repositoryDiscoverySettings
             ),
             for: workspaceURL
         )
@@ -3916,6 +4525,8 @@ final class AppState {
 
     private func resetDocumentEditingState() {
         openFileTabs = []
+        clearJavaSemanticTokensForFileTransition()
+        javaSemanticTokenCacheByFile = [:]
         documentRequestID = nil
         documentText = ""
         documentOriginalText = ""
@@ -3959,6 +4570,7 @@ final class AppState {
 
     private func restoreFileTabsForCurrentContext() {
         selectedFileURL = nil
+        currentFileNavigationLocation = nil
         selectedFileFingerprint = nil
         loadedDocument = nil
         resetDocumentEditingState()
@@ -4117,6 +4729,13 @@ final class AppState {
     func persistStateBeforeTermination() {
         persistWindowState()
     }
+
+    func shutdownJavaLanguage() async {
+        javaSemanticTokensTask?.cancel()
+        javaLanguageEventTask?.cancel()
+        javaIndexPhases = [:]
+        await javaLanguageProvider.shutdown()
+    }
 }
 
 extension AppState {
@@ -4149,6 +4768,7 @@ private final class PreviewWorkspaceStore: WorkspaceStoring {
     func restoreLastWorkspace() -> URL? { nil }
     func recentWorkspaces() -> [RecentWorkspace] { [] }
     func rememberWorkspace(_ url: URL) {}
+    func removeWorkspace(_ workspace: RecentWorkspace) {}
     func resolve(_ workspace: RecentWorkspace) -> URL {
         URL(fileURLWithPath: workspace.path, isDirectory: true)
     }
@@ -4171,7 +4791,10 @@ private struct PreviewRepositoryPicker: RepositoryPicking {
 }
 
 private struct PreviewRepositoryDiscoverer: RepositoryDiscovering {
-    func discoverRepositories(in workspaceURL: URL) async -> [RegisteredRepository] { [] }
+    func discoverRepositories(
+        in workspaceURL: URL,
+        settings: RepositoryDiscoverySettings
+    ) async -> [RegisteredRepository] { [] }
 }
 
 private struct PreviewGitRepositoryReader: GitRepositoryReading {

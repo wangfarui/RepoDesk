@@ -136,6 +136,12 @@ enum WorkspaceTreeRefreshPlanner {
 }
 
 private final class WorkspaceFSEventObserver: @unchecked Sendable {
+    private struct PollingFingerprint: Equatable {
+        let modificationDate: Date?
+        let fileSize: Int?
+        let isDirectory: Bool
+    }
+
     private let workspaceURL: URL
     private let debounceInterval: TimeInterval
     private let queue = DispatchQueue(label: "com.wangfarui.RepoDesk.workspace-events")
@@ -144,6 +150,9 @@ private final class WorkspaceFSEventObserver: @unchecked Sendable {
     private var pendingURLs: Set<URL> = []
     private var pendingFullRescan = false
     private var flushWorkItem: DispatchWorkItem?
+    private var usesDirectoryEventFallback = false
+    private var pollingWorkItem: DispatchWorkItem?
+    private var pollingSnapshot: [String: PollingFingerprint] = [:]
 
     init(
         workspaceURL: URL,
@@ -167,38 +176,48 @@ private final class WorkspaceFSEventObserver: @unchecked Sendable {
             let flags = FSEventStreamCreateFlags(
                 kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot
             )
-            guard let stream = FSEventStreamCreate(
-                kCFAllocatorDefault,
-                workspaceEventCallback,
-                &context,
-                [workspaceURL.path] as CFArray,
-                FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-                debounceInterval,
-                flags
-            ) else {
-                continuation?.yield(.failure("File system monitoring stream could not be created."))
-                continuation?.finish()
-                continuation = nil
+            if let stream = createAndStartStream(context: &context, flags: flags) {
+                self.stream = stream
                 return
             }
-            self.stream = stream
-            FSEventStreamSetDispatchQueue(stream, queue)
-            guard FSEventStreamStart(stream) else {
-                FSEventStreamInvalidate(stream)
-                FSEventStreamRelease(stream)
-                self.stream = nil
-                continuation?.yield(.failure("File system monitoring stream could not be started."))
-                continuation?.finish()
-                continuation = nil
+            usesDirectoryEventFallback = true
+            if let stream = createAndStartStream(context: &context, flags: 0) {
+                self.stream = stream
                 return
             }
+            startPollingFallback()
         }
+    }
+
+    private func createAndStartStream(
+        context: inout FSEventStreamContext,
+        flags: FSEventStreamCreateFlags
+    ) -> FSEventStreamRef? {
+        guard let stream = FSEventStreamCreate(
+            kCFAllocatorDefault,
+            workspaceEventCallback,
+            &context,
+            [workspaceURL.path] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            debounceInterval,
+            flags
+        ) else { return nil }
+        FSEventStreamSetDispatchQueue(stream, queue)
+        guard FSEventStreamStart(stream) else {
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+            return nil
+        }
+        return stream
     }
 
     func stop() {
         queue.async { [self] in
             flushWorkItem?.cancel()
             flushWorkItem = nil
+            pollingWorkItem?.cancel()
+            pollingWorkItem = nil
+            pollingSnapshot = [:]
             pendingURLs = []
             if let stream {
                 FSEventStreamStop(stream)
@@ -215,6 +234,9 @@ private final class WorkspaceFSEventObserver: @unchecked Sendable {
         flags: UnsafePointer<FSEventStreamEventFlags>,
         count: Int
     ) {
+        if usesDirectoryEventFallback {
+            pendingFullRescan = true
+        }
         let pathPointers = paths.assumingMemoryBound(to: UnsafePointer<CChar>?.self)
         for index in 0..<count {
             guard let pathPointer = pathPointers[index] else { continue }
@@ -269,6 +291,61 @@ private final class WorkspaceFSEventObserver: @unchecked Sendable {
         }
         flushWorkItem = workItem
         queue.asyncAfter(deadline: .now() + debounceInterval, execute: workItem)
+    }
+
+    private func startPollingFallback() {
+        pollingSnapshot = makePollingSnapshot()
+        schedulePollingFallback()
+    }
+
+    private func schedulePollingFallback() {
+        pollingWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.pollWorkspace()
+        }
+        pollingWorkItem = workItem
+        queue.asyncAfter(
+            deadline: .now() + max(1, debounceInterval),
+            execute: workItem
+        )
+    }
+
+    private func pollWorkspace() {
+        guard continuation != nil else { return }
+        let snapshot = makePollingSnapshot()
+        if snapshot != pollingSnapshot {
+            continuation?.yield(
+                WorkspaceChangeBatch(
+                    changedURLs: [workspaceURL],
+                    requiresFullRescan: true,
+                    monitoringError: nil
+                )
+            )
+        }
+        pollingSnapshot = snapshot
+        schedulePollingFallback()
+    }
+
+    private func makePollingSnapshot() -> [String: PollingFingerprint] {
+        let keys: Set<URLResourceKey> = [
+            .contentModificationDateKey, .fileSizeKey, .isDirectoryKey
+        ]
+        guard let enumerator = FileManager.default.enumerator(
+            at: workspaceURL,
+            includingPropertiesForKeys: Array(keys),
+            options: [],
+            errorHandler: { _, _ in true }
+        ) else { return [:] }
+        var snapshot: [String: PollingFingerprint] = [:]
+        for case let itemURL as URL in enumerator {
+            guard let values = try? itemURL.resourceValues(forKeys: keys) else { continue }
+            snapshot[itemURL.standardizedFileURL.path] = PollingFingerprint(
+                modificationDate: values.contentModificationDate,
+                fileSize: values.fileSize,
+                isDirectory: values.isDirectory == true
+            )
+        }
+        return snapshot
     }
 
     private func flush() {

@@ -20,7 +20,13 @@ struct AppPreferencesTests {
             ignoresWhitespaceInDiff: true,
             sidebarFontSize: 10,
             interfaceFontSize: 15,
-            fileContentFontSize: 16
+            fileContentFontSize: 16,
+            javaIndexSettings: JavaIndexSettings(
+                maximumJVMCount: 2,
+                processorCountPerJVM: 3,
+                maximumHeapMegabytes: 3_072,
+                cacheLimitGigabytes: 20
+            )
         )
 
         store.save(preferences)
@@ -65,6 +71,7 @@ struct AppPreferencesTests {
         #expect(preferences.interfaceFontSize == RepoDeskFontSize.default)
         #expect(preferences.fileContentFontSize == RepoDeskFontSize.default)
         #expect(preferences.maximumOpenFileTabs == 5)
+        #expect(preferences.javaIndexSettings == .default)
     }
 
     @Test func appStateLoadsAndPersistsCentralSettings() throws {
@@ -89,6 +96,14 @@ struct AppPreferencesTests {
         state.setInterfaceFontSize(15)
         state.setFileContentFontSize(16)
         state.setMaximumOpenFileTabs(8)
+        state.setJavaIndexSettings(
+            JavaIndexSettings(
+                maximumJVMCount: 2,
+                processorCountPerJVM: 3,
+                maximumHeapMegabytes: 3_072,
+                cacheLimitGigabytes: 20
+            )
+        )
 
         let restored = AppState(
             appPreferencesStore: store,
@@ -105,6 +120,10 @@ struct AppPreferencesTests {
         #expect(restored.interfaceFontSize == 15)
         #expect(restored.fileContentFontSize == 16)
         #expect(restored.maximumOpenFileTabs == 8)
+        #expect(restored.javaIndexSettings.maximumJVMCount == 2)
+        #expect(restored.javaIndexSettings.processorCountPerJVM == 3)
+        #expect(restored.javaIndexSettings.maximumHeapMegabytes == 3_072)
+        #expect(restored.javaIndexSettings.cacheLimitGigabytes == 20)
     }
 
     @Test func fontSizesAreRoundedAndClampedBeforePersistence() {

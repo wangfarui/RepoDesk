@@ -93,6 +93,7 @@ private final class RestorationWorkspaceStore: WorkspaceStoring {
     func restoreLastWorkspace() -> URL? { restoredURL }
     func recentWorkspaces() -> [RecentWorkspace] { [] }
     func rememberWorkspace(_ url: URL) {}
+    func removeWorkspace(_ workspace: RecentWorkspace) {}
     func resolve(_ workspace: RecentWorkspace) -> URL {
         URL(fileURLWithPath: workspace.path, isDirectory: true)
     }

@@ -66,6 +66,18 @@ struct SourceLineIndex: Equatable {
         )
         return NSRange(location: start, length: max(0, contentEnd - start))
     }
+
+    func utf16Range(for range: JavaSourceRange, in text: String) -> NSRange? {
+        guard lineStartOffsets.indices.contains(range.start.line),
+              lineStartOffsets.indices.contains(range.end.line) else { return nil }
+        let startLineRange = contentRange(forLine: range.start.line + 1, in: text)
+        let endLineRange = contentRange(forLine: range.end.line + 1, in: text)
+        guard let startLineRange, let endLineRange else { return nil }
+        let start = startLineRange.location + min(range.start.character, startLineRange.length)
+        let end = endLineRange.location + min(range.end.character, endLineRange.length)
+        guard end >= start else { return nil }
+        return NSRange(location: start, length: end - start)
+    }
 }
 
 enum GoToLineValidationError: Error, Equatable {
@@ -102,9 +114,17 @@ enum GoToLineValidator {
 struct NativeTextNavigationRequest: Equatable {
     let id: UUID
     let line: Int
+    let range: JavaSourceRange?
 
     init(line: Int, id: UUID = UUID()) {
         self.id = id
         self.line = line
+        range = nil
+    }
+
+    init(range: JavaSourceRange, id: UUID = UUID()) {
+        self.id = id
+        line = range.start.line + 1
+        self.range = range
     }
 }

@@ -11,6 +11,11 @@ private struct ChangesRollbackRequest: Identifiable {
     }
 }
 
+private struct PendingDiffComparison: Equatable {
+    let repositoryID: RegisteredRepository.ID
+    let selection: GitChangeSelection
+}
+
 @MainActor
 struct ChangesView: View {
     @Bindable var appState: AppState
@@ -21,6 +26,7 @@ struct ChangesView: View {
         frameAutosaveName: "RepoDesk.GitDiffComparison"
     )
     @State private var rollbackRequest: ChangesRollbackRequest?
+    @State private var pendingDiffComparison: PendingDiffComparison?
 
     var body: some View {
         Group {
@@ -64,11 +70,20 @@ struct ChangesView: View {
                 .help("下一个改动")
             }
         }
-        .onChange(of: appState.selectedChange) { _, _ in
+        .onChange(of: appState.selectedChange) { _, selection in
             resetDiffComparison()
+            if let pendingDiffComparison,
+               pendingDiffComparison.selection != selection
+                || pendingDiffComparison.repositoryID != appState.selectedChangeRepositoryID {
+                self.pendingDiffComparison = nil
+            }
         }
         .onChange(of: appState.currentDiff) { _, diff in
-            if diff == nil { resetDiffComparison() }
+            if diff == nil {
+                resetDiffComparison()
+                return
+            }
+            openPendingDiffComparisonIfReady(with: diff)
         }
         .alert(item: $rollbackRequest) { request in
             Alert(
@@ -645,6 +660,12 @@ struct ChangesView: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .simultaneousGesture(
+                TapGesture(count: 2)
+                    .onEnded {
+                        requestDiffComparison(for: selection, repository: repository)
+                    }
+            )
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -738,6 +759,51 @@ struct ChangesView: View {
                 close: { diffComparisonWindow.close() }
             )
         }
+    }
+
+    private func requestDiffComparison(
+        for selection: GitChangeSelection,
+        repository: RegisteredRepository
+    ) {
+        let pending = PendingDiffComparison(
+            repositoryID: repository.id,
+            selection: selection
+        )
+        pendingDiffComparison = pending
+
+        guard appState.selectedChangeRepositoryID == repository.id,
+              appState.selectedChange == selection,
+              let diff = appState.currentDiff else {
+            appState.selectChange(selection, repositoryID: repository.id)
+            return
+        }
+        pendingDiffComparison = nil
+        openDiffComparison(
+            selection: selection,
+            repository: repository,
+            diff: diff,
+            renderModel: GitDiffRenderModel(diff: diff)
+        )
+    }
+
+    private func openPendingDiffComparisonIfReady(with diff: GitFileDiff?) {
+        guard let pending = pendingDiffComparison,
+              let diff,
+              appState.selectedChangeRepositoryID == pending.repositoryID,
+              appState.selectedChange == pending.selection else {
+            return
+        }
+        guard let repository = appState.repositories.first(where: { $0.id == pending.repositoryID }) else {
+            pendingDiffComparison = nil
+            return
+        }
+        pendingDiffComparison = nil
+        openDiffComparison(
+            selection: pending.selection,
+            repository: repository,
+            diff: diff,
+            renderModel: GitDiffRenderModel(diff: diff)
+        )
     }
 
     private func resetDiffComparison() {

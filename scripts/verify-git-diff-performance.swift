@@ -231,7 +231,8 @@ enum GitDiffPerformanceVerification {
             diff: diff,
             renderModel: renderModel,
             oldBlame: nil,
-            presentation: presentation
+            presentation: presentation,
+            expansionState: PerformanceExpansionState()
         ))
         hostingView.frame = NSRect(x: 0, y: 0, width: 1_200, height: 680)
         hostingView.layoutSubtreeIfNeeded()
@@ -250,7 +251,8 @@ enum GitDiffPerformanceVerification {
             diff: diff,
             renderModel: renderModel,
             oldBlame: blame,
-            presentation: .sideBySide
+            presentation: .sideBySide,
+            expansionState: PerformanceExpansionState()
         )
         hostingView.layoutSubtreeIfNeeded()
         hostingView.displayIfNeeded()
@@ -263,22 +265,20 @@ enum GitDiffPerformanceVerification {
         presentation: GitDiffPresentation,
         scrollVerification: (offset: CGFloat, text: String)? = nil
     ) throws -> (TimeInterval, Int) {
-        let (hostingView, _) = measureInitialLayout(
+        let expansionState = PerformanceExpansionState()
+        let hostingView = NSHostingView(rootView: PerformanceDiffRoot(
             diff: diff,
             renderModel: renderModel,
-            presentation: presentation
-        )
+            oldBlame: nil,
+            presentation: presentation,
+            expansionState: expansionState
+        ))
+        hostingView.frame = NSRect(x: 0, y: 0, width: 1_200, height: 680)
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.displayIfNeeded()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
-        let buttons = descendantViews(of: hostingView).compactMap { $0 as? NSButton }
-        guard buttons.indices.contains(2) else {
-            throw GitDiffPerformanceVerificationError(
-                message: "The Diff expansion toolbar control was not rendered."
-            )
-        }
-        let button = buttons[2]
-
         let start = ProcessInfo.processInfo.systemUptime
-        button.performClick(button)
+        expansionState.gapIDs = renderModel.gapIDs
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
         hostingView.layoutSubtreeIfNeeded()
         hostingView.displayIfNeeded()
@@ -423,6 +423,7 @@ private struct PerformanceDiffRoot: View {
     let renderModel: GitDiffRenderModel
     let oldBlame: [Int: GitBlameLine]?
     let presentation: GitDiffPresentation
+    @ObservedObject var expansionState: PerformanceExpansionState
 
     var body: some View {
         GitDiffView(
@@ -435,8 +436,14 @@ private struct PerformanceDiffRoot: View {
             newBlame: nil,
             toggleOldBlame: {},
             toggleNewBlame: {},
-            renderModel: renderModel
+            renderModel: renderModel,
+            expandedGapIDs: $expansionState.gapIDs
         )
         .frame(width: 1_200, height: 680)
     }
+}
+
+@MainActor
+private final class PerformanceExpansionState: ObservableObject {
+    @Published var gapIDs: Set<String> = []
 }

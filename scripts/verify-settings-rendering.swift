@@ -30,6 +30,7 @@ enum VerifySettingsRendering {
         try render(tab: .appearance, state: state, name: "settings-appearance.png")
         try render(tab: .files, state: state, name: "settings-files.png")
         try render(tab: .diff, state: state, name: "settings-diff.png")
+        try render(tab: .java, state: state, name: "settings-java.png")
         try render(tab: .maven, state: state, name: "settings-maven.png")
         try render(
             tab: .general,

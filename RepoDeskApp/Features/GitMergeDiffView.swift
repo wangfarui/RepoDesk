@@ -396,8 +396,7 @@ struct GitMergeDiffView: View {
 
     private var contentSearchMatches: [GitMergeContentSearchMatch] {
         let matchesByPane = Dictionary(uniqueKeysWithValues: GitMergeDiffPane.allCases.map { pane in
-            let matches = ContentSearchMatcher.matches(
-                in: selectableText(for: pane).searchableLines,
+            let matches = selectableText(for: pane).searchMatches(
                 query: contentFindState.query,
                 options: contentFindState.options
             )

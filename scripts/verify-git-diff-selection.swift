@@ -37,6 +37,23 @@ struct GitDiffSelectionVerification {
             "Collapsed gap hit testing did not preserve its action row."
         )
 
+        let query = "queryInventoryGoodsPurchaseCost"
+        let searchModel = GitDiffSelectableTextModel(rows: [
+            GitDiffSelectableTextRow(text: "before"),
+            GitDiffSelectableTextRow(text: ""),
+            GitDiffSelectableTextRow(text: "public func \(query)()")
+        ])
+        let searchMatch = searchModel.searchMatches(
+            query: query,
+            options: ContentSearchOptions()
+        ).first
+        require(
+            searchMatch.map {
+                (searchModel.storageText as NSString).substring(with: $0.range)
+            } == query,
+            "Diff search range drifted after an empty selectable row."
+        )
+
         let textView = GitDiffSelectableTextViewSurface(frame: NSRect(
             x: 0,
             y: 0,

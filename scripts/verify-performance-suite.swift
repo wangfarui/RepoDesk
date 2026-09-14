@@ -27,7 +27,10 @@ enum PerformanceSuiteVerification {
         in fixture: PerformanceWorkspaceFixture
     ) async throws {
         let (repositories, duration) = await measure {
-            await FileSystemRepositoryDiscoverer().discoverRepositories(in: fixture.rootURL)
+            await FileSystemRepositoryDiscoverer().discoverRepositories(
+                in: fixture.rootURL,
+                settings: .default
+            )
         }
         try require(repositories.count == fixture.repositoryCount, "Repository discovery returned an incorrect count.")
         try require(duration < 2, "Repository discovery exceeded the 2s budget: \(format(duration))s.")

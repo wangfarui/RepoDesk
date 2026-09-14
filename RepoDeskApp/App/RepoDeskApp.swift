@@ -3,16 +3,25 @@ import SwiftUI
 
 extension Notification.Name {
     static let repoDeskFileSearchRequested = Notification.Name("RepoDesk.FileSearchRequested")
+    static let repoDeskJavaTypeSearchRequested = Notification.Name("RepoDesk.JavaTypeSearchRequested")
+    static let repoDeskJavaSymbolSearchRequested = Notification.Name("RepoDesk.JavaSymbolSearchRequested")
 }
 
 @main
 @MainActor
 struct RepoDeskApp: App {
     @NSApplicationDelegateAdaptor(RepoDeskApplicationDelegate.self) private var applicationDelegate
-    @State private var appState = AppState()
+    @State private var appState: AppState
+
+    init() {
+        _appState = State(
+            initialValue: RepoDeskUITestLaunchConfiguration.makeAppState()
+                ?? AppState()
+        )
+    }
 
     var body: some Scene {
-        Window("RepoDesk", id: "main") {
+        Window("", id: "main") {
             RootView(appState: appState)
                 .frame(minWidth: 1_000, minHeight: 650)
                 .background(WindowTitleHider())
@@ -29,6 +38,16 @@ struct RepoDeskApp: App {
                 }
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(!appState.hasUnsavedDocumentChanges || appState.isSavingDocument)
+            }
+            CommandMenu("导航") {
+                Button("Java 类") {
+                    NotificationCenter.default.post(name: .repoDeskJavaTypeSearchRequested, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: .command)
+                Button("Java 符号") {
+                    NotificationCenter.default.post(name: .repoDeskJavaSymbolSearchRequested, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: [.command, .option])
             }
         }
 
@@ -55,10 +74,26 @@ private final class WindowTitleHidingView: NSView {
 
 @MainActor
 final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
+    enum FileNavigationMouseAction: Equatable {
+        case back
+        case forward
+    }
+
     weak var appState: AppState?
     private var shiftMonitor: Any?
     private var contentFindMonitor: Any?
+    private var fileNavigationMouseMonitor: Any?
     private var lastShiftPressTimestamp: TimeInterval?
+
+    nonisolated static func fileNavigationAction(
+        forMouseButton buttonNumber: Int
+    ) -> FileNavigationMouseAction? {
+        switch buttonNumber {
+        case 3: .back
+        case 4: .forward
+        default: nil
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         shiftMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -101,6 +136,22 @@ final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
             }
             return event
         }
+        fileNavigationMouseMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .otherMouseDown
+        ) { [weak self] event in
+            guard let self,
+                  let appState = self.appState,
+                  let action = Self.fileNavigationAction(forMouseButton: event.buttonNumber) else {
+                return event
+            }
+            switch action {
+            case .back:
+                appState.navigateFileBack()
+            case .forward:
+                appState.navigateFileForward()
+            }
+            return nil
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -111,12 +162,23 @@ final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
         if let contentFindMonitor {
             NSEvent.removeMonitor(contentFindMonitor)
         }
+        if let fileNavigationMouseMonitor {
+            NSEvent.removeMonitor(fileNavigationMouseMonitor)
+        }
         shiftMonitor = nil
         contentFindMonitor = nil
+        fileNavigationMouseMonitor = nil
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let appState, appState.hasUnsavedDocumentChanges else { return .terminateNow }
+        guard let appState else { return .terminateNow }
+        guard appState.hasUnsavedDocumentChanges else {
+            Task { @MainActor in
+                await appState.shutdownJavaLanguage()
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
+        }
 
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -132,8 +194,11 @@ final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in
                 await appState.saveSelectedDocument()
                 let didSave = !appState.hasUnsavedDocumentChanges
-                sender.reply(toApplicationShouldTerminate: didSave)
-                if !didSave {
+                if didSave {
+                    await appState.shutdownJavaLanguage()
+                    sender.reply(toApplicationShouldTerminate: true)
+                } else {
+                    sender.reply(toApplicationShouldTerminate: false)
                     let failure = NSAlert()
                     failure.alertStyle = .critical
                     failure.messageText = "RepoDesk 无法保存文件"
@@ -145,7 +210,11 @@ final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
             }
             return .terminateLater
         case .alertThirdButtonReturn:
-            return .terminateNow
+            Task { @MainActor in
+                await appState.shutdownJavaLanguage()
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
         default:
             return .terminateCancel
         }

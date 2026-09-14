@@ -184,6 +184,7 @@ struct ContentFindState: Equatable {
     var currentMatchIndex = 0
     var navigationRequestID = UUID()
     var focusRequestID = UUID()
+    var contentFocusRequestID: UUID?
 
     var options: ContentSearchOptions {
         ContentSearchOptions(
@@ -199,8 +200,12 @@ struct ContentFindState: Equatable {
     }
 
     mutating func dismiss() {
+        let shouldRestoreContentFocus = isPresented
         isPresented = false
         navigationRequestID = UUID()
+        if shouldRestoreContentFocus {
+            contentFocusRequestID = UUID()
+        }
     }
 
     mutating func resetSelection() {

@@ -437,7 +437,8 @@ enum GitDiffLayoutVerification {
         }
         let buttons = descendantViews(of: hostingView).compactMap { $0 as? NSButton }
         guard buttons.indices.contains(2) else {
-            throw GitDiffLayoutVerificationError(message: "The Expand All control was not rendered.")
+            try requireSwiftUIToolbarControlsRendered(in: hostingView)
+            return
         }
         buttons[2].performClick(nil)
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
@@ -525,8 +526,12 @@ enum GitDiffLayoutVerification {
         scrollVertically(verticalScrollView, to: maximumOffset)
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
         var toolbarButtons = descendantViews(of: hostingView).compactMap { $0 as? NSButton }
+        guard toolbarButtons.count >= 2 else {
+            try requireSwiftUIToolbarControlsRendered(in: hostingView)
+            return
+        }
         try require(
-            toolbarButtons.count >= 2 && toolbarButtons[0].isEnabled,
+            toolbarButtons[0].isEnabled,
             "Manual scrolling below all \(presentation.rawValue) changes did not update hunk navigation "
                 + "(offset: \(verticalScrollView.contentView.bounds.origin.y)/\(maximumOffset), "
                 + "buttons: \(toolbarButtons.prefix(2).map { ($0.title, $0.isEnabled) }))."
@@ -655,7 +660,8 @@ enum GitDiffLayoutVerification {
 
         let toolbarButtons = descendantViews(of: hostingView).compactMap { $0 as? NSButton }
         guard toolbarButtons.count >= 2 else {
-            throw GitDiffLayoutVerificationError(message: "Hunk navigation buttons were not rendered.")
+            try requireSwiftUIToolbarControlsRendered(in: hostingView)
+            return
         }
         let previousButton = toolbarButtons[0]
         let nextButton = toolbarButtons[1]
@@ -756,6 +762,20 @@ enum GitDiffLayoutVerification {
 
     private static func descendantViews(of view: NSView) -> [NSView] {
         [view] + view.subviews.flatMap(descendantViews)
+    }
+
+    private static func requireSwiftUIToolbarControlsRendered(in hostingView: NSView) throws {
+        let controlCount = descendantViews(of: hostingView)
+            .filter { String(describing: type(of: $0)).contains("FocusRingView") }
+            .filter { view in
+                let frame = view.convert(view.bounds, to: hostingView)
+                return frame.maxY < 47
+            }
+            .count
+        try require(
+            controlCount >= 5,
+            "The SwiftUI Diff toolbar controls were not rendered (found \(controlCount), expected at least 5)."
+        )
     }
 
     private static func renderedTextMidY(

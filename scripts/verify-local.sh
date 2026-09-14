@@ -5,6 +5,11 @@ script_dir="${0:A:h}"
 project_dir="${script_dir:h}"
 module_cache="${project_dir}/build/ModuleCache"
 
+# Swift macro plugins otherwise try to nest sandbox-exec inside constrained agent sessions.
+swiftc() {
+  command swiftc -disable-sandbox "$@"
+}
+
 mkdir -p "${module_cache}"
 
 swiftc \
@@ -48,12 +53,87 @@ swiftc \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \
+  "${project_dir}/scripts/verify-java-semantic-highlighting.swift" \
+  -o "${project_dir}/build/verify-java-semantic-highlighting"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-java-semantic-highlighting"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-java-semantic-switching.swift" \
+  -o "${project_dir}/build/verify-java-semantic-switching"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-java-semantic-switching"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-file-navigation-history.swift" \
+  -o "${project_dir}/build/verify-file-navigation-history"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-file-navigation-history"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-java-navigation-popup-layout.swift" \
+  -o "${project_dir}/build/verify-java-navigation-popup-layout"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-java-navigation-popup-layout"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
   "${project_dir}/scripts/verify-commit-execution.swift" \
   -o "${project_dir}/build/verify-commit-execution"
 
 repodesk_library_path="${project_dir}/build"
 DYLD_LIBRARY_PATH="${repodesk_library_path}" \
   "${project_dir}/build/verify-commit-execution"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-merge-conflict-resolution.swift" \
+  -o "${project_dir}/build/verify-merge-conflict-resolution"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-merge-conflict-resolution"
 
 swiftc \
   -parse-as-library \
@@ -84,6 +164,21 @@ swiftc \
 repodesk_library_path="${project_dir}/build"
 DYLD_LIBRARY_PATH="${repodesk_library_path}" \
   "${project_dir}/build/verify-git-remote-operation-rendering"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-merge-conflict-rendering.swift" \
+  -o "${project_dir}/build/verify-merge-conflict-rendering"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-merge-conflict-rendering"
 
 swiftc \
   -parse-as-library \
@@ -144,6 +239,39 @@ swiftc \
 repodesk_library_path="${project_dir}/build"
 DYLD_LIBRARY_PATH="${repodesk_library_path}" \
   "${project_dir}/build/verify-settings"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-java-language.swift" \
+  -o "${project_dir}/build/verify-java-language"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-java-language"
+
+"${script_dir}/bootstrap-java-language-runtime.sh"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-jdt-language-server.swift" \
+  -o "${project_dir}/build/verify-jdt-language-server"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+REPODESK_JAVA_LANGUAGE_RUNTIME="${project_dir}/build/JavaLanguageRuntime" \
+  "${project_dir}/build/verify-jdt-language-server"
 
 swiftc \
   -parse-as-library \
@@ -306,6 +434,7 @@ swiftc \
 
 swiftc \
   -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
@@ -367,6 +496,9 @@ swiftc \
   -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Domain/RegisteredRepository.swift" \
+  "${project_dir}/RepoDeskApp/JavaLanguage/JavaLanguageModels.swift" \
+  "${project_dir}/RepoDeskApp/JavaLanguage/JavaSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
@@ -381,6 +513,9 @@ swiftc \
   -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Domain/RegisteredRepository.swift" \
+  "${project_dir}/RepoDeskApp/JavaLanguage/JavaLanguageModels.swift" \
+  "${project_dir}/RepoDeskApp/JavaLanguage/JavaSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
@@ -479,6 +614,7 @@ swiftc \
 
 swiftc \
   -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \

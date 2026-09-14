@@ -172,6 +172,13 @@ struct WorkspaceSidebar: View {
             )
             .help(workspace.path)
             .accessibilityValue(isSelectedWorkspace(workspace) ? "已选择" : "")
+            .contextMenu {
+                if appState.recentWorkspaces.contains(where: { $0.path == workspace.path }) {
+                    Button("移除记录", systemImage: "minus.circle") {
+                        appState.removeRecentWorkspace(workspace)
+                    }
+                }
+            }
         }
 
         if sidebarWorkspaces.isEmpty {

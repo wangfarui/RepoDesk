@@ -8,6 +8,7 @@ protocol RepositoryPicking {
 enum RepositoryPickerPurpose {
     case register
     case relocate(String)
+    case ignoreForDiscovery
 }
 
 @MainActor
@@ -23,6 +24,10 @@ struct SystemRepositoryPicker: RepositoryPicking {
             panel.title = "Relocate \(name)"
             panel.message = "Choose the repository's new location inside the current workspace."
             panel.prompt = "Relocate"
+        case .ignoreForDiscovery:
+            panel.title = "Ignore Directory"
+            panel.message = "Choose a directory to skip when discovering Git repositories."
+            panel.prompt = "Ignore"
         }
         panel.directoryURL = workspaceURL
         panel.canChooseFiles = false
