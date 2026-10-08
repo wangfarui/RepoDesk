@@ -5,6 +5,7 @@ struct GitConflictDocumentBlock: Equatable, Identifiable, Sendable {
     let ours: String
     let theirs: String
     let original: String
+    let base: String
 }
 
 enum GitConflictDocumentSegment: Equatable, Sendable {
@@ -18,6 +19,10 @@ struct GitConflictResolutionDocument: Equatable, Sendable {
 
     init(text: String) {
         segments = GitConflictParser.segments(in: text)
+    }
+
+    init(text: String, base: String?) {
+        segments = GitConflictParser.segments(in: text, base: base)
     }
 
     var blocks: [GitConflictDocumentBlock] {
@@ -54,12 +59,16 @@ struct GitConflictResolutionDocument: Equatable, Sendable {
     }
 
     func renderedText() -> String {
+        renderedText(overrides: [:])
+    }
+
+    func renderedText(overrides: [Int: String]) -> String {
         segments.map { segment in
             switch segment {
             case .unchanged(_, let text):
                 text
             case .conflict(let block):
-                resolutions[block.id] ?? block.original
+                overrides[block.id] ?? resolutions[block.id] ?? block.original
             }
         }.joined()
     }
@@ -87,7 +96,7 @@ enum GitConflictParser {
         return text.replacingCharacters(in: replacementRange, with: replacement)
     }
 
-    static func segments(in text: String) -> [GitConflictDocumentSegment] {
+    static func segments(in text: String, base: String? = nil) -> [GitConflictDocumentSegment] {
         let matches = matches(in: text)
         guard !matches.isEmpty else {
             return text.isEmpty ? [] : [.unchanged(id: 0, text: text)]
@@ -118,7 +127,8 @@ enum GitConflictParser {
                         id: blockID,
                         ours: substring(text, range: match.range(at: 1)),
                         theirs: substring(text, range: match.range(at: 2)),
-                        original: substring(text, range: match.range)
+                        original: substring(text, range: match.range),
+                        base: base ?? ""
                     )
                 )
             )

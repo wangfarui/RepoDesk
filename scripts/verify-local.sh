@@ -53,6 +53,21 @@ swiftc \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \
+  "${project_dir}/scripts/verify-file-tree-horizontal-scrolling.swift" \
+  -o "${project_dir}/build/verify-file-tree-horizontal-scrolling"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-file-tree-horizontal-scrolling"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
   "${project_dir}/scripts/verify-java-semantic-highlighting.swift" \
   -o "${project_dir}/build/verify-java-semantic-highlighting"
 
@@ -269,6 +284,21 @@ swiftc \
 repodesk_library_path="${project_dir}/build"
 DYLD_LIBRARY_PATH="${repodesk_library_path}" \
   "${project_dir}/build/verify-java-language"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-java-cross-repository-field-navigation.swift" \
+  -o "${project_dir}/build/verify-java-cross-repository-field-navigation"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-java-cross-repository-field-navigation"
 
 "${script_dir}/bootstrap-java-language-runtime.sh"
 
@@ -500,6 +530,21 @@ swiftc \
   -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-markdown-preview-selection.swift" \
+  -o "${project_dir}/build/verify-markdown-preview-selection"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-markdown-preview-selection"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/scripts/verify-content-search.swift" \
   -o "${project_dir}/build/verify-content-search"
@@ -518,6 +563,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
+  "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
   "${project_dir}/RepoDeskApp/Features/StreamingOutputView.swift" \
   "${project_dir}/scripts/verify-output-follow.swift" \
   -o "${project_dir}/build/verify-output-follow"
@@ -536,6 +582,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
+  "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
   "${project_dir}/scripts/verify-source-editor-scroll-performance.swift" \
   -o "${project_dir}/build/verify-source-editor-scroll-performance"
 

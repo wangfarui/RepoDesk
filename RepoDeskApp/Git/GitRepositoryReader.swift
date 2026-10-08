@@ -14,6 +14,14 @@ protocol GitRepositoryReading: Sendable {
         revision: String?,
         author: String?
     ) async throws -> [GitCommitSummary]
+    func fileHistory(
+        repositoryURL: URL,
+        path: String,
+        limit: Int,
+        skip: Int,
+        revision: String?,
+        author: String?
+    ) async throws -> [GitCommitSummary]
     func branches(repositoryURL: URL) async throws -> [GitBranch]
     func authors(repositoryURL: URL) async throws -> [String]
     func currentUserName(repositoryURL: URL) async throws -> String?
@@ -43,6 +51,23 @@ protocol GitRepositoryReading: Sendable {
 }
 
 extension GitRepositoryReading {
+    func fileHistory(
+        repositoryURL: URL,
+        path: String,
+        limit: Int,
+        skip: Int,
+        revision: String?,
+        author: String?
+    ) async throws -> [GitCommitSummary] {
+        try await history(
+            repositoryURL: repositoryURL,
+            limit: limit,
+            skip: skip,
+            revision: revision,
+            author: author
+        )
+    }
+
     func currentUserName(repositoryURL: URL) async throws -> String? { nil }
     func pushPreparation(
         repositoryURL: URL,
@@ -305,6 +330,38 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         arguments.append(contentsOf: ["--", path])
         let data = try await runGit(arguments, in: repositoryURL, allowsEmptyOutput: true)
         return GitBlameParser.parse(data)
+    }
+
+    private func loadHistory(
+        repositoryURL: URL,
+        path: String?,
+        limit: Int,
+        skip: Int,
+        revision: String?,
+        author: String?
+    ) async throws -> [GitCommitSummary] {
+        var arguments = ["log"]
+        if path != nil {
+            arguments.append("--follow")
+        }
+        arguments.append(contentsOf: [
+            "--max-count=\(limit)", "--skip=\(skip)",
+            "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D"
+        ])
+        if let author {
+            arguments.append("--extended-regexp")
+            arguments.append("--author=^\(escapedExtendedRegularExpression(author)) <")
+        }
+        if let revision { arguments.append(revision) }
+        if let path {
+            arguments.append(contentsOf: ["--", path])
+        }
+        let data = try await runGit(
+            arguments,
+            in: repositoryURL,
+            allowsEmptyOutput: true
+        )
+        return GitHistoryParser.parse(data)
     }
 
     private func changedFileDiff(
@@ -584,21 +641,32 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         revision: String?,
         author: String?
     ) async throws -> [GitCommitSummary] {
-        var arguments = [
-            "log", "--max-count=\(limit)", "--skip=\(skip)",
-            "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D"
-        ]
-        if let author {
-            arguments.append("--extended-regexp")
-            arguments.append("--author=^\(escapedExtendedRegularExpression(author)) <")
-        }
-        if let revision { arguments.append(revision) }
-        let data = try await runGit(
-            arguments,
-            in: repositoryURL,
-            allowsEmptyOutput: true
+        try await loadHistory(
+            repositoryURL: repositoryURL,
+            path: nil,
+            limit: limit,
+            skip: skip,
+            revision: revision,
+            author: author
         )
-        return GitHistoryParser.parse(data)
+    }
+
+    func fileHistory(
+        repositoryURL: URL,
+        path: String,
+        limit: Int,
+        skip: Int,
+        revision: String?,
+        author: String?
+    ) async throws -> [GitCommitSummary] {
+        try await loadHistory(
+            repositoryURL: repositoryURL,
+            path: path,
+            limit: limit,
+            skip: skip,
+            revision: revision,
+            author: author
+        )
     }
 
     func branches(repositoryURL: URL) async throws -> [GitBranch] {

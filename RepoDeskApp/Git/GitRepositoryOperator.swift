@@ -27,6 +27,8 @@ protocol GitRepositoryOperating: Sendable {
     func continueMerge(repositoryURL: URL) async throws
     func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile]
     func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws
+    func saveConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws
+    func restoreConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws
     func stashChanges(repositoryURL: URL, message: String?) async throws
     func listStashes(repositoryURL: URL) async throws -> [GitStash]
     func unstashChanges(repositoryURL: URL, stash: GitStash) async throws
@@ -65,6 +67,8 @@ extension GitRepositoryOperating {
     func continueMerge(repositoryURL: URL) async throws {}
     func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile] { [] }
     func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws {}
+    func saveConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws {}
+    func restoreConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws {}
     func stashChanges(repositoryURL: URL, message: String?) async throws {}
     func listStashes(repositoryURL: URL) async throws -> [GitStash] { [] }
     func unstashChanges(repositoryURL: URL, stash: GitStash) async throws {}
@@ -410,29 +414,77 @@ struct SystemGitRepositoryOperator: GitRepositoryOperating {
         let paths = result.standardOutput.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
         var files: [GitConflictFile] = []
         for path in paths {
-            let ours = try await conflictBlob(stage: 2, path: path, repositoryURL: repositoryURL)
-            let theirs = try await conflictBlob(stage: 3, path: path, repositoryURL: repositoryURL)
+            let baseData = try await conflictBlob(stage: 1, path: path, repositoryURL: repositoryURL)
+            let oursData = try await conflictBlob(stage: 2, path: path, repositoryURL: repositoryURL)
+            let theirsData = try await conflictBlob(stage: 3, path: path, repositoryURL: repositoryURL)
             let fileURL = repositoryURL.appendingPathComponent(path)
-            let result = (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
-            files.append(GitConflictFile(path: path, ours: ours, theirs: theirs, result: result, isResolved: false))
+            let resultData = try? Data(contentsOf: fileURL)
+            let isBinary = [baseData, oursData, theirsData, resultData]
+                .compactMap { $0 }
+                .contains(where: Self.isBinaryData)
+            let result = resultData.flatMap(Self.text(from:)) ?? ""
+            files.append(
+                GitConflictFile(
+                    path: path,
+                    ours: Self.text(from: oursData) ?? "",
+                    theirs: Self.text(from: theirsData) ?? "",
+                    result: result,
+                    isResolved: false,
+                    base: Self.text(from: baseData),
+                    baseData: isBinary ? baseData : nil,
+                    oursData: isBinary ? oursData : nil,
+                    theirsData: isBinary ? theirsData : nil,
+                    resultData: isBinary ? resultData : nil,
+                    hasBase: baseData != nil,
+                    hasOurs: oursData != nil,
+                    hasTheirs: theirsData != nil,
+                    isBinary: isBinary
+                )
+            )
         }
         return files
     }
 
     func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws {
         let fileURL = repositoryURL.appendingPathComponent(file.path)
-        try file.result.write(to: fileURL, atomically: true, encoding: .utf8)
+        if let resultData = file.resultData {
+            try resultData.write(to: fileURL, options: .atomic)
+        } else {
+            try file.result.write(to: fileURL, atomically: true, encoding: .utf8)
+        }
         _ = try await runGit(["add", "--", file.path], operation: .resolveConflict, repositoryURL: repositoryURL)
     }
 
-    private func conflictBlob(stage: Int, path: String, repositoryURL: URL) async throws -> String {
+    func saveConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws {
+        let fileURL = repositoryURL.appendingPathComponent(file.path)
+        try file.result.write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+
+    func restoreConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws {
+        _ = try await runGit(
+            ["checkout", "--conflict=merge", "--", file.path],
+            operation: .resolveConflict,
+            repositoryURL: repositoryURL
+        )
+    }
+
+    private func conflictBlob(stage: Int, path: String, repositoryURL: URL) async throws -> Data? {
         let result = try await runGit(
             ["show", ":\(stage):\(path)"],
             operation: .resolveConflict,
             repositoryURL: repositoryURL,
             allowedStatuses: [0, 128]
         )
-        return result.terminationStatus == 0 ? String(decoding: result.standardOutput, as: UTF8.self) : ""
+        return result.terminationStatus == 0 ? result.standardOutput : nil
+    }
+
+    private static func text(from data: Data?) -> String? {
+        guard let data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func isBinaryData(_ data: Data) -> Bool {
+        data.contains(0) || String(data: data, encoding: .utf8) == nil
     }
 
     func switchBranch(

@@ -75,6 +75,65 @@ struct GitRepositoryIntegrationTests {
         #expect(request?.arguments == ["config", "--get", "user.name"])
         #expect(request?.workingDirectoryURL == repositoryURL)
     }
+
+    @Test func conflictFilesReadsGitBaseAndBothSidesFromIndexStages() async throws {
+        let fixture = try await GitRepositoryFixture()
+        defer { fixture.remove() }
+
+        let runner = SystemCommandRunner()
+        try await GitRepositoryFixture.run(["switch", "-c", "feature"], with: runner, at: fixture.url)
+        try Data("feature\n".utf8).write(to: fixture.url.appendingPathComponent("tracked.txt"))
+        try await GitRepositoryFixture.run(["add", "tracked.txt"], with: runner, at: fixture.url)
+        try await GitRepositoryFixture.run(["commit", "-m", "Feature change"], with: runner, at: fixture.url)
+
+        try await GitRepositoryFixture.run(["switch", "main"], with: runner, at: fixture.url)
+        try Data("main\n".utf8).write(to: fixture.url.appendingPathComponent("tracked.txt"))
+        try await GitRepositoryFixture.run(["add", "tracked.txt"], with: runner, at: fixture.url)
+        try await GitRepositoryFixture.run(["commit", "-m", "Main change"], with: runner, at: fixture.url)
+
+        let mergeResult = try await runner.run(
+            CommandRequest(
+                executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+                arguments: ["merge", "feature"],
+                workingDirectoryURL: fixture.url,
+                environment: nil
+            )
+        )
+        #expect(mergeResult.terminationStatus != 0)
+
+        let files = try await SystemGitRepositoryOperator().conflictFiles(repositoryURL: fixture.url)
+        #expect(files.count == 1)
+        let file = try #require(files.first)
+        #expect(file.path == "tracked.txt")
+        #expect(file.base == "initial\n")
+        #expect(file.ours == "main\n")
+        #expect(file.theirs == "feature\n")
+        #expect(file.result.contains("<<<<<<<"))
+        #expect(file.hasBase)
+        #expect(file.hasOurs)
+        #expect(file.hasTheirs)
+        #expect(!file.isBinary)
+    }
+
+    @Test func fileHistoryFollowsRenames() async throws {
+        let fixture = try await GitRepositoryFixture()
+        defer { fixture.remove() }
+
+        try Data("updated\n".utf8).write(to: fixture.url.appendingPathComponent("tracked.txt"))
+        try await fixture.commit("Update tracked")
+        try await fixture.renameTrackedFile()
+
+        let history = try await SystemGitRepositoryReader().fileHistory(
+            repositoryURL: fixture.url,
+            path: "renamed.txt",
+            limit: 50,
+            skip: 0,
+            revision: nil,
+            author: nil
+        )
+
+        #expect(history.map(\.subject) == ["Rename tracked", "Update tracked", "Initial commit"])
+    }
 }
 
 private actor FixedCommandRunner: CommandRunning {
@@ -113,7 +172,19 @@ private struct GitRepositoryFixture: Sendable {
         try? FileManager.default.removeItem(at: url)
     }
 
-    private static func run(
+    func commit(_ subject: String) async throws {
+        let runner = SystemCommandRunner()
+        try await Self.run(["add", "-A"], with: runner, at: url)
+        try await Self.run(["commit", "-m", subject], with: runner, at: url)
+    }
+
+    func renameTrackedFile() async throws {
+        let runner = SystemCommandRunner()
+        try await Self.run(["mv", "tracked.txt", "renamed.txt"], with: runner, at: url)
+        try await Self.run(["commit", "-m", "Rename tracked"], with: runner, at: url)
+    }
+
+    fileprivate static func run(
         _ arguments: [String],
         with runner: SystemCommandRunner,
         at url: URL

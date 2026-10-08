@@ -107,7 +107,158 @@ enum VerifyJavaLanguage {
         try await verifyNestedRepositoryBoundaries()
         try await verifySchedulerAndForegroundPreemption()
         try await verifyNavigationWaitsForReadyCachedRepository()
+        try verifyNavigationTargetSources()
         print("Java language verification passed")
+    }
+
+    private static func verifyNavigationTargetSources() throws {
+        let workspaceURL = URL(fileURLWithPath: "/tmp/RepoDesk-Java-Sources", isDirectory: true)
+        let mavenRepositoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-Maven-Sources-\(UUID().uuidString)", isDirectory: true)
+        let dependencyFileURL = mavenRepositoryURL
+            .appendingPathComponent("com/google/guava/guava/32.0.0/guava-32.0.0.jar")
+        try FileManager.default.createDirectory(
+            at: dependencyFileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data().write(to: dependencyFileURL)
+        defer { try? FileManager.default.removeItem(at: mavenRepositoryURL) }
+
+        let repository = RegisteredRepository(
+            displayName: "common",
+            relativePath: "common",
+            isPinned: false
+        )
+        let sourceURL = workspaceURL
+            .appendingPathComponent("common/src/main/java/sample/Greeter.java")
+        let sourceTarget = JavaNavigationTarget(
+            fileURL: sourceURL,
+            range: JavaSourceRange(
+                start: JavaSourcePosition(line: 3, character: 0),
+                end: JavaSourcePosition(line: 3, character: 7)
+            ),
+            selectionRange: nil,
+            name: "Greeter",
+            detail: nil,
+            containerName: nil,
+            kind: .interface
+        )
+        let source = JavaNavigationTargetSourceResolver.origin(
+            for: sourceTarget,
+            workspaceURL: workspaceURL,
+            repositories: [repository]
+        )
+        try require(
+            source == .workspaceRepository(
+                repositoryID: repository.id,
+                repositoryName: repository.name,
+                fileURL: sourceURL.standardizedFileURL
+            ),
+            "Workspace Java target source was not mapped to its Git repository"
+        )
+
+        let dependencyURI = "jdt://contents/guava-32.0.0.jar/com/google/common/collect/ImmutableList.class"
+        let dependencyTarget = JavaNavigationTarget(
+            fileURL: try requireURL(dependencyURI),
+            range: JavaSourceRange(
+                start: JavaSourcePosition(line: 120, character: 8),
+                end: JavaSourcePosition(line: 120, character: 20)
+            ),
+            selectionRange: nil,
+            name: "ImmutableList",
+            detail: nil,
+            containerName: nil,
+            kind: .interface
+        )
+        let dependency = JavaNavigationTargetSourceResolver.origin(
+            for: dependencyTarget,
+            workspaceURL: workspaceURL,
+            repositories: [repository],
+            mavenLocalRepositoryURL: mavenRepositoryURL
+        )
+        try require(
+            dependency == .dependency(
+                JavaDependencyReference(
+                    uri: dependencyURI,
+                    jarName: "guava-32.0.0.jar",
+                    packageName: "com.google.common.collect",
+                    typeName: "ImmutableList",
+                    mavenCoordinate: "com.google.guava:guava:32.0.0"
+                )
+            ),
+            "JDT dependency URI was not mapped to its JAR and qualified type"
+        )
+
+        let crossRepositoryWorkspaceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-Java-CrossRepository-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: crossRepositoryWorkspaceURL) }
+        let managerRepository = RegisteredRepository(
+            displayName: "manager",
+            relativePath: "manager",
+            isPinned: false
+        )
+        let moduleDirectory = crossRepositoryWorkspaceURL
+            .appendingPathComponent("manager/inventorymanager-client", isDirectory: true)
+        let moduleSourceURL = moduleDirectory
+            .appendingPathComponent(
+                "src/main/java/com/internet/inventorymanager/client/service/InventoryManagerClientService.java"
+            )
+        try FileManager.default.createDirectory(
+            at: moduleSourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("interface InventoryManagerClientService {}".utf8).write(to: moduleSourceURL)
+        try Data("""
+        <project>
+          <groupId>com.internet.saasbusinessmanager</groupId>
+          <artifactId>saasbusinessmanager</artifactId>
+          <version>${revision}</version>
+          <packaging>pom</packaging>
+          <modules><module>inventorymanager-client</module></modules>
+          <properties><revision>2.6.1-SNAPSHOT</revision></properties>
+        </project>
+        """.utf8).write(to: crossRepositoryWorkspaceURL.appendingPathComponent("manager/pom.xml"))
+        try Data("""
+        <project>
+          <parent>
+            <groupId>com.internet.saasbusinessmanager</groupId>
+            <artifactId>saasbusinessmanager</artifactId>
+            <version>${revision}</version>
+          </parent>
+          <artifactId>inventorymanager-client</artifactId>
+        </project>
+        """.utf8).write(to: moduleDirectory.appendingPathComponent("pom.xml"))
+
+        let workspaceDependencyURI = "jdt://contents/inventorymanager-client-2.6.1-SNAPSHOT.jar/com/internet/inventorymanager/client/service/InventoryManagerClientService.class"
+        let workspaceDependencyTarget = JavaNavigationTarget(
+            fileURL: try requireURL(workspaceDependencyURI),
+            range: dependencyTarget.range,
+            selectionRange: nil,
+            name: "InventoryManagerClientService",
+            detail: nil,
+            containerName: nil,
+            kind: .interface
+        )
+        let workspaceDependencyOrigin = JavaNavigationTargetSourceResolver.origin(
+            for: workspaceDependencyTarget,
+            workspaceURL: crossRepositoryWorkspaceURL,
+            repositories: [managerRepository]
+        )
+        try require(
+            workspaceDependencyOrigin == .workspaceRepository(
+                repositoryID: managerRepository.id,
+                repositoryName: managerRepository.name,
+                fileURL: moduleSourceURL.standardizedFileURL
+            ),
+            "A Maven dependency from the same workspace was not mapped back to its source repository"
+        )
+    }
+
+    private static func requireURL(_ string: String) throws -> URL {
+        guard let url = URL(string: string) else {
+            throw JavaVerificationError(description: "Invalid verification URL: \(string)")
+        }
+        return url
     }
 
     @MainActor

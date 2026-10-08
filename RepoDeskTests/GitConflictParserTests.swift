@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import RepoDesk
 
@@ -61,5 +62,28 @@ struct GitConflictParserTests {
         #expect(document.blocks.isEmpty)
         #expect(document.isResolved)
         #expect(document.renderedText() == "plain\ntext\n")
+    }
+
+    @Test func conflictFilePreservesMissingStagesAndBinaryState() {
+        let binary = Data([0x00, 0xFF])
+        let file = GitConflictFile(
+            path: "generated.bin",
+            ours: "",
+            theirs: "",
+            result: "",
+            isResolved: false,
+            theirsData: binary,
+            hasBase: false,
+            hasOurs: false,
+            hasTheirs: true,
+            isBinary: true
+        )
+
+        #expect(file.base == nil)
+        #expect(!file.hasBase)
+        #expect(!file.hasOurs)
+        #expect(file.hasTheirs)
+        #expect(file.isBinary)
+        #expect(file.theirsData == binary)
     }
 }

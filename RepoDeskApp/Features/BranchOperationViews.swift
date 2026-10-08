@@ -82,21 +82,27 @@ struct MergeConflictResolverSheet: View {
                         resolveSelected(with: .ours)
                     }
                     .frame(maxWidth: .infinity)
-                    .disabled(selectedFile == nil || appState.isResolvingMergeConflict)
+                    .disabled(selectedUnresolvedFile == nil || appState.isResolvingMergeConflict)
 
                     Button("Accept Theirs") {
                         resolveSelected(with: .theirs)
                     }
                     .frame(maxWidth: .infinity)
-                    .disabled(selectedFile == nil || appState.isResolvingMergeConflict)
+                    .disabled(selectedUnresolvedFile == nil || appState.isResolvingMergeConflict)
 
                     Button("Merge...", systemImage: "arrow.triangle.merge") {
                         presentEditor()
                     }
                     .frame(maxWidth: .infinity)
                     .buttonStyle(.borderedProminent)
-                    .disabled(selectedFile == nil || appState.isResolvingMergeConflict)
+                    .disabled(selectedFile == nil || selectedFile?.isBinary == true || appState.isResolvingMergeConflict)
                     .accessibilityIdentifier("RepoDesk.MergeConflicts.Merge")
+
+                    Button("Revert Resolution", systemImage: "arrow.uturn.backward") {
+                        revertSelectedResolution()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .disabled(selectedResolvedFile == nil || appState.isResolvingMergeConflict)
 
                     Spacer()
                 }
@@ -109,7 +115,7 @@ struct MergeConflictResolverSheet: View {
             HStack {
                 Toggle("Group files by directory", isOn: $groupsFilesByDirectory)
                     .toggleStyle(.checkbox)
-                    .disabled(appState.conflictFiles.isEmpty)
+                    .disabled(appState.conflictFiles.isEmpty && appState.resolvedConflictFiles.isEmpty)
                 Spacer()
                 if appState.isResolvingMergeConflict {
                     ProgressView()
@@ -145,7 +151,16 @@ struct MergeConflictResolverSheet: View {
                 theirsBranch: appState.mergeSourceBranch ?? "Incoming Branch",
                 fontSize: appState.fileContentFontSize,
                 apply: { result in
-                    await appState.resolveConflict(path: selection.file.path, result: result)
+                    if appState.conflictFiles.contains(where: { $0.path == selection.file.path }) {
+                        return await appState.resolveConflict(path: selection.file.path, result: result)
+                    }
+                    return await appState.updateResolvedConflict(path: selection.file.path, result: result)
+                },
+                saveProgress: { result in
+                    if appState.conflictFiles.contains(where: { $0.path == selection.file.path }) {
+                        return await appState.saveConflictProgress(path: selection.file.path, result: result)
+                    }
+                    return await appState.updateResolvedConflict(path: selection.file.path, result: result)
                 }
             )
         }
@@ -168,25 +183,47 @@ struct MergeConflictResolverSheet: View {
             .background(Color(nsColor: .controlBackgroundColor))
             Divider()
 
-            if appState.conflictFiles.isEmpty {
+            if appState.conflictFiles.isEmpty && appState.resolvedConflictFiles.isEmpty {
                 ContentUnavailableView(
-                    "All conflicts resolved",
+                    "No conflict files",
                     systemImage: "checkmark.circle",
-                    description: Text("Continue Merge to finish the Git operation.")
+                    description: Text("The merge operation has no files to review.")
                 )
             } else {
                 List(selection: $selectedPath) {
                     if groupsFilesByDirectory {
-                        ForEach(conflictFileGroups) { group in
-                            Section(group.directory) {
-                                ForEach(group.files) { file in
-                                    conflictFileRow(file, showsDirectory: false)
+                        if !appState.conflictFiles.isEmpty {
+                            ForEach(conflictFileGroups) { group in
+                                Section("Unresolved · \(group.directory)") {
+                                    ForEach(group.files) { file in
+                                        conflictFileRow(file, showsDirectory: false, isResolved: false)
+                                    }
+                                }
+                            }
+                        }
+                        if !appState.resolvedConflictFiles.isEmpty {
+                            ForEach(resolvedConflictFileGroups) { group in
+                                Section("Resolved · \(group.directory)") {
+                                    ForEach(group.files) { file in
+                                        conflictFileRow(file, showsDirectory: false, isResolved: true)
+                                    }
                                 }
                             }
                         }
                     } else {
-                        ForEach(sortedConflictFiles) { file in
-                            conflictFileRow(file, showsDirectory: true)
+                        if !sortedConflictFiles.isEmpty {
+                            Section("Unresolved") {
+                                ForEach(sortedConflictFiles) { file in
+                                    conflictFileRow(file, showsDirectory: true, isResolved: false)
+                                }
+                            }
+                        }
+                        if !sortedResolvedConflictFiles.isEmpty {
+                            Section("Resolved") {
+                                ForEach(sortedResolvedConflictFiles) { file in
+                                    conflictFileRow(file, showsDirectory: true, isResolved: true)
+                                }
+                            }
                         }
                     }
                 }
@@ -199,7 +236,11 @@ struct MergeConflictResolverSheet: View {
         }
     }
 
-    private func conflictFileRow(_ file: GitConflictFile, showsDirectory: Bool) -> some View {
+    private func conflictFileRow(
+        _ file: GitConflictFile,
+        showsDirectory: Bool,
+        isResolved: Bool
+    ) -> some View {
         HStack(spacing: 0) {
             HStack(spacing: 6) {
                 FileTypeIcon(path: file.path)
@@ -213,9 +254,9 @@ struct MergeConflictResolverSheet: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text("Modified")
+            Text(isResolved ? "Resolved" : "Modified")
                 .frame(width: 92, alignment: .leading)
-            Text("Modified")
+            Text(isResolved ? "Resolved" : "Modified")
                 .frame(width: 92, alignment: .leading)
         }
         .font(.callout)
@@ -236,13 +277,34 @@ struct MergeConflictResolverSheet: View {
         appState.conflictFiles.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
+    private var sortedResolvedConflictFiles: [GitConflictFile] {
+        appState.resolvedConflictFiles.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
     private var conflictFileGroups: [MergeConflictFileGroup] {
         Dictionary(grouping: sortedConflictFiles) { directoryName($0.path) ?? "." }
             .map { MergeConflictFileGroup(directory: $0.key, files: $0.value) }
             .sorted { $0.directory.localizedStandardCompare($1.directory) == .orderedAscending }
     }
 
+    private var resolvedConflictFileGroups: [MergeConflictFileGroup] {
+        Dictionary(grouping: sortedResolvedConflictFiles) { directoryName($0.path) ?? "." }
+            .map { MergeConflictFileGroup(directory: $0.key, files: $0.value) }
+            .sorted { $0.directory.localizedStandardCompare($1.directory) == .orderedAscending }
+    }
+
     private var selectedFile: GitConflictFile? {
+        guard let selectedPath else { return nil }
+        return appState.conflictFiles.first { $0.path == selectedPath }
+            ?? appState.resolvedConflictFiles.first { $0.path == selectedPath }
+    }
+
+    private var selectedResolvedFile: GitConflictFile? {
+        guard let selectedPath else { return nil }
+        return appState.resolvedConflictFiles.first { $0.path == selectedPath }
+    }
+
+    private var selectedUnresolvedFile: GitConflictFile? {
         guard let selectedPath else { return nil }
         return appState.conflictFiles.first { $0.path == selectedPath }
     }
@@ -260,12 +322,12 @@ struct MergeConflictResolverSheet: View {
     }
 
     private func selectFirstFileIfNeeded() {
-        guard !appState.conflictFiles.isEmpty else {
+        guard !appState.conflictFiles.isEmpty || !appState.resolvedConflictFiles.isEmpty else {
             selectedPath = nil
             return
         }
         if selectedFile == nil {
-            selectedPath = sortedConflictFiles.first?.path
+            selectedPath = sortedConflictFiles.first?.path ?? sortedResolvedConflictFiles.first?.path
         }
     }
 
@@ -274,6 +336,11 @@ struct MergeConflictResolverSheet: View {
         Task {
             _ = await appState.acceptConflictFile(path: path, side: side)
         }
+    }
+
+    private func revertSelectedResolution() {
+        guard let path = selectedResolvedFile?.path else { return }
+        Task { _ = await appState.revertConflictResolution(path: path) }
     }
 
     private func presentEditor() {
@@ -315,6 +382,7 @@ struct MergeConflictEditorSheet: View {
     let theirsBranch: String
     let fontSize: CGFloat
     let apply: (String) async -> Bool
+    let saveProgress: (String) async -> Bool
 
     @Environment(\.dismiss) private var dismiss
     @State private var document: GitConflictResolutionDocument
@@ -322,8 +390,8 @@ struct MergeConflictEditorSheet: View {
     @State private var selectedConflictID: Int?
     @State private var navigationScope = MergeConflictNavigationScope.unresolved
     @State private var expandedUnchangedSegments: Set<Int> = []
-    @State private var horizontalScroll = MergeConflictHorizontalScrollSynchronizations()
-    @State private var horizontalOffsets = MergeConflictHorizontalOffsets()
+    @State private var horizontalScroll = GitDiffHorizontalScrollSynchronization()
+    @State private var horizontalOffset: CGFloat = 0
     @State private var resultContentWidth: CGFloat
     private let yoursContentWidth: CGFloat
     private let theirsContentWidth: CGFloat
@@ -334,14 +402,16 @@ struct MergeConflictEditorSheet: View {
         yoursBranch: String,
         theirsBranch: String,
         fontSize: CGFloat,
-        apply: @escaping (String) async -> Bool
+        apply: @escaping (String) async -> Bool,
+        saveProgress: @escaping (String) async -> Bool = { _ in false }
     ) {
         self.file = file
         self.yoursBranch = yoursBranch
         self.theirsBranch = theirsBranch
         self.fontSize = fontSize
         self.apply = apply
-        let document = GitConflictResolutionDocument(text: file.result)
+        self.saveProgress = saveProgress
+        let document = GitConflictResolutionDocument(text: file.result, base: file.base)
         let contentWidths = Self.initialContentWidths(
             document: document,
             fontSize: fontSize
@@ -414,6 +484,9 @@ struct MergeConflictEditorSheet: View {
                     selectAvailableConflict()
                 }
                 .onAppear {
+                    horizontalScroll.onOffsetChange = { offset in
+                        horizontalOffset = offset
+                    }
                     selectAvailableConflict()
                     guard let selectedConflictID else { return }
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -422,6 +495,9 @@ struct MergeConflictEditorSheet: View {
                             anchor: .center
                         )
                     }
+                }
+                .onDisappear {
+                    horizontalScroll.onOffsetChange = nil
                 }
             }
         }
@@ -497,7 +573,7 @@ struct MergeConflictEditorSheet: View {
             Divider()
             paneHeader(
                 title: "Result",
-                subtitle: file.path,
+                subtitle: file.base == nil ? file.path : "Base → \(file.path)",
                 icon: "arrow.triangle.merge",
                 color: .orange
             )
@@ -564,14 +640,6 @@ struct MergeConflictEditorSheet: View {
             offset: horizontalOffsetBinding(for: pane),
             contentWidth: paneContentWidth(pane)
         )
-        .onAppear {
-            horizontalSynchronization(for: pane).onOffsetChange = { offset in
-                setHorizontalOffset(offset, for: pane)
-            }
-        }
-        .onDisappear {
-            horizontalSynchronization(for: pane).onOffsetChange = nil
-        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -686,7 +754,9 @@ struct MergeConflictEditorSheet: View {
                 conflictCodeCell(
                     block.ours,
                     startingLine: starts.left,
-                    background: Color.red.opacity(0.07),
+                    background: isResolved
+                        ? Color(nsColor: .textBackgroundColor)
+                        : Color.red.opacity(0.07),
                     pane: .yours,
                     blockID: block.id,
                     height: height
@@ -707,7 +777,9 @@ struct MergeConflictEditorSheet: View {
                 conflictCodeCell(
                     block.theirs,
                     startingLine: starts.right,
-                    background: Color.red.opacity(0.07),
+                    background: isResolved
+                        ? Color(nsColor: .textBackgroundColor)
+                        : Color.red.opacity(0.07),
                     pane: .theirs,
                     blockID: block.id,
                     height: height
@@ -802,7 +874,7 @@ struct MergeConflictEditorSheet: View {
                     .frame(width: 42, alignment: .trailing)
                     .padding(.top, 7)
                 if text.isEmpty {
-                    Text("Select left or right")
+                        Text("Base revision")
                         .font(.system(size: max(11, fontSize - 1), design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 58)
@@ -907,6 +979,10 @@ struct MergeConflictEditorSheet: View {
             }
             Button("Cancel", role: .cancel) { dismiss() }
                 .disabled(isApplying)
+            Button("Save Progress", systemImage: "square.and.arrow.down") {
+                saveCurrentProgress()
+            }
+            .disabled(isApplying)
             Button("Apply", systemImage: "checkmark") {
                 applyResult()
             }
@@ -930,42 +1006,23 @@ struct MergeConflictEditorSheet: View {
     }
 
     private func horizontalSynchronization(
-        for pane: MergeConflictPane
+        for _: MergeConflictPane
     ) -> GitDiffHorizontalScrollSynchronization {
-        switch pane {
-        case .yours: horizontalScroll.yours
-        case .result: horizontalScroll.result
-        case .theirs: horizontalScroll.theirs
-        }
+        horizontalScroll
     }
 
     private func horizontalOffsetBinding(
-        for pane: MergeConflictPane
+        for _: MergeConflictPane
     ) -> Binding<CGFloat> {
         Binding(
             get: {
-                switch pane {
-                case .yours: horizontalOffsets.yours
-                case .result: horizontalOffsets.result
-                case .theirs: horizontalOffsets.theirs
-                }
+                horizontalOffset
             },
             set: { offset in
-                setHorizontalOffset(offset, for: pane)
-                horizontalSynchronization(for: pane).scroll(to: offset)
+                horizontalOffset = offset
+                horizontalScroll.scroll(to: offset)
             }
         )
-    }
-
-    private func setHorizontalOffset(_ offset: CGFloat, for pane: MergeConflictPane) {
-        switch pane {
-        case .yours:
-            horizontalOffsets.yours = offset
-        case .result:
-            horizontalOffsets.result = offset
-        case .theirs:
-            horizontalOffsets.theirs = offset
-        }
     }
 
     private func paneContentWidth(_ pane: MergeConflictPane) -> CGFloat {
@@ -1116,12 +1173,10 @@ struct MergeConflictEditorSheet: View {
     }
 
     private var navigationBlockIDs: [Int] {
-        switch navigationScope {
-        case .unresolved:
-            document.unresolvedBlockIDs
-        case .all:
-            document.blocks.map(\.id)
-        }
+        navigationScope.blockIDs(
+            allBlockIDs: document.blocks.map(\.id),
+            unresolvedBlockIDs: document.unresolvedBlockIDs
+        )
     }
 
     private var previousConflictID: Int? {
@@ -1206,7 +1261,7 @@ struct MergeConflictEditorSheet: View {
     }
 
     private func displayedResult(for block: GitConflictDocumentBlock) -> String {
-        customDrafts[block.id] ?? document.resolution(for: block.id) ?? ""
+        customDrafts[block.id] ?? document.resolution(for: block.id) ?? block.base
     }
 
     private func customDraftBinding(for block: GitConflictDocumentBlock) -> Binding<String> {
@@ -1314,6 +1369,15 @@ struct MergeConflictEditorSheet: View {
             if didApply { dismiss() }
         }
     }
+
+    private func saveCurrentProgress() {
+        isApplying = true
+        Task {
+            let didSave = await saveProgress(document.renderedText(overrides: customDrafts))
+            isApplying = false
+            if didSave { dismiss() }
+        }
+    }
 }
 
 private enum MergeConflictPane: String {
@@ -1329,18 +1393,6 @@ private struct MergeConflictPaneWidths {
 }
 
 @MainActor
-private final class MergeConflictHorizontalScrollSynchronizations {
-    let yours = GitDiffHorizontalScrollSynchronization()
-    let result = GitDiffHorizontalScrollSynchronization()
-    let theirs = GitDiffHorizontalScrollSynchronization()
-}
-
-private struct MergeConflictHorizontalOffsets {
-    var yours: CGFloat = 0
-    var result: CGFloat = 0
-    var theirs: CGFloat = 0
-}
-
 private struct MergeConflictHorizontalBar: View {
     @Binding var offset: CGFloat
     let contentWidth: CGFloat
@@ -1422,7 +1474,7 @@ private struct MergeConflictHorizontalBar: View {
     }
 }
 
-private enum MergeConflictNavigationScope: String, CaseIterable, Identifiable {
+enum MergeConflictNavigationScope: String, CaseIterable, Identifiable {
     case unresolved
     case all
 
@@ -1432,6 +1484,18 @@ private enum MergeConflictNavigationScope: String, CaseIterable, Identifiable {
         switch self {
         case .unresolved: "Unresolved"
         case .all: "All"
+        }
+    }
+
+    func blockIDs(
+        allBlockIDs: [Int],
+        unresolvedBlockIDs: [Int]
+    ) -> [Int] {
+        switch self {
+        case .unresolved:
+            unresolvedBlockIDs
+        case .all:
+            allBlockIDs
         }
     }
 }

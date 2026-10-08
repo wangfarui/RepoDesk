@@ -101,6 +101,32 @@ struct HistoryView: View {
                     }
                 }
 
+                if let historyFilePath = appState.historyFilePath,
+                   appState.historyFileRepositoryID == appState.selectedRepositoryID {
+                    HStack(spacing: 7) {
+                        Image(systemName: "doc.text")
+                            .foregroundStyle(.tint)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("文件 History")
+                                .font(.caption.weight(.semibold))
+                            Text(historyFilePath)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 4)
+                        Button("返回 Repository History", systemImage: "xmark") {
+                            appState.clearFileHistoryScope()
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .help("返回当前 Repository 的完整 History")
+                    }
+                    .padding(7)
+                    .background(Color.accentColor.opacity(0.1), in: .rect(cornerRadius: 5))
+                }
+
                 HStack(spacing: 8) {
                     filterButton(title: branchFilterTitle, icon: "arrow.triangle.branch") {
                         branchQuery = ""
@@ -383,17 +409,18 @@ struct HistoryView: View {
     }
 
     private func commitFiles(_ detail: GitCommitDetail) -> some View {
-        VStack(spacing: 0) {
+        let visibleDetail = fileHistoryDetail(from: detail)
+        return VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text("改动文件").fontWeight(.semibold)
+                Text(isFileHistoryScope ? "文件改动" : "改动文件").fontWeight(.semibold)
                 Spacer()
 
                 Menu("Group By", systemImage: "eye") {
                     Section("Group By") {
                         Toggle("Directory", isOn: historyGroupingOptionBinding(.directory))
-                            .keyboardShortcut("p", modifiers: .control)
+                            .keyboardShortcut(appState.shortcut(for: .historyGroupDirectory).keyEquivalent, modifiers: appState.shortcut(for: .historyGroupDirectory).eventModifiers)
                         Toggle("Module", isOn: historyGroupingOptionBinding(.module))
-                            .keyboardShortcut("m", modifiers: .control)
+                            .keyboardShortcut(appState.shortcut(for: .historyGroupModule).keyEquivalent, modifiers: appState.shortcut(for: .historyGroupModule).eventModifiers)
                     }
                 }
                 .menuStyle(.borderlessButton)
@@ -404,13 +431,13 @@ struct HistoryView: View {
                 .help("Group By")
 
                 Button("展开全部", systemImage: "arrow.up.left.and.arrow.down.right") {
-                    expandAllCommitFiles(detail)
+                    expandAllCommitFiles(visibleDetail)
                 }
                 .buttonStyle(.borderless)
                 .labelStyle(.iconOnly)
                 .frame(width: 24, height: 24)
                 .contentShape(.rect)
-                .disabled(detail.files.isEmpty)
+                .disabled(visibleDetail.files.isEmpty)
                 .help("Expand All")
 
                 Button("折叠全部", systemImage: "arrow.down.right.and.arrow.up.left") {
@@ -420,10 +447,10 @@ struct HistoryView: View {
                 .labelStyle(.iconOnly)
                 .frame(width: 24, height: 24)
                 .contentShape(.rect)
-                .disabled(detail.files.isEmpty)
+                .disabled(visibleDetail.files.isEmpty)
                 .help("Collapse All")
 
-                Text("\(detail.files.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text("\(visibleDetail.files.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 10)
             .frame(height: 38)
@@ -431,7 +458,7 @@ struct HistoryView: View {
             if !appState.historyGrouping.isEmpty || isFlatCommitFileListExpanded {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(commitFileOutlineRows(detail)) { row in
+                        ForEach(commitFileOutlineRows(visibleDetail)) { row in
                             commitFileOutlineRow(row)
                         }
                     }
@@ -442,10 +469,26 @@ struct HistoryView: View {
         .task(id: commitFileExpansionTaskID(detail)) {
             isFlatCommitFileListExpanded = true
             expandedCommitFileNodeIDs.removeAll()
-            if ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: detail.files.count) {
-                expandAllCommitFiles(detail)
+            if ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: visibleDetail.files.count) {
+                expandAllCommitFiles(visibleDetail)
             }
         }
+    }
+
+    private var isFileHistoryScope: Bool {
+        appState.historyFilePath != nil
+            && appState.historyFileRepositoryID == appState.selectedRepositoryID
+    }
+
+    private func fileHistoryDetail(from detail: GitCommitDetail) -> GitCommitDetail {
+        guard isFileHistoryScope, let selectedCommitFile = appState.selectedCommitFile else {
+            return detail
+        }
+        return GitCommitDetail(
+            summary: detail.summary,
+            files: [selectedCommitFile],
+            parentHashes: detail.parentHashes
+        )
     }
 
     @ViewBuilder

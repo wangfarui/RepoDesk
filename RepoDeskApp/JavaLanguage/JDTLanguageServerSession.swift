@@ -45,6 +45,7 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
     private var isServiceReady = false
     private var terminationDetail: String?
     private var configuration: JavaLanguageServerConfiguration?
+    private var localJavaTypeFileCache: [String: URL] = [:]
 
     init() {
         let eventPair = AsyncStream<JavaLanguageServerEvent>.makeStream()
@@ -236,6 +237,22 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
         let params = textDocumentPositionParams(fileURL: request.fileURL, position: request.position)
         switch request.action {
         case .contextual:
+            let methodReference = JavaMethodReferenceSyntax.reference(
+                in: request.documentText,
+                atUTF16Offset: utf16Offset(for: request.position, in: request.documentText)
+            )
+            if methodReference != nil {
+                if let methodReference, !methodReference.isConstructor {
+                    // JDT may interpret the member position of a method reference as
+                    // a usage and return incoming callers. Only workspace symbols are
+                    // valid targets for the member side of `Type::method`.
+                    return try await methodReferenceTargets(request: request)
+                }
+                let result = try await sendRequest(method: "textDocument/definition", params: params)
+                let definitionTargets = parseLocations(result)
+                if !definitionTargets.isEmpty { return definitionTargets }
+                return try await methodReferenceTargets(request: request)
+            }
             let symbols = try await sendRequest(
                 method: "textDocument/documentSymbol",
                 params: .object(["textDocument": .object(["uri": .uri(request.fileURL)])])
@@ -254,7 +271,11 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
             ) {
                 return try await enumUsageTargets(params: params)
             }
-            return definitionTargets
+            if !definitionTargets.isEmpty { return definitionTargets }
+            if let localTypeTarget = try await localTypeTarget(request: request) {
+                return [localTypeTarget]
+            }
+            return try await methodReferenceTargets(request: request)
         case .declaration:
             let result = try await sendRequest(method: "textDocument/definition", params: params)
             return parseLocations(result)
@@ -333,6 +354,411 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
         return Self.markEnumUsageTargets(parseLocations(result))
     }
 
+    private func methodReferenceTargets(
+        request: JavaNavigationRequest
+    ) async throws -> [JavaNavigationTarget] {
+        guard let reference = JavaMethodReferenceSyntax.reference(
+            in: request.documentText,
+            atUTF16Offset: utf16Offset(for: request.position, in: request.documentText)
+        ) else { return [] }
+
+        let query = reference.isConstructor
+            ? reference.receiver.split(separator: ".").last.map(String.init) ?? reference.receiver
+            : reference.member
+        if reference.isConstructor {
+            return try await constructorReferenceTargets(
+                receiver: reference.receiver,
+                simpleName: query
+            )
+        }
+
+        let candidates = try await searchSymbols(query: query, scope: .methods)
+        let exactCandidates = candidates.filter { candidate in
+            candidate.name == query || (!reference.isConstructor && candidate.name == reference.member)
+        }
+
+        let receiverName = reference.receiver.split(separator: ".").last.map(String.init) ?? reference.receiver
+        let receiverCandidates = exactCandidates.filter { candidate in
+            [candidate.containerName, candidate.detail]
+                .compactMap { $0 }
+                .contains { value in
+                    value == reference.receiver
+                        || value.contains(receiverName)
+                }
+        }
+        if !receiverCandidates.isEmpty { return receiverCandidates.uniqued() }
+
+        let sourceTargets = try await methodReferenceSourceTargets(
+            reference: reference,
+            request: request
+        )
+        if !sourceTargets.isEmpty { return sourceTargets }
+        return exactCandidates.uniqued()
+    }
+
+    private func methodReferenceSourceTargets(
+        reference: JavaMethodReferenceSyntax.Reference,
+        request: JavaNavigationRequest
+    ) async throws -> [JavaNavigationTarget] {
+        guard let fileURL = await localJavaTypeFile(
+            named: reference.receiver,
+            documentText: request.documentText
+        ), let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return [] }
+
+        let symbols = (try? await documentSymbols(fileURL: fileURL, text: text)) ?? .array([])
+        let methods = documentSymbolTargets(in: symbols, fileURL: fileURL) { target in
+            [.method, .function].contains(target.kind)
+                && (target.name == reference.member || target.name.hasPrefix(reference.member + "("))
+        }
+        if !methods.isEmpty { return methods }
+        if let method = Self.sourceMethodTarget(
+            named: reference.member,
+            fileURL: fileURL,
+            text: text
+        ) {
+            return [method]
+        }
+
+        guard let propertyName = Self.javaBeanPropertyName(for: reference.member) else { return [] }
+        let fields = documentSymbolTargets(in: symbols, fileURL: fileURL) { target in
+            [.field, .property].contains(target.kind)
+                && (target.name == propertyName
+                    || target.name.hasPrefix(propertyName + " ")
+                    || target.name.hasPrefix(propertyName + ":"))
+        }
+        if !fields.isEmpty { return fields }
+        return Self.sourceFieldTarget(named: propertyName, fileURL: fileURL, text: text).map { [$0] } ?? []
+    }
+
+    private func localTypeTarget(request: JavaNavigationRequest) async throws -> JavaNavigationTarget? {
+        guard let typeName = identifier(
+            in: request.documentText,
+            atUTF16Offset: utf16Offset(for: request.position, in: request.documentText)
+        ), typeName.first?.isUppercase == true,
+        let fileURL = await localJavaTypeFile(named: typeName, documentText: request.documentText),
+        let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return nil }
+
+        let symbols = (try? await documentSymbols(fileURL: fileURL, text: text)) ?? .array([])
+        let symbolTarget = documentSymbolTargets(in: symbols, fileURL: fileURL) { target in
+            [.class, .interface, .enum, .struct].contains(target.kind)
+                && (target.name == typeName || target.name.hasPrefix(typeName + " "))
+        }.first
+        return symbolTarget ?? Self.sourceTypeTarget(named: typeName, fileURL: fileURL, text: text)
+    }
+
+    private func documentSymbols(fileURL: URL, text: String) async throws -> JSONValue {
+        try await openOrUpdateDocument(fileURL: fileURL, text: text)
+        return try await sendRequest(
+            method: "textDocument/documentSymbol",
+            params: .object(["textDocument": .object(["uri": .uri(fileURL)])])
+        )
+    }
+
+    private func documentSymbolTargets(
+        in value: JSONValue,
+        fileURL: URL,
+        matching predicate: (JavaNavigationTarget) -> Bool
+    ) -> [JavaNavigationTarget] {
+        (value.arrayValue ?? []).flatMap { symbol in
+            var targets: [JavaNavigationTarget] = []
+            if let target = Self.parseDocumentSymbolItem(symbol, fileURL: fileURL), predicate(target) {
+                targets.append(target)
+            }
+            if let children = symbol["children"] {
+                targets.append(contentsOf: documentSymbolTargets(
+                    in: children,
+                    fileURL: fileURL,
+                    matching: predicate
+                ))
+            }
+            return targets
+        }.uniqued()
+    }
+
+    private func localJavaTypeFile(named receiver: String, documentText: String) async -> URL? {
+        guard let configuration,
+              let qualifiedName = Self.qualifiedJavaTypeName(
+                receiver: receiver,
+                documentText: documentText
+              ) else { return nil }
+        if let cached = localJavaTypeFileCache[qualifiedName] { return cached }
+
+        let descriptor = configuration.repository
+        let suffix = "/" + qualifiedName.replacingOccurrences(of: ".", with: "/") + ".java"
+        let result = await Task.detached(priority: .userInitiated) {
+            Self.findLocalJavaTypeFile(descriptor: descriptor, pathSuffix: suffix)
+        }.value
+        if let result { localJavaTypeFileCache[qualifiedName] = result }
+        return result
+    }
+
+    private nonisolated static func findLocalJavaTypeFile(
+        descriptor: JavaRepositoryDescriptor,
+        pathSuffix: String
+    ) -> URL? {
+        let fileManager = FileManager.default
+        guard let enumerator = fileManager.enumerator(
+            at: descriptor.repositoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in true }
+        ) else { return nil }
+
+        var candidates: [URL] = []
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey])
+            if values?.isDirectory == true,
+               ["target", "build", "out", "node_modules"].contains(fileURL.lastPathComponent) {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard values?.isRegularFile == true,
+                  fileURL.pathExtension == "java",
+                  fileURL.path.hasSuffix(pathSuffix),
+                  descriptor.containsOwnedFile(fileURL) else { continue }
+            candidates.append(fileURL.standardizedFileURL)
+        }
+        return candidates.sorted { lhs, rhs in
+            let lhsMain = lhs.path.contains("/src/main/java/")
+            let rhsMain = rhs.path.contains("/src/main/java/")
+            if lhsMain != rhsMain { return lhsMain }
+            return lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+        }.first
+    }
+
+    private static func qualifiedJavaTypeName(receiver: String, documentText: String) -> String? {
+        let receiver = receiver
+            .replacingOccurrences(of: #"<.*>"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = receiver.split(separator: ".").map(String.init)
+        guard let typeIndex = components.firstIndex(where: { $0.first?.isUppercase == true }) else {
+            return nil
+        }
+        let outerType = components[typeIndex]
+        if typeIndex > 0 {
+            return components[...typeIndex].joined(separator: ".")
+        }
+
+        var wildcardPackages: [String] = []
+        var packageName: String?
+        for rawLine in documentText.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("package "), line.hasSuffix(";") {
+                packageName = String(line.dropFirst("package ".count).dropLast())
+                    .trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("import "), line.hasSuffix(";") {
+                var imported = String(line.dropFirst("import ".count).dropLast())
+                    .trimmingCharacters(in: .whitespaces)
+                if imported.hasPrefix("static ") { imported = String(imported.dropFirst("static ".count)) }
+                if imported.hasSuffix(".*") {
+                    wildcardPackages.append(String(imported.dropLast(2)))
+                } else if imported.split(separator: ".").last.map(String.init) == outerType {
+                    return imported
+                }
+            }
+        }
+        if let packageName, !packageName.isEmpty { return packageName + "." + outerType }
+        return wildcardPackages.first.map { $0 + "." + outerType } ?? outerType
+    }
+
+    private static func javaBeanPropertyName(for methodName: String) -> String? {
+        let prefix: String
+        if methodName.hasPrefix("get"), methodName.count > 3 {
+            prefix = "get"
+        } else if methodName.hasPrefix("is"), methodName.count > 2 {
+            prefix = "is"
+        } else {
+            return nil
+        }
+        let property = String(methodName.dropFirst(prefix.count))
+        guard let first = property.first else { return nil }
+        if property.count > 1, property.dropFirst().first?.isUppercase == true { return property }
+        return first.lowercased() + property.dropFirst()
+    }
+
+    private static func sourceTypeTarget(named name: String, fileURL: URL, text: String) -> JavaNavigationTarget? {
+        sourceTarget(
+            pattern: #"\b(?:class|interface|enum|record)\s+("#
+                + NSRegularExpression.escapedPattern(for: name)
+                + #")\b"#,
+            captureGroup: 1,
+            fileURL: fileURL,
+            text: text,
+            name: name,
+            kind: .class
+        )
+    }
+
+    private static func sourceMethodTarget(
+        named name: String,
+        fileURL: URL,
+        text: String
+    ) -> JavaNavigationTarget? {
+        let modifiers = #"(?:(?:public|protected|private|static|final|abstract|synchronized|native|default|strictfp)\s+)*"#
+        let returnType = #"(?:[A-Za-z_$][\w$.]*(?:\s*<[^;{}()]+>)?(?:\[\])?\s+)+"#
+        return sourceTarget(
+            pattern: #"(?m)^[\t ]*"# + modifiers + returnType
+                + #"("# + NSRegularExpression.escapedPattern(for: name) + #")\s*\("#,
+            captureGroup: 1,
+            fileURL: fileURL,
+            text: text,
+            name: name,
+            kind: .method
+        )
+    }
+
+    private static func sourceFieldTarget(
+        named name: String,
+        fileURL: URL,
+        text: String
+    ) -> JavaNavigationTarget? {
+        let modifiers = #"(?:(?:public|protected|private|static|final|transient|volatile)\s+)*"#
+        let fieldType = #"(?:[A-Za-z_$][\w$.]*(?:\s*<[^;{}()]+>)?(?:\[\])?\s+)+"#
+        return sourceTarget(
+            pattern: #"(?m)^[\t ]*"# + modifiers + fieldType
+                + #"("# + NSRegularExpression.escapedPattern(for: name) + #")\s*(?:=[^;]*)?;"#,
+            captureGroup: 1,
+            fileURL: fileURL,
+            text: text,
+            name: name,
+            kind: .field
+        )
+    }
+
+    private static func sourceTarget(
+        pattern: String,
+        captureGroup: Int,
+        fileURL: URL,
+        text: String,
+        name: String,
+        kind: JavaSymbolKind
+    ) -> JavaNavigationTarget? {
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: text,
+                range: NSRange(location: 0, length: (text as NSString).length)
+              ), match.numberOfRanges > captureGroup else { return nil }
+        let range = match.range(at: captureGroup)
+        guard range.location != NSNotFound else { return nil }
+        let sourceRange = javaSourceRange(in: text, utf16Range: range)
+        return JavaNavigationTarget(
+            fileURL: fileURL,
+            range: sourceRange,
+            selectionRange: sourceRange,
+            name: name,
+            detail: nil,
+            containerName: nil,
+            kind: kind
+        )
+    }
+
+    private static func javaSourceRange(in text: String, utf16Range: NSRange) -> JavaSourceRange {
+        let index = SourceLineIndex(text: text)
+        func position(_ offset: Int) -> JavaSourcePosition {
+            let line = max(0, index.lineNumber(containingUTF16Offset: offset) - 1)
+            let lineStart = index.lineStartOffsets.indices.contains(line) ? index.lineStartOffsets[line] : 0
+            return JavaSourcePosition(line: line, character: max(0, offset - lineStart))
+        }
+        return JavaSourceRange(
+            start: position(utf16Range.location),
+            end: position(NSMaxRange(utf16Range))
+        )
+    }
+
+    private func identifier(in text: String, atUTF16Offset offset: Int) -> String? {
+        let source = text as NSString
+        guard source.length > 0 else { return nil }
+        var location = min(max(0, offset), source.length - 1)
+        if !Self.isJavaIdentifier(source.character(at: location)), location > 0 { location -= 1 }
+        guard Self.isJavaIdentifier(source.character(at: location)) else { return nil }
+        var start = location
+        var end = location + 1
+        while start > 0, Self.isJavaIdentifier(source.character(at: start - 1)) { start -= 1 }
+        while end < source.length, Self.isJavaIdentifier(source.character(at: end)) { end += 1 }
+        return source.substring(with: NSRange(location: start, length: end - start))
+    }
+
+    private static func isJavaIdentifier(_ character: unichar) -> Bool {
+        if character == 95 || character == 36 { return true }
+        guard let scalar = UnicodeScalar(character) else { return false }
+        return CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    private func constructorReferenceTargets(
+        receiver: String,
+        simpleName: String
+    ) async throws -> [JavaNavigationTarget] {
+        let receiverComponents = receiver.split(separator: ".").map(String.init)
+        let queries = Array(Set([simpleName, receiverComponents.first ?? simpleName]))
+        let typeCandidates = try await withThrowingTaskGroup(of: [JavaNavigationTarget].self) { group in
+            for query in queries {
+                group.addTask { try await self.searchSymbols(query: query, scope: .types) }
+            }
+            var all: [JavaNavigationTarget] = []
+            for try await targets in group { all.append(contentsOf: targets) }
+            return all.uniqued()
+        }
+        let outerName = receiverComponents.first ?? simpleName
+        let matchingType = typeCandidates.first { candidate in
+            candidate.name == outerName
+                || candidate.name == simpleName
+                || candidate.containerName?.hasSuffix(receiver) == true
+                || candidate.detail?.contains(receiver) == true
+        } ?? typeCandidates.first
+        guard let matchingType else { return [] }
+
+        let fileURL = matchingType.fileURL.standardizedFileURL
+        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return [] }
+        try await openOrUpdateDocument(fileURL: fileURL, text: text)
+        let symbols = try await sendRequest(
+            method: "textDocument/documentSymbol",
+            params: .object(["textDocument": .object(["uri": .uri(fileURL)])])
+        )
+        return constructorSymbols(in: symbols, fileURL: fileURL, named: simpleName).uniqued()
+    }
+
+    private func constructorSymbols(
+        in value: JSONValue,
+        fileURL: URL,
+        named name: String
+    ) -> [JavaNavigationTarget] {
+        (value.arrayValue ?? []).flatMap { symbol in
+            var targets: [JavaNavigationTarget] = []
+            if [JavaSymbolKind.constructor.rawValue, JavaSymbolKind.method.rawValue].contains(symbol["kind"]?.intValue),
+               let symbolName = symbol["name"]?.stringValue,
+               symbolName == name || symbolName.hasPrefix(name + "("),
+               let target = Self.parseDocumentSymbolItem(symbol, fileURL: fileURL) {
+                targets.append(target)
+            }
+            if let children = symbol["children"] {
+                targets.append(contentsOf: constructorSymbols(in: children, fileURL: fileURL, named: name))
+            }
+            return targets
+        }
+    }
+
+    private static func parseDocumentSymbolItem(
+        _ item: JSONValue,
+        fileURL: URL
+    ) -> JavaNavigationTarget? {
+        guard let range = parseRange(item["range"] ?? item["selectionRange"]) else { return nil }
+        return JavaNavigationTarget(
+            fileURL: fileURL,
+            range: range,
+            selectionRange: parseRange(item["selectionRange"]),
+            name: item["name"]?.stringValue ?? fileURL.lastPathComponent,
+            detail: item["detail"]?.stringValue,
+            containerName: item["containerName"]?.stringValue,
+            kind: item["kind"]?.intValue.flatMap(JavaSymbolKind.init(rawValue:))
+        )
+    }
+
+    private func utf16Offset(for position: JavaSourcePosition, in text: String) -> Int {
+        let index = SourceLineIndex(text: text)
+        guard index.lineStartOffsets.indices.contains(position.line) else { return 0 }
+        return index.lineStartOffsets[position.line] + position.character
+    }
+
     private func pointsToEnumDeclaration(
         _ targets: [JavaNavigationTarget],
         request: JavaNavigationRequest
@@ -371,7 +797,8 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
                 name: $0.name,
                 detail: $0.detail,
                 containerName: $0.containerName,
-                kind: .enum
+                kind: .enum,
+                origin: $0.origin
             )
         }
     }

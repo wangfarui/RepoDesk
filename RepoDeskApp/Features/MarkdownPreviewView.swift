@@ -1,17 +1,17 @@
 import AppKit
 import SwiftUI
+import WebKit
 
 @MainActor
 struct MarkdownDocumentView: View {
     let text: String
     let fileName: String
     let fontSize: Double
+    let sourceLine: Int
     let headerActions: DocumentHeaderActions
+    let onVisibleLineChange: (Int) -> Void
     @State private var contentFindState = ContentFindState()
-
-    private var blocks: [MarkdownPreviewBlock] {
-        MarkdownPreviewParser.parse(text)
-    }
+    @State private var searchMatches: [ContentSearchMatch] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,83 +41,64 @@ struct MarkdownDocumentView: View {
                 Divider()
             }
 
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
-                            MarkdownBlockView(
-                                block: block,
-                                baseFontSize: fontSize,
-                                search: searchPresentation(forBlockAt: index)
-                            )
-                            .id(index)
-                        }
-                    }
-                    .repoDeskFontSize(fontSize)
-                    .frame(maxWidth: 860, alignment: .leading)
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 28)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .onChange(of: contentFindState.navigationRequestID) { _, _ in
-                    scrollToActiveMatch(using: proxy)
-                }
-            }
+            MarkdownPreviewTextView(
+                document: previewDocument,
+                contentSearch: contentSearchPresentation,
+                focusRequestID: contentFindState.contentFocusRequestID,
+                sourceLine: sourceLine,
+                onVisibleLineChange: onVisibleLineChange
+            )
         }
         .background(ContentFindCommandListener(
             requestFind: { contentFindState.present() },
             navigateMatch: navigateContentFind
         ))
+        .onAppear {
+            rebuildSearchMatches()
+        }
         .onChange(of: text) { _, _ in
+            rebuildSearchMatches()
             guard contentFindState.isPresented else { return }
             contentFindState.resetSelection()
         }
-    }
-
-    private var searchMatches: [MarkdownPreviewSearchMatch] {
-        return blocks.enumerated().flatMap { blockIndex, block in
-            searchableSegments(in: block).enumerated().flatMap { segmentIndex, segment in
-                ContentSearchMatcher.matches(
-                    in: segment,
-                    query: contentFindState.query,
-                    options: contentFindState.options
-                ).map {
-                    MarkdownPreviewSearchMatch(
-                        blockIndex: blockIndex,
-                        segmentIndex: segmentIndex,
-                        range: $0.range
-                    )
-                }
-            }
+        .onChange(of: contentFindState.isPresented) { _, _ in
+            rebuildSearchMatches()
+        }
+        .onChange(of: contentFindState.query) { _, _ in
+            rebuildSearchMatches()
+        }
+        .onChange(of: contentFindState.options) { _, _ in
+            rebuildSearchMatches()
         }
     }
 
-    private func searchPresentation(
-        forBlockAt blockIndex: Int
-    ) -> [Int: MarkdownTextSearchPresentation] {
-        let matches = searchMatches
-        let activeIndex = contentFindState.activeMatchIndex(matchCount: matches.count)
-        let activeMatch = activeIndex.map { matches[$0] }
-        return Dictionary(grouping: matches.filter { $0.blockIndex == blockIndex }, by: \.segmentIndex)
-            .mapValues { segmentMatches in
-                MarkdownTextSearchPresentation(
-                    ranges: segmentMatches.map(\.range),
-                    activeRange: activeMatch.flatMap { active in
-                        active.blockIndex == blockIndex
-                            && active.segmentIndex == segmentMatches[0].segmentIndex
-                            ? active.range
-                            : nil
-                    }
-                )
-            }
+    private var blocks: [MarkdownPreviewParsedBlock] {
+        MarkdownPreviewParser.parseWithSourceLines(text)
     }
 
-    private func scrollToActiveMatch(using proxy: ScrollViewProxy) {
-        let matches = searchMatches
-        guard let index = contentFindState.activeMatchIndex(matchCount: matches.count) else { return }
-        withAnimation(.easeOut(duration: 0.12)) {
-            proxy.scrollTo(matches[index].blockIndex, anchor: .center)
-        }
+    private var previewDocument: MarkdownPreviewHTMLDocument {
+        MarkdownPreviewHTMLDocument(blocks: blocks, fontSize: fontSize)
+    }
+
+    private var contentSearchPresentation: ContentSearchPresentation? {
+        guard contentFindState.isPresented else { return nil }
+        let activeRange = contentFindState
+            .activeMatchIndex(matchCount: searchMatches.count)
+            .map { searchMatches[$0].range }
+        return ContentSearchPresentation(
+            ranges: searchMatches.map(\.range),
+            activeRange: activeRange,
+            navigationRequestID: contentFindState.navigationRequestID
+        )
+    }
+
+    private func rebuildSearchMatches() {
+        let visibleText = previewDocument.text
+        searchMatches = ContentSearchMatcher.matches(
+            in: visibleText,
+            query: contentFindState.query,
+            options: contentFindState.options
+        )
     }
 
     private func navigateContentFind(by offset: Int) {
@@ -126,112 +107,431 @@ struct MarkdownDocumentView: View {
         }
         contentFindState.navigate(by: offset, matchCount: searchMatches.count)
     }
+}
 
-    @MainActor
-    private func searchableSegments(in block: MarkdownPreviewBlock) -> [String] {
-        switch block {
-        case .heading(_, let text), .paragraph(let text), .blockQuote(let text):
-            return [markdownPlainText(text)]
-        case .listItem(let item):
-            return [markdownPlainText(item.text)]
-        case .codeBlock(_, let code):
-            return [code]
-        case .thematicBreak:
-            return []
-        case .table(let headers, let rows):
-            return (headers + rows.flatMap { $0 }).map { markdownPlainText($0) }
-        }
+struct MarkdownPreviewSourceLineMapping: Equatable, Sendable {
+    let textRange: NSRange
+    let sourceLineRange: ClosedRange<Int>
+}
+
+@MainActor
+struct MarkdownPreviewAttributedDocument {
+    let attributedText: NSAttributedString
+    let text: String
+    let identity: String
+    let sourceLineMappings: [MarkdownPreviewSourceLineMapping]
+
+    init(blocks: [MarkdownPreviewParsedBlock], fontSize: Double) {
+        let normalizedFontSize = max(10, fontSize)
+        let storage = NSMutableAttributedString()
+        var mappings: [MarkdownPreviewSourceLineMapping] = []
+        Self.appendBlocks(
+            blocks,
+            fontSize: normalizedFontSize,
+            to: storage,
+            mappings: &mappings
+        )
+        attributedText = storage
+        text = storage.string
+        identity = "\(normalizedFontSize)|\(blocks)"
+        sourceLineMappings = mappings
     }
-}
 
-private struct MarkdownPreviewSearchMatch {
-    let blockIndex: Int
-    let segmentIndex: Int
-    let range: NSRange
-}
+    init(blocks: [MarkdownPreviewBlock], fontSize: Double) {
+        self.init(
+            blocks: blocks.enumerated().map { index, block in
+                MarkdownPreviewParsedBlock(
+                    block: block,
+                    sourceLineRange: (index + 1)...(index + 1)
+                )
+            },
+            fontSize: fontSize
+        )
+    }
 
-private struct MarkdownTextSearchPresentation {
-    let ranges: [NSRange]
-    let activeRange: NSRange?
-}
-
-private struct MarkdownBlockView: View {
-    let block: MarkdownPreviewBlock
-    let baseFontSize: Double
-    let search: [Int: MarkdownTextSearchPresentation]
-
-    @ViewBuilder
-    var body: some View {
-        switch block {
-        case .heading(let level, let text):
-            MarkdownInlineText(source: text, search: search[0])
-                .font(.system(size: headingSize(level), weight: level <= 2 ? .bold : .semibold))
-                .textSelection(.enabled)
-                .padding(.top, level == 1 ? 4 : 12)
-                .padding(.bottom, level <= 2 ? 10 : 6)
-        case .paragraph(let text):
-            MarkdownInlineText(source: text, search: search[0])
-                .font(.body)
-                .lineSpacing(4)
-                .textSelection(.enabled)
-                .padding(.bottom, 12)
-        case .listItem(let item):
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                listMarker(item.marker)
-                    .frame(width: 24, alignment: .trailing)
-                MarkdownInlineText(source: item.text, search: search[0])
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
-                Spacer(minLength: 0)
+    func sourceLine(forCharacterOffset offset: Int) -> Int? {
+        guard !sourceLineMappings.isEmpty else { return nil }
+        let clampedOffset = min(max(0, offset), (text as NSString).length)
+        if let mapping = sourceLineMappings.first(where: {
+            clampedOffset >= $0.textRange.location
+                && clampedOffset <= NSMaxRange($0.textRange)
+        }) {
+            let relativeOffset = max(0, clampedOffset - mapping.textRange.location)
+            let renderedPrefix = (text as NSString).substring(
+                with: NSRange(
+                    location: mapping.textRange.location,
+                    length: min(relativeOffset, mapping.textRange.length)
+                )
+            )
+            let renderedLine = renderedPrefix.reduce(into: 0) { count, character in
+                if character == "\n" { count += 1 }
             }
-            .padding(.leading, CGFloat(item.depth) * 20)
-            .padding(.bottom, 5)
-        case .blockQuote(let text):
-            HStack(alignment: .top, spacing: 12) {
-                Rectangle()
-                    .fill(Color.accentColor.opacity(0.55))
-                    .frame(width: 3)
-                MarkdownInlineText(source: text, search: search[0])
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                Spacer(minLength: 0)
+            return min(
+                mapping.sourceLineRange.upperBound,
+                mapping.sourceLineRange.lowerBound + renderedLine
+            )
+        }
+        return sourceLineMappings.last?.sourceLineRange.lowerBound
+    }
+
+    func textRange(forSourceLine line: Int) -> NSRange? {
+        guard !sourceLineMappings.isEmpty else { return nil }
+        if let mapping = sourceLineMappings.first(where: {
+            $0.sourceLineRange.contains(line)
+        }) {
+            let renderedLine = min(
+                line - mapping.sourceLineRange.lowerBound,
+                max(0, mapping.sourceLineRange.count - 1)
+            )
+            return textRange(
+                forRenderedLine: renderedLine,
+                in: mapping
+            )
+        }
+        if let next = sourceLineMappings.first(where: {
+            $0.sourceLineRange.lowerBound > line
+        }) {
+            return next.textRange
+        }
+        return sourceLineMappings.last?.textRange
+    }
+
+    private func textRange(
+        forRenderedLine renderedLine: Int,
+        in mapping: MarkdownPreviewSourceLineMapping
+    ) -> NSRange {
+        guard renderedLine > 0 else { return mapping.textRange }
+        let value = (text as NSString).substring(with: mapping.textRange)
+        var currentLine = 0
+        var offset = 0
+        for character in value {
+            offset += (String(character) as NSString).length
+            if character == "\n" {
+                currentLine += 1
+                if currentLine == renderedLine {
+                    return NSRange(
+                        location: mapping.textRange.location + offset,
+                        length: mapping.textRange.length - offset
+                    )
+                }
             }
-            .padding(.vertical, 8)
-            .padding(.horizontal, 12)
-            .background(Color.secondary.opacity(0.07))
-            .padding(.bottom, 12)
-        case .codeBlock(let language, let code):
-            VStack(alignment: .leading, spacing: 0) {
+        }
+        return mapping.textRange
+    }
+
+    private static func appendBlocks(
+        _ blocks: [MarkdownPreviewParsedBlock],
+        fontSize: Double,
+        to storage: NSMutableAttributedString,
+        mappings: inout [MarkdownPreviewSourceLineMapping]
+    ) {
+        let bodyFont = NSFont.systemFont(ofSize: CGFloat(fontSize))
+        let codeFont = NSFont.monospacedSystemFont(ofSize: CGFloat(fontSize), weight: .regular)
+
+        for parsedBlock in blocks {
+            let blockStart = storage.length
+            switch parsedBlock.block {
+            case .heading(let level, let source):
+                let headingFont = NSFont.systemFont(
+                    ofSize: headingSize(level, baseFontSize: fontSize),
+                    weight: level <= 2 ? .bold : .semibold
+                )
+                append(
+                    inlineText(source, font: headingFont),
+                    to: storage,
+                    paragraphStyle: paragraphStyle(
+                        firstLineHeadIndent: 0,
+                        headIndent: 0,
+                        lineSpacing: 0,
+                        paragraphSpacingBefore: level == 1 ? 4 : 12,
+                        paragraphSpacing: level <= 2 ? 10 : 6
+                    )
+                )
+
+            case .paragraph(let source):
+                append(
+                    inlineText(source, font: bodyFont),
+                    to: storage,
+                    paragraphStyle: paragraphStyle(
+                        firstLineHeadIndent: 0,
+                        headIndent: 0,
+                        lineSpacing: 4,
+                        paragraphSpacingBefore: 0,
+                        paragraphSpacing: 12
+                    )
+                )
+
+            case .listItem(let item):
+                let listText = NSMutableAttributedString(
+                    string: markerText(item.marker),
+                    attributes: [
+                        .font: bodyFont,
+                        .foregroundColor: NSColor.textColor
+                    ]
+                )
+                listText.append(inlineText(item.text, font: bodyFont))
+                append(
+                    listText,
+                    to: storage,
+                    paragraphStyle: paragraphStyle(
+                        firstLineHeadIndent: CGFloat(item.depth * 20),
+                        headIndent: CGFloat(item.depth * 20) + 24,
+                        lineSpacing: 3,
+                        paragraphSpacingBefore: 0,
+                        paragraphSpacing: 5
+                    )
+                )
+
+            case .blockQuote(let source):
+                append(
+                    inlineText(source, font: bodyFont, color: .secondaryLabelColor),
+                    to: storage,
+                    paragraphStyle: paragraphStyle(
+                        firstLineHeadIndent: 15,
+                        headIndent: 15,
+                        lineSpacing: 4,
+                        paragraphSpacingBefore: 8,
+                        paragraphSpacing: 12
+                    )
+                )
+
+            case .codeBlock(let language, let code):
                 if let language {
-                    Text(language.uppercased())
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 9)
+                    append(
+                        NSAttributedString(
+                            string: language.uppercased(),
+                            attributes: [
+                                .font: NSFont.systemFont(ofSize: max(10, CGFloat(fontSize) - 2), weight: .semibold),
+                                .foregroundColor: NSColor.secondaryLabelColor
+                            ]
+                        ),
+                        to: storage,
+                        paragraphStyle: paragraphStyle(
+                            firstLineHeadIndent: 12,
+                            headIndent: 12,
+                            lineSpacing: 0,
+                            paragraphSpacingBefore: 9,
+                            paragraphSpacing: 0
+                        ),
+                        backgroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.09)
+                    )
                 }
-                ScrollView(.horizontal) {
-                    Text(highlightedText(code, search: search[0], parsesMarkdown: false))
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: true, vertical: false)
-                        .padding(12)
+                append(
+                    NSAttributedString(
+                        string: code,
+                        attributes: [
+                            .font: codeFont,
+                            .foregroundColor: NSColor.textColor
+                        ]
+                    ),
+                    to: storage,
+                    paragraphStyle: paragraphStyle(
+                        firstLineHeadIndent: 12,
+                        headIndent: 12,
+                        lineSpacing: 0,
+                        paragraphSpacingBefore: language == nil ? 12 : 0,
+                        paragraphSpacing: 14
+                    ),
+                    backgroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.09)
+                )
+
+            case .thematicBreak:
+                append(
+                    NSAttributedString(string: " ", attributes: [.font: bodyFont]),
+                    to: storage,
+                    paragraphStyle: paragraphStyle(
+                        firstLineHeadIndent: 0,
+                        headIndent: 0,
+                        lineSpacing: 0,
+                        paragraphSpacingBefore: 14,
+                        paragraphSpacing: 14
+                    )
+                )
+
+            case .table(let headers, _, let rows):
+                let columnCount = max(1, max(headers.count, rows.map(\.count).max() ?? 0))
+                appendTableRow(
+                    headers,
+                    columnCount: columnCount,
+                    font: bodyFont,
+                    isHeader: true,
+                    to: storage
+                )
+                for row in rows {
+                    appendTableRow(
+                        row,
+                        columnCount: columnCount,
+                        font: bodyFont,
+                        isHeader: false,
+                        to: storage
+                    )
                 }
+                append(
+                    NSAttributedString(),
+                    to: storage,
+                    paragraphStyle: paragraphStyle(
+                        firstLineHeadIndent: 0,
+                        headIndent: 0,
+                        lineSpacing: 0,
+                        paragraphSpacingBefore: 0,
+                        paragraphSpacing: 16
+                    )
+                )
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.secondary.opacity(0.09))
-            .clipShape(.rect(cornerRadius: 5))
-            .padding(.bottom, 14)
-        case .thematicBreak:
-            Divider()
-                .padding(.vertical, 14)
-        case .table(let headers, let rows):
-            MarkdownTableView(headers: headers, rows: rows, search: search)
-                .padding(.bottom, 16)
+            let blockLength = storage.length - blockStart
+            if blockLength > 0 {
+                mappings.append(
+                    MarkdownPreviewSourceLineMapping(
+                        textRange: NSRange(location: blockStart, length: blockLength),
+                        sourceLineRange: parsedBlock.sourceLineRange
+                    )
+                )
+            }
         }
     }
 
-    private func headingSize(_ level: Int) -> CGFloat {
+    private static func appendTableRow(
+        _ cells: [String],
+        columnCount: Int,
+        font: NSFont,
+        isHeader: Bool,
+        to storage: NSMutableAttributedString
+    ) {
+        let row = NSMutableAttributedString()
+        for index in 0..<columnCount {
+            let cell = index < cells.count ? cells[index] : ""
+            let value = inlineText(cell, font: font)
+            if isHeader {
+                value.addAttribute(
+                    .font,
+                    value: NSFont.systemFont(ofSize: font.pointSize, weight: .semibold),
+                    range: NSRange(location: 0, length: value.length)
+                )
+                value.addAttribute(
+                    .backgroundColor,
+                    value: NSColor.secondaryLabelColor.withAlphaComponent(0.11),
+                    range: NSRange(location: 0, length: value.length)
+                )
+            }
+            row.append(value)
+            if index < columnCount - 1 {
+                row.append(NSAttributedString(string: "\t", attributes: [.font: font]))
+            }
+        }
+        append(
+            row,
+            to: storage,
+            paragraphStyle: tableParagraphStyle(columnCount: columnCount)
+        )
+    }
+
+    private static func inlineText(
+        _ source: String,
+        font: NSFont,
+        color: NSColor = .textColor
+    ) -> NSMutableAttributedString {
+        guard let parsed = try? AttributedString(markdown: source) else {
+            return NSMutableAttributedString(
+                string: source,
+                attributes: [.font: font, .foregroundColor: color]
+            )
+        }
+
+        let parsedText = NSAttributedString(parsed)
+        let result = NSMutableAttributedString(
+            string: parsedText.string,
+            attributes: [.font: font, .foregroundColor: color]
+        )
+        parsedText.enumerateAttributes(
+            in: NSRange(location: 0, length: parsedText.length),
+            options: []
+        ) { attributes, range, _ in
+            guard range.length > 0 else { return }
+            let intent = (attributes[.inlinePresentationIntent] as? NSNumber)
+                .map { InlinePresentationIntent(rawValue: $0.uintValue) }
+            var styledFont = font
+            if intent?.contains(.code) == true {
+                styledFont = NSFont.monospacedSystemFont(ofSize: font.pointSize, weight: .regular)
+                result.addAttribute(
+                    .backgroundColor,
+                    value: NSColor.secondaryLabelColor.withAlphaComponent(0.07),
+                    range: range
+                )
+            }
+            if intent?.contains(.stronglyEmphasized) == true {
+                styledFont = NSFontManager.shared.convert(styledFont, toHaveTrait: .boldFontMask)
+            }
+            if intent?.contains(.emphasized) == true {
+                styledFont = NSFontManager.shared.convert(styledFont, toHaveTrait: .italicFontMask)
+            }
+            result.addAttribute(.font, value: styledFont, range: range)
+            if intent?.contains(.strikethrough) == true {
+                result.addAttribute(
+                    .strikethroughStyle,
+                    value: NSUnderlineStyle.single.rawValue,
+                    range: range
+                )
+            }
+            if let link = attributes[.link] {
+                result.addAttributes(
+                    [
+                        .link: link,
+                        .foregroundColor: NSColor.linkColor,
+                        .underlineStyle: NSUnderlineStyle.single.rawValue
+                    ],
+                    range: range
+                )
+            }
+        }
+        return result
+    }
+
+    private static func append(
+        _ value: NSAttributedString,
+        to storage: NSMutableAttributedString,
+        paragraphStyle: NSParagraphStyle,
+        backgroundColor: NSColor? = nil
+    ) {
+        let content = NSMutableAttributedString(attributedString: value)
+        content.append(NSAttributedString(string: "\n"))
+        let range = NSRange(location: 0, length: content.length)
+        content.addAttribute(.paragraphStyle, value: paragraphStyle, range: range)
+        if let backgroundColor {
+            content.addAttribute(.backgroundColor, value: backgroundColor, range: range)
+        }
+        storage.append(content)
+    }
+
+    private static func paragraphStyle(
+        firstLineHeadIndent: CGFloat,
+        headIndent: CGFloat,
+        lineSpacing: CGFloat,
+        paragraphSpacingBefore: CGFloat,
+        paragraphSpacing: CGFloat
+    ) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.firstLineHeadIndent = firstLineHeadIndent
+        style.headIndent = headIndent
+        style.lineSpacing = lineSpacing
+        style.paragraphSpacingBefore = paragraphSpacingBefore
+        style.paragraphSpacing = paragraphSpacing
+        style.lineBreakMode = .byWordWrapping
+        return style
+    }
+
+    private static func tableParagraphStyle(columnCount: Int) -> NSParagraphStyle {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = 0
+        style.paragraphSpacing = 0
+        style.tabStops = (1..<columnCount).map {
+            NSTextTab(textAlignment: .left, location: CGFloat($0 * 180))
+        }
+        style.defaultTabInterval = 180
+        style.lineBreakMode = .byWordWrapping
+        return style
+    }
+
+    private static func headingSize(_ level: Int, baseFontSize: Double) -> CGFloat {
         let defaultSize: CGFloat = switch level {
         case 1: 28
         case 2: 23
@@ -242,119 +542,482 @@ private struct MarkdownBlockView: View {
         return max(10, defaultSize + CGFloat(baseFontSize - RepoDeskFontSize.default))
     }
 
-    @ViewBuilder
-    private func listMarker(_ marker: MarkdownPreviewListItem.Marker) -> some View {
+    private static func markerText(_ marker: MarkdownPreviewListItem.Marker) -> String {
         switch marker {
         case .unordered:
-            Image(systemName: "circle.fill")
-                .font(.system(size: 5))
+            "• "
         case .ordered(let number):
-            Text("\(number).")
-                .font(.body.monospacedDigit())
+            "\(number). "
         case .task(let isChecked):
-            Image(systemName: isChecked ? "checkmark.square.fill" : "square")
-                .foregroundStyle(isChecked ? Color.accentColor : Color.secondary)
+            isChecked ? "☑ " : "☐ "
         }
     }
 }
 
-private struct MarkdownTableView: View {
-    let headers: [String]
-    let rows: [[String]]
-    let search: [Int: MarkdownTextSearchPresentation]
+@MainActor
+struct MarkdownPreviewHTMLDocument {
+    let html: String
+    let text: String
+    let identity: String
 
-    private var columnCount: Int {
-        max(1, max(headers.count, rows.map(\.count).max() ?? 0))
+    init(blocks: [MarkdownPreviewParsedBlock], fontSize: Double) {
+        let normalizedFontSize = max(10, fontSize)
+        var body = ""
+        var renderedText = ""
+        for parsedBlock in blocks {
+            Self.append(
+                parsedBlock,
+                to: &body,
+                text: &renderedText
+            )
+        }
+        html = Self.documentHTML(body: body, fontSize: normalizedFontSize)
+        text = renderedText
+        identity = "\(normalizedFontSize)|\(blocks)"
     }
 
-    var body: some View {
-        ScrollView(.horizontal) {
-            VStack(alignment: .leading, spacing: 0) {
-                tableRow(headers, isHeader: true, segmentOffset: 0)
-                ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
-                    tableRow(
-                        row,
-                        isHeader: false,
-                        segmentOffset: headers.count + rows.prefix(rowIndex).reduce(0) { $0 + $1.count }
+    private static func append(
+        _ parsedBlock: MarkdownPreviewParsedBlock,
+        to body: inout String,
+        text: inout String
+    ) {
+        let range = parsedBlock.sourceLineRange
+        let sourceAttributes = "data-source-start=\"\(range.lowerBound)\" data-source-end=\"\(range.upperBound)\""
+        let blockBreak = "<span class=\"repoDesk-block-break\" aria-hidden=\"true\">\n</span>"
+
+        switch parsedBlock.block {
+        case .heading(let level, let source):
+            let rendered = inlineHTML(source)
+            body += "<h\(level) \(sourceAttributes)>\(rendered.html)</h\(level)>\(blockBreak)"
+            text += rendered.text + "\n"
+
+        case .paragraph(let source):
+            let rendered = inlineHTML(source)
+            body += "<p \(sourceAttributes)>\(rendered.html)</p>\(blockBreak)"
+            text += rendered.text + "\n"
+
+        case .listItem(let item):
+            let rendered = inlineHTML(item.text)
+            let marker = escapeHTML(markerText(item.marker))
+            body += "<div class=\"markdown-list-item depth-\(min(item.depth, 8))\" \(sourceAttributes)>"
+                + "<span class=\"markdown-list-marker\">\(marker)</span>"
+                + rendered.html
+                + "</div>\(blockBreak)"
+            text += markerText(item.marker) + rendered.text + "\n"
+
+        case .blockQuote(let source):
+            let rendered = inlineHTML(source)
+            body += "<blockquote \(sourceAttributes)>\(rendered.html)</blockquote>\(blockBreak)"
+            text += rendered.text + "\n"
+
+        case .codeBlock(let language, let code):
+            let label = language.map { escapeHTML($0.uppercased()) } ?? ""
+            let labelHTML = language.map {
+                "<div class=\"markdown-code-language\">\(escapeHTML($0.uppercased()))</div>"
+            } ?? ""
+            body += "<div class=\"markdown-code-block\" \(sourceAttributes)>\(labelHTML)"
+                + "<pre><code>\(escapeHTML(code))</code></pre></div>\(blockBreak)"
+            if language != nil { text += label + "\n" }
+            text += code + "\n"
+
+        case .thematicBreak:
+            body += "<hr \(sourceAttributes)><span class=\"repoDesk-block-break\" aria-hidden=\"true\"> \n</span>"
+            text += " \n"
+
+        case .table(let headers, let alignments, let rows):
+            let columnCount = max(1, max(headers.count, rows.map(\.count).max() ?? 0))
+            body += "<table class=\"markdown-table\" \(sourceAttributes)><thead><tr>"
+            for index in 0..<columnCount {
+                appendCell(
+                    headers[safe: index] ?? "",
+                    tag: "th",
+                    alignment: alignments[safe: index] ?? .left,
+                    isLastCell: index == columnCount - 1,
+                    to: &body,
+                    text: &text
+                )
+            }
+            body += "</tr></thead><tbody>"
+            for row in rows {
+                body += "<tr>"
+                for index in 0..<columnCount {
+                    appendCell(
+                        row[safe: index] ?? "",
+                        tag: "td",
+                        alignment: alignments[safe: index] ?? .left,
+                        isLastCell: index == columnCount - 1,
+                        to: &body,
+                        text: &text
                     )
                 }
+                body += "</tr>"
             }
+            body += "</tbody></table>\(blockBreak)"
         }
     }
 
-    private func tableRow(
-        _ cells: [String],
-        isHeader: Bool,
-        segmentOffset: Int
-    ) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            ForEach(0..<columnCount, id: \.self) { index in
-                MarkdownInlineText(
-                    source: index < cells.count ? cells[index] : "",
-                    search: index < cells.count ? search[segmentOffset + index] : nil
-                )
-                    .font(isHeader ? .body.weight(.semibold) : .body)
-                    .textSelection(.enabled)
-                    .frame(width: 180, alignment: .leading)
-                    .padding(8)
-                    .background(isHeader ? Color.secondary.opacity(0.11) : Color.clear)
-                    .overlay {
-                        Rectangle()
-                            .stroke(Color.secondary.opacity(0.22), lineWidth: 0.5)
-                    }
+    private static func appendCell(
+        _ source: String,
+        tag: String,
+        alignment: MarkdownPreviewTableAlignment,
+        isLastCell: Bool,
+        to body: inout String,
+        text: inout String
+    ) {
+        let rendered = inlineHTML(source)
+        let separator = isLastCell ? "\n" : "\t"
+        body += "<\(tag) style=\"text-align:\(alignment.cssValue)\">\(rendered.html)"
+            + "<span class=\"repoDesk-text-separator\" aria-hidden=\"true\">\(separator)</span></\(tag)>"
+        text += rendered.text + separator
+    }
+
+    private static func inlineHTML(_ source: String) -> (html: String, text: String) {
+        guard let parsed = try? AttributedString(markdown: source) else {
+            return (escapeHTML(source), source)
+        }
+        let parsedText = NSAttributedString(parsed)
+        var html = ""
+        var text = ""
+        parsedText.enumerateAttributes(
+            in: NSRange(location: 0, length: parsedText.length),
+            options: []
+        ) { attributes, range, _ in
+            guard range.length > 0 else { return }
+            let value = parsedText.attributedSubstring(from: range).string
+            let intent = (attributes[.inlinePresentationIntent] as? NSNumber)
+                .map { InlinePresentationIntent(rawValue: $0.uintValue) }
+            var tags: [String] = []
+            var closingTags: [String] = []
+            if let link = attributes[.link] {
+                let href = escapeHTML((link as? URL)?.absoluteString ?? String(describing: link))
+                tags.append("<a href=\"\(href)\">")
+                closingTags.insert("</a>", at: 0)
             }
+            if intent?.contains(.stronglyEmphasized) == true {
+                tags.append("<strong>")
+                closingTags.insert("</strong>", at: 0)
+            }
+            if intent?.contains(.emphasized) == true {
+                tags.append("<em>")
+                closingTags.insert("</em>", at: 0)
+            }
+            if intent?.contains(.strikethrough) == true {
+                tags.append("<del>")
+                closingTags.insert("</del>", at: 0)
+            }
+            if intent?.contains(.code) == true {
+                tags.append("<code>")
+                closingTags.insert("</code>", at: 0)
+            }
+            html += tags.joined() + escapeHTML(value) + closingTags.joined()
+            text += value
+        }
+        return (html, text)
+    }
+
+    private static func documentHTML(body: String, fontSize: Double) -> String {
+        """
+        <!doctype html>
+        <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+        <style>
+        :root { color-scheme: light dark; }
+        html, body { margin: 0; padding: 0; background: #ffffff; color: #24292f; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; font-size: \(fontSize)px; line-height: 1.55; overflow-x: auto; }
+        .markdown-document { box-sizing: border-box; max-width: 1040px; margin: 0 auto; padding: 30px 32px 48px; }
+        h1, h2, h3, h4, h5, h6 { color: #24292f; font-weight: 600; line-height: 1.25; margin: 24px 0 12px; }
+        h1 { font-size: 2em; padding-bottom: .3em; border-bottom: 1px solid #d8dee4; margin-top: 0; }
+        h2 { font-size: 1.5em; padding-bottom: .25em; border-bottom: 1px solid #d8dee4; }
+        h3 { font-size: 1.25em; }
+        h4 { font-size: 1.05em; }
+        p { margin: 0 0 14px; }
+        a { color: #0969da; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; background: #f0f2f4; border-radius: 3px; padding: .12em .32em; }
+        .markdown-code-block { margin: 16px 0; background: #f6f8fa; border: 1px solid #d8dee4; border-radius: 5px; overflow: hidden; }
+        .markdown-code-language { padding: 8px 14px 0; color: #57606a; font-size: .78em; font-weight: 600; letter-spacing: .02em; }
+        pre { margin: 0; padding: 12px 14px 14px; overflow-x: auto; white-space: pre; }
+        pre code { padding: 0; background: transparent; border-radius: 0; font-size: .9em; }
+        blockquote { margin: 14px 0; padding: 4px 14px; color: #57606a; border-left: 3px solid #d0d7de; }
+        .markdown-list-item { margin: 4px 0; padding-left: 24px; position: relative; }
+        .markdown-list-marker { position: absolute; left: 0; color: #57606a; }
+        .depth-1 { margin-left: 22px; } .depth-2 { margin-left: 44px; } .depth-3 { margin-left: 66px; }
+        .depth-4 { margin-left: 88px; } .depth-5 { margin-left: 110px; } .depth-6 { margin-left: 132px; }
+        .depth-7 { margin-left: 154px; } .depth-8 { margin-left: 176px; }
+        hr { height: 1px; border: 0; background: #d8dee4; margin: 24px 0; }
+        .markdown-table { width: 100%; border-collapse: collapse; margin: 16px 0 20px; table-layout: auto; }
+        .markdown-table th, .markdown-table td { border: 1px solid #d0d7de; padding: 8px 12px; vertical-align: top; }
+        .markdown-table th { background: #f6f8fa; font-weight: 600; }
+        .repoDesk-block-break, .repoDesk-text-separator { display: none; }
+        mark.repoDesk-search { background: rgba(255, 214, 10, .38); color: inherit; padding: 0; }
+        mark.repoDesk-search-active { background: rgba(255, 149, 0, .55); }
+        @media (prefers-color-scheme: dark) {
+            html, body { background: #1e1e1e; color: #e6edf3; }
+            h1, h2, h3, h4, h5, h6 { color: #e6edf3; border-color: #444c56; }
+            code { background: #343942; } .markdown-code-block { background: #2b2f36; border-color: #444c56; }
+            .markdown-code-language, blockquote { color: #8b949e; } blockquote { border-color: #444c56; }
+            hr { background: #444c56; } .markdown-table th { background: #2b2f36; }
+            .markdown-table th, .markdown-table td { border-color: #444c56; }
+            a { color: #58a6ff; }
+        }
+        </style></head><body><main class="markdown-document">\(body)</main>
+        <script>
+        (function() {
+          function clearMarks(root) {
+            root.querySelectorAll('mark.repoDesk-search').forEach(function(mark) {
+              mark.replaceWith(document.createTextNode(mark.textContent || ''));
+            });
+            root.normalize();
+          }
+          function textNodes(root) {
+            var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+            var nodes = [], node;
+            while ((node = walker.nextNode())) nodes.push(node);
+            return nodes;
+          }
+          window.repoDeskApplySearch = function(ranges, activeIndex) {
+            var root = document.querySelector('.markdown-document');
+            if (!root) return;
+            clearMarks(root);
+            if (!ranges || ranges.length === 0) return;
+            var nodes = textNodes(root), offset = 0;
+            nodes.forEach(function(node) {
+              var value = node.nodeValue || '', start = offset, end = offset + value.length;
+              offset = end;
+              var overlaps = [];
+              ranges.forEach(function(range, index) {
+                var rangeStart = range[0], rangeEnd = range[0] + range[1];
+                if (rangeEnd > start && rangeStart < end) overlaps.push({ start: rangeStart, end: rangeEnd, index: index });
+              });
+              if (overlaps.length === 0) return;
+              var fragment = document.createDocumentFragment(), cursor = 0;
+              overlaps.sort(function(a, b) { return a.start - b.start; });
+              overlaps.forEach(function(range) {
+                var localStart = Math.max(0, range.start - start), localEnd = Math.min(value.length, range.end - start);
+                if (localStart > cursor) fragment.appendChild(document.createTextNode(value.slice(cursor, localStart)));
+                if (localEnd > localStart) {
+                  var mark = document.createElement('mark');
+                  mark.className = 'repoDesk-search' + (range.index === activeIndex ? ' repoDesk-search-active' : '');
+                  mark.textContent = value.slice(localStart, localEnd);
+                  fragment.appendChild(mark);
+                  cursor = localEnd;
+                }
+              });
+              if (cursor < value.length) fragment.appendChild(document.createTextNode(value.slice(cursor)));
+              node.parentNode.replaceChild(fragment, node);
+            });
+            var active = root.querySelector('mark.repoDesk-search-active');
+            if (active) active.scrollIntoView({ block: 'center', inline: 'nearest' });
+          };
+          window.repoDeskScrollToSourceLine = function(line) {
+            var elements = document.querySelectorAll('[data-source-start]');
+            var target = null;
+            elements.forEach(function(element) {
+              var start = Number(element.dataset.sourceStart), end = Number(element.dataset.sourceEnd);
+              if (!target && line >= start && line <= end) target = element;
+            });
+            if (!target) {
+              elements.forEach(function(element) { if (!target && Number(element.dataset.sourceStart) > line) target = element; });
+            }
+            if (target) target.scrollIntoView({ block: 'center', inline: 'nearest' });
+          };
+          var observer = new IntersectionObserver(function(entries) {
+            var visible = entries.filter(function(entry) { return entry.isIntersecting; })
+              .sort(function(a, b) { return Math.abs(a.boundingClientRect.top - window.innerHeight / 2) - Math.abs(b.boundingClientRect.top - window.innerHeight / 2); })[0];
+            if (visible) {
+              var element = visible.target;
+              window.webkit.messageHandlers.repoDeskSourceLine.postMessage(Number(element.dataset.sourceStart));
+            }
+          }, { threshold: [0, .2, .8, 1] });
+          document.querySelectorAll('[data-source-start]').forEach(function(element) { observer.observe(element); });
+        })();
+        </script></body></html>
+        """
+    }
+
+    private static func markerText(_ marker: MarkdownPreviewListItem.Marker) -> String {
+        switch marker {
+        case .unordered: "• "
+        case .ordered(let number): "\(number). "
+        case .task(let isChecked): isChecked ? "☑ " : "☐ "
+        }
+    }
+
+    private static func escapeHTML(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+}
+
+private extension MarkdownPreviewTableAlignment {
+    var cssValue: String {
+        switch self {
+        case .left: "left"
+        case .center: "center"
+        case .right: "right"
         }
     }
 }
 
-private struct MarkdownInlineText: View {
-    let source: String
-    let search: MarkdownTextSearchPresentation?
-
-    var body: some View {
-        Text(highlightedText(source, search: search, parsesMarkdown: true))
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 
 @MainActor
-private func markdownPlainText(_ source: String) -> String {
-    guard let attributed = try? AttributedString(markdown: source) else { return source }
-    return String(attributed.characters)
+private struct MarkdownPreviewTextView: NSViewRepresentable {
+    let document: MarkdownPreviewHTMLDocument
+    let contentSearch: ContentSearchPresentation?
+    let focusRequestID: UUID?
+    let sourceLine: Int
+    let onVisibleLineChange: (Int) -> Void
+
+    func makeNSView(context: Context) -> MarkdownPreviewWebViewSurface {
+        let webView = MarkdownPreviewWebViewSurface()
+        webView.setAccessibilityIdentifier("RepoDesk.MarkdownPreview")
+        webView.apply(
+            document: document,
+            contentSearch: contentSearch,
+            focusRequestID: focusRequestID,
+            sourceLine: sourceLine,
+            onVisibleLineChange: onVisibleLineChange
+        )
+        return webView
+    }
+
+    func updateNSView(_ webView: MarkdownPreviewWebViewSurface, context: Context) {
+        webView.apply(
+            document: document,
+            contentSearch: contentSearch,
+            focusRequestID: focusRequestID,
+            sourceLine: sourceLine,
+            onVisibleLineChange: onVisibleLineChange
+        )
+    }
 }
 
 @MainActor
-private func highlightedText(
-    _ source: String,
-    search: MarkdownTextSearchPresentation?,
-    parsesMarkdown: Bool
-) -> AttributedString {
-    let attributed = parsesMarkdown
-        ? ((try? AttributedString(markdown: source)) ?? AttributedString(source))
-        : AttributedString(source)
-    guard let search else { return attributed }
-    let highlighted = NSMutableAttributedString(attributedString: NSAttributedString(attributed))
-    let length = highlighted.length
+private final class MarkdownPreviewScriptMessageProxy: NSObject, WKScriptMessageHandler {
+    weak var owner: MarkdownPreviewWebViewSurface?
 
-    for range in search.ranges where isValidHighlightRange(range, length: length) {
-        highlighted.addAttribute(
-            .backgroundColor,
-            value: NSColor.systemYellow.withAlphaComponent(0.34),
-            range: range
-        )
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        owner?.receiveScriptMessage(message)
     }
-    if let activeRange = search.activeRange,
-       isValidHighlightRange(activeRange, length: length) {
-        highlighted.addAttribute(
-            .backgroundColor,
-            value: NSColor.systemOrange.withAlphaComponent(0.55),
-            range: activeRange
-        )
-    }
-    return AttributedString(highlighted)
 }
 
-private func isValidHighlightRange(_ range: NSRange, length: Int) -> Bool {
-    range.location != NSNotFound
-        && range.location <= length
-        && range.length <= length - range.location
+@MainActor
+private final class MarkdownPreviewWebViewSurface: WKWebView, WKNavigationDelegate {
+    private var appliedDocumentIdentity: String?
+    private var appliedSearch: ContentSearchPresentation?
+    private var appliedFocusRequestID: UUID?
+    private var pendingSearch: ContentSearchPresentation?
+    private var pendingSourceLine: Int?
+    private var isDocumentLoaded = false
+    private var lastReportedSourceLine: Int?
+    private var onVisibleLineChange: ((Int) -> Void)?
+    private let messageProxy: MarkdownPreviewScriptMessageProxy
+
+    init() {
+        let configuration = WKWebViewConfiguration()
+        let messageProxy = MarkdownPreviewScriptMessageProxy()
+        self.messageProxy = messageProxy
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: "document.documentElement.classList.add('repoDesk-webview');",
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            )
+        )
+        super.init(frame: .zero, configuration: configuration)
+        messageProxy.owner = self
+        configuration.userContentController.add(messageProxy, name: "repoDeskSourceLine")
+        navigationDelegate = self
+        allowsMagnification = false
+        setValue(false, forKey: "drawsBackground")
+        underPageBackgroundColor = .textBackgroundColor
+        appearance = NSAppearance(named: .aqua)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func apply(
+        document: MarkdownPreviewHTMLDocument,
+        contentSearch: ContentSearchPresentation?,
+        focusRequestID: UUID?,
+        sourceLine: Int,
+        onVisibleLineChange: @escaping (Int) -> Void
+    ) {
+        self.onVisibleLineChange = onVisibleLineChange
+        if appliedDocumentIdentity != document.identity {
+            appliedDocumentIdentity = document.identity
+            appliedSearch = nil
+            pendingSearch = contentSearch
+            pendingSourceLine = max(1, sourceLine)
+            isDocumentLoaded = false
+            loadHTMLString(document.html, baseURL: nil)
+        } else if isDocumentLoaded {
+            applySearchIfNeeded(contentSearch)
+        } else {
+            pendingSearch = contentSearch
+        }
+        restoreFocusIfNeeded(focusRequestID)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        isDocumentLoaded = true
+        if let sourceLine = pendingSourceLine {
+            evaluate("window.repoDeskScrollToSourceLine(\(sourceLine));")
+            pendingSourceLine = nil
+        }
+        applySearchIfNeeded(pendingSearch)
+        pendingSearch = nil
+    }
+
+    func receiveScriptMessage(_ message: WKScriptMessage) {
+        guard message.name == "repoDeskSourceLine" else { return }
+        if let line = message.body as? Int {
+            reportVisibleSourceLine(line)
+        } else if let number = message.body as? NSNumber {
+            reportVisibleSourceLine(number.intValue)
+        }
+    }
+
+    private func reportVisibleSourceLine(_ line: Int) {
+        guard line > 0, line != lastReportedSourceLine else { return }
+        lastReportedSourceLine = line
+        onVisibleLineChange?(line)
+    }
+
+    private func applySearchIfNeeded(_ presentation: ContentSearchPresentation?) {
+        guard appliedSearch != presentation, isDocumentLoaded else { return }
+        appliedSearch = presentation
+        let ranges = presentation?.ranges.map { [$0.location, $0.length] } ?? []
+        let activeIndex = presentation?.activeRange.flatMap { active in
+            presentation?.ranges.firstIndex { $0 == active }
+        } ?? -1
+        guard let data = try? JSONSerialization.data(withJSONObject: ranges),
+              let rangesJSON = String(data: data, encoding: .utf8) else { return }
+        evaluate("window.repoDeskApplySearch(\(rangesJSON), \(activeIndex));")
+    }
+
+    private func restoreFocusIfNeeded(_ requestID: UUID?) {
+        guard let requestID, requestID != appliedFocusRequestID else { return }
+        appliedFocusRequestID = requestID
+        window?.makeFirstResponder(self)
+    }
+
+    private func evaluate(_ script: String) {
+        evaluateJavaScript(script, completionHandler: nil)
+    }
 }

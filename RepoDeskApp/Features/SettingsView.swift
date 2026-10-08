@@ -4,6 +4,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
     case general
     case appearance
     case files
+    case shortcuts
     case diff
     case java
     case maven
@@ -15,6 +16,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .general: "通用"
         case .appearance: "外观"
         case .files: "Files"
+        case .shortcuts: "快捷键"
         case .diff: "Diff"
         case .java: "Java"
         case .maven: "Maven"
@@ -26,6 +28,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .general: "刷新、Workspace 与版本"
         case .appearance: "分区域字体大小"
         case .files: "文件树与编辑器"
+        case .shortcuts: "查看与修改应用快捷键"
         case .diff: "差异显示偏好"
         case .java: "索引资源与缓存"
         case .maven: "运行环境与记录"
@@ -37,6 +40,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .general: "gearshape"
         case .appearance: "textformat.size"
         case .files: "folder"
+        case .shortcuts: "command"
         case .diff: "rectangle.split.2x1"
         case .java: "cup.and.heat.waves"
         case .maven: "shippingbox"
@@ -408,6 +412,9 @@ struct RepoDeskSettingsView: View {
                 }
             }
 
+        case .shortcuts:
+            shortcutSettingsPage
+
         case .diff:
             settingsPage(
                 title: "Diff",
@@ -631,6 +638,33 @@ struct RepoDeskSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private var shortcutSettingsPage: some View {
+        settingsPage(
+            title: "快捷键",
+            description: "配置 RepoDesk 自己定义的应用快捷键。macOS 和文本编辑器自带的复制、粘贴等快捷键不在此处配置。"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("点击右侧录制框后输入新的组合键。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("恢复全部默认值", systemImage: "arrow.counterclockwise") {
+                        appState.resetAllShortcuts()
+                    }
+                }
+                ForEach(Array(AppShortcutID.allCases.enumerated()), id: \.element) { index, id in
+                    if index == 0 || AppShortcutID.allCases[index - 1].group != id.group {
+                        Text(id.group)
+                            .font(.headline)
+                            .padding(.top, index == 0 ? 4 : 14)
+                    }
+                    ShortcutSettingsRow(id: id, appState: appState)
+                }
+            }
+        }
     }
 
     private var workspacePath: String {
@@ -945,5 +979,117 @@ private struct SettingsRow<Control: View>: View {
             Divider()
                 .padding(.leading, 14)
         }
+    }
+}
+
+private struct ShortcutSettingsRow: View {
+    let id: AppShortcutID
+    @Bindable var appState: AppState
+    @State private var isRecording = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(id.title)
+                Text("默认：\(id.defaultBinding.displayName)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let conflict = appState.shortcutConflict(for: id) {
+                    Text("与“\(conflict.title)”冲突")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Spacer()
+            ShortcutRecorder(
+                binding: Binding(
+                    get: { appState.shortcut(for: id) },
+                    set: { appState.setShortcut($0, for: id) }
+                ),
+                isRecording: $isRecording
+            )
+            .frame(width: 130, height: 28)
+            Button("恢复") {
+                appState.resetShortcut(id)
+            }
+            .disabled(appState.shortcut(for: id) == id.defaultBinding)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct ShortcutRecorder: NSViewRepresentable {
+    @Binding var binding: ShortcutBinding
+    @Binding var isRecording: Bool
+
+    func makeNSView(context: Context) -> ShortcutRecorderView {
+        let view = ShortcutRecorderView()
+        view.binding = binding
+        view.isRecording = isRecording
+        view.onBindingChanged = { newBinding in
+            binding = newBinding
+            isRecording = false
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: ShortcutRecorderView, context: Context) {
+        nsView.binding = binding
+        nsView.isRecording = isRecording
+        nsView.onBindingChanged = { newBinding in
+            binding = newBinding
+            isRecording = false
+        }
+    }
+}
+
+private final class ShortcutRecorderView: NSView {
+    var binding = ShortcutBinding(key: "") { didSet { needsDisplay = true } }
+    var isRecording = false { didSet { needsDisplay = true } }
+    var onBindingChanged: ((ShortcutBinding) -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        isRecording = true
+        window?.makeFirstResponder(self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard isRecording else { return }
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let key: String
+        switch event.keyCode {
+        case 36: key = "return"
+        case 51: key = "delete"
+        case 123: key = "left"
+        case 124: key = "right"
+        default:
+            guard let characters = event.charactersIgnoringModifiers?.lowercased(),
+                  let first = characters.first else { return }
+            key = String(first)
+        }
+        let shortcutModifiers: Set<ShortcutModifier> = Set(
+            ShortcutModifier.allCases.filter { modifiers.contains($0.eventFlag) }
+        )
+        onBindingChanged?(ShortcutBinding(key: key, modifiers: shortcutModifiers))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 1, dy: 1)
+        NSColor.controlBackgroundColor.setFill()
+        rect.fill()
+        NSColor.separatorColor.setStroke()
+        NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).stroke()
+        let text = isRecording ? "输入快捷键…" : binding.displayName
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: isRecording ? NSColor.secondaryLabelColor : NSColor.labelColor
+        ]
+        let size = text.size(withAttributes: attributes)
+        text.draw(
+            at: NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2),
+            withAttributes: attributes
+        )
     }
 }

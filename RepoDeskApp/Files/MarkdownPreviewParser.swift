@@ -12,6 +12,12 @@ struct MarkdownPreviewListItem: Equatable, Sendable {
     let text: String
 }
 
+enum MarkdownPreviewTableAlignment: Equatable, Sendable {
+    case left
+    case center
+    case right
+}
+
 enum MarkdownPreviewBlock: Equatable, Sendable {
     case heading(level: Int, text: String)
     case paragraph(String)
@@ -19,21 +25,43 @@ enum MarkdownPreviewBlock: Equatable, Sendable {
     case blockQuote(String)
     case codeBlock(language: String?, code: String)
     case thematicBreak
-    case table(headers: [String], rows: [[String]])
+    case table(
+        headers: [String],
+        alignments: [MarkdownPreviewTableAlignment],
+        rows: [[String]]
+    )
+}
+
+struct MarkdownPreviewParsedBlock: Equatable, Sendable {
+    let block: MarkdownPreviewBlock
+    let sourceLineRange: ClosedRange<Int>
 }
 
 enum MarkdownPreviewParser {
     static func parse(_ source: String) -> [MarkdownPreviewBlock] {
+        parseWithSourceLines(source).map(\.block)
+    }
+
+    static func parseWithSourceLines(_ source: String) -> [MarkdownPreviewParsedBlock] {
         let normalizedSource = source.replacingOccurrences(of: "\r\n", with: "\n")
         let lines = normalizedSource.components(separatedBy: "\n")
-        var blocks: [MarkdownPreviewBlock] = []
+        var blocks: [MarkdownPreviewParsedBlock] = []
         var paragraphLines: [String] = []
+        var paragraphStartIndex: Int?
         var index = 0
 
         func flushParagraph() {
             guard !paragraphLines.isEmpty else { return }
-            blocks.append(.paragraph(paragraphLines.joined(separator: " ")))
+            let startIndex = paragraphStartIndex ?? max(0, index - paragraphLines.count)
+            let endIndex = max(startIndex, index - 1)
+            blocks.append(
+                MarkdownPreviewParsedBlock(
+                    block: .paragraph(paragraphLines.joined(separator: " ")),
+                    sourceLineRange: (startIndex + 1)...(endIndex + 1)
+                )
+            )
             paragraphLines = []
+            paragraphStartIndex = nil
         }
 
         while index < lines.count {
@@ -48,6 +76,7 @@ enum MarkdownPreviewParser {
 
             if let fence = codeFence(in: trimmed) {
                 flushParagraph()
+                let blockStartIndex = index
                 let language = String(trimmed.dropFirst(fence.count))
                     .trimmingCharacters(in: .whitespaces)
                 var codeLines: [String] = []
@@ -57,11 +86,15 @@ enum MarkdownPreviewParser {
                     codeLines.append(lines[index])
                     index += 1
                 }
+                let blockEndIndex = min(index, lines.count - 1)
                 if index < lines.count { index += 1 }
                 blocks.append(
-                    .codeBlock(
-                        language: language.isEmpty ? nil : language,
-                        code: codeLines.joined(separator: "\n")
+                    MarkdownPreviewParsedBlock(
+                        block: .codeBlock(
+                            language: language.isEmpty ? nil : language,
+                            code: codeLines.joined(separator: "\n")
+                        ),
+                        sourceLineRange: (blockStartIndex + 1)...(blockEndIndex + 1)
                     )
                 )
                 continue
@@ -69,7 +102,12 @@ enum MarkdownPreviewParser {
 
             if let heading = atxHeading(in: trimmed) {
                 flushParagraph()
-                blocks.append(.heading(level: heading.level, text: heading.text))
+                blocks.append(
+                    MarkdownPreviewParsedBlock(
+                        block: .heading(level: heading.level, text: heading.text),
+                        sourceLineRange: (index + 1)...(index + 1)
+                    )
+                )
                 index += 1
                 continue
             }
@@ -78,20 +116,34 @@ enum MarkdownPreviewParser {
                let level = setextHeadingLevel(in: lines[index + 1]),
                !trimmed.isEmpty {
                 flushParagraph()
-                blocks.append(.heading(level: level, text: trimmed))
+                blocks.append(
+                    MarkdownPreviewParsedBlock(
+                        block: .heading(level: level, text: trimmed),
+                        sourceLineRange: (index + 1)...(index + 2)
+                    )
+                )
                 index += 2
                 continue
             }
 
             if isThematicBreak(trimmed) {
                 flushParagraph()
-                blocks.append(.thematicBreak)
+                blocks.append(
+                    MarkdownPreviewParsedBlock(
+                        block: .thematicBreak,
+                        sourceLineRange: (index + 1)...(index + 1)
+                    )
+                )
                 index += 1
                 continue
             }
 
-            if isTableHeader(line, separatorLine: index + 1 < lines.count ? lines[index + 1] : nil) {
+            if line.contains("|"),
+               let alignments = tableAlignments(
+                   in: index + 1 < lines.count ? lines[index + 1] : nil
+               ) {
                 flushParagraph()
+                let blockStartIndex = index
                 let headers = tableCells(in: line)
                 var rows: [[String]] = []
                 index += 2
@@ -102,12 +154,23 @@ enum MarkdownPreviewParser {
                     rows.append(tableCells(in: row))
                     index += 1
                 }
-                blocks.append(.table(headers: headers, rows: rows))
+                let blockEndIndex = max(blockStartIndex + 1, index - 1)
+                blocks.append(
+                    MarkdownPreviewParsedBlock(
+                        block: .table(
+                            headers: headers,
+                            alignments: alignments,
+                            rows: rows
+                        ),
+                        sourceLineRange: (blockStartIndex + 1)...(blockEndIndex + 1)
+                    )
+                )
                 continue
             }
 
             if trimmed.hasPrefix(">") {
                 flushParagraph()
+                let blockStartIndex = index
                 var quoteLines: [String] = []
                 while index < lines.count {
                     let quoteLine = lines[index].trimmingCharacters(in: .whitespaces)
@@ -118,17 +181,28 @@ enum MarkdownPreviewParser {
                     )
                     index += 1
                 }
-                blocks.append(.blockQuote(quoteLines.joined(separator: "\n")))
+                blocks.append(
+                    MarkdownPreviewParsedBlock(
+                        block: .blockQuote(quoteLines.joined(separator: "\n")),
+                        sourceLineRange: (blockStartIndex + 1)...index
+                    )
+                )
                 continue
             }
 
             if let listItem = listItem(in: line) {
                 flushParagraph()
-                blocks.append(.listItem(listItem))
+                blocks.append(
+                    MarkdownPreviewParsedBlock(
+                        block: .listItem(listItem),
+                        sourceLineRange: (index + 1)...(index + 1)
+                    )
+                )
                 index += 1
                 continue
             }
 
+            paragraphStartIndex = paragraphStartIndex ?? index
             paragraphLines.append(trimmed)
             index += 1
         }
@@ -201,15 +275,27 @@ enum MarkdownPreviewParser {
         return MarkdownPreviewListItem(marker: .ordered(number), depth: depth, text: text)
     }
 
-    private static func isTableHeader(_ line: String, separatorLine: String?) -> Bool {
-        guard line.contains("|"), let separatorLine else { return false }
+    private static func tableAlignments(in separatorLine: String?) -> [MarkdownPreviewTableAlignment]? {
+        guard let separatorLine else { return nil }
         let cells = tableCells(in: separatorLine)
-        guard !cells.isEmpty else { return false }
-        return cells.allSatisfy { cell in
+        guard !cells.isEmpty else { return nil }
+        var alignments: [MarkdownPreviewTableAlignment] = []
+        for cell in cells {
             let value = cell.trimmingCharacters(in: .whitespaces)
-                .trimmingCharacters(in: CharacterSet(charactersIn: ":"))
-            return value.count >= 3 && value.allSatisfy { $0 == "-" }
+            let hasLeadingColon = value.first == ":"
+            let hasTrailingColon = value.last == ":"
+            let dashStart = value.index(value.startIndex, offsetBy: hasLeadingColon ? 1 : 0)
+            let dashEnd = value.index(value.endIndex, offsetBy: hasTrailingColon ? -1 : 0)
+            guard dashStart <= dashEnd else { return nil }
+            let dashes = value[dashStart..<dashEnd]
+            guard dashes.count >= 3, dashes.allSatisfy({ $0 == "-" }) else { return nil }
+            alignments.append(
+                hasLeadingColon && hasTrailingColon
+                    ? .center
+                    : hasTrailingColon ? .right : .left
+            )
         }
+        return alignments
     }
 
     private static func tableCells(in line: String) -> [String] {

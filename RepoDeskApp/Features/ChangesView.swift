@@ -138,9 +138,9 @@ struct ChangesView: View {
                 Menu("Group By", systemImage: "eye") {
                     Section("Group By") {
                         Toggle("Directory", isOn: groupingOptionBinding(.directory))
-                            .keyboardShortcut("p", modifiers: .control)
+                            .keyboardShortcut(appState.shortcut(for: .changesGroupDirectory).keyEquivalent, modifiers: appState.shortcut(for: .changesGroupDirectory).eventModifiers)
                         Toggle("Module", isOn: groupingOptionBinding(.module))
-                            .keyboardShortcut("m", modifiers: .control)
+                            .keyboardShortcut(appState.shortcut(for: .changesGroupModule).keyEquivalent, modifiers: appState.shortcut(for: .changesGroupModule).eventModifiers)
                     }
                 }
                 .menuStyle(.borderlessButton)
@@ -250,7 +250,7 @@ struct ChangesView: View {
                     commitButtonLabel(pushes: false)
                 }
                 .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.return, modifiers: .command)
+                .keyboardShortcut(appState.shortcut(for: .commit).keyEquivalent, modifiers: appState.shortcut(for: .commit).eventModifiers)
                 .disabled(!appState.canCommitChanges)
                 .help("提交勾选的改动")
 
@@ -416,6 +416,17 @@ struct ChangesView: View {
             .padding(.vertical, 2)
             .help(isExpanded ? "折叠 \(section.kind.rawValue)" : "展开 \(section.kind.rawValue)")
             .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+            .fileSystemPathCopyMenu(
+                nil,
+                rollbackItem: {
+                    requestRollback(
+                        title: section.kind.rawValue,
+                        repository: repository,
+                        selections: section.selections
+                    )
+                },
+                isContextMenuPresented: contextMenuPresentationBinding(for: statusID)
+            )
 
             if isExpanded {
                 LazyVStack(alignment: .leading, spacing: 1) {
@@ -426,17 +437,6 @@ struct ChangesView: View {
             }
         }
         .padding(.leading, leadingInset)
-        .fileSystemPathCopyMenu(
-            nil,
-            rollbackItem: {
-                requestRollback(
-                    title: section.kind.rawValue,
-                    repository: repository,
-                    selections: section.selections
-                )
-            },
-            isContextMenuPresented: contextMenuPresentationBinding(for: statusID)
-        )
     }
 
     private func outlineRows(

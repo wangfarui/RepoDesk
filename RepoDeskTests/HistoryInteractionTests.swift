@@ -4,6 +4,29 @@ import Testing
 
 @MainActor
 struct HistoryInteractionTests {
+    @Test func showingFileHistoryScopesToTheSelectedFile() async {
+        let repository = RegisteredRepository(
+            displayName: "repo",
+            relativePath: ".",
+            isPinned: false
+        )
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "tmp", path: "/tmp/project"),
+            repositories: [repository],
+            selectedRepositoryID: repository.id,
+            gitRepositoryReader: SuspendedCommitReader(),
+            restoresWorkspaceOnLaunch: false
+        )
+
+        state.showFileHistory(
+            for: URL(fileURLWithPath: "/tmp/project/Sources/App.swift")
+        )
+
+        #expect(state.selectedSection == .history)
+        #expect(state.historyFileRepositoryID == repository.id)
+        #expect(state.historyFilePath == "Sources/App.swift")
+    }
+
     @Test func selectingCommitKeepsVisibleContentUntilReplacementIsReady() async {
         let repository = RegisteredRepository(
             displayName: "repo",

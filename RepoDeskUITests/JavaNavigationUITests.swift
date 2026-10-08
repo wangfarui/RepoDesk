@@ -193,6 +193,76 @@ final class JavaNavigationUITests: XCTestCase {
         XCTAssertTrue(String(describing: editor.value ?? "").contains("callTwice"))
     }
 
+    func testCommandClickStaticMethodReferenceOpensDefinition() throws {
+        let app = try launch(file: "MethodReferenceCaller.java")
+        defer { app.terminate() }
+
+        let editor = try sourceEditor(in: app)
+        try clickSourceToken("MethodReferenceTarget::staticName", offset: "MethodReferenceTarget::".count, in: editor)
+        XCTAssertTrue(app.buttons["RepoDesk.FileTab.MethodReferenceTarget.java"].waitForExistence(timeout: 20))
+        XCTAssertTrue(String(describing: editor.value ?? "").contains("staticName(String value)"))
+    }
+
+    func testCommandClickInstanceMethodReferenceOpensDefinition() throws {
+        let app = try launch(file: "MethodReferenceCaller.java")
+        defer { app.terminate() }
+
+        let editor = try sourceEditor(in: app)
+        try clickSourceToken("target::instanceName", offset: "target::".count, in: editor)
+        XCTAssertTrue(app.buttons["RepoDesk.FileTab.MethodReferenceTarget.java"].waitForExistence(timeout: 20))
+        XCTAssertTrue(String(describing: editor.value ?? "").contains("instanceName(String value)"))
+    }
+
+    func testCommandClickConstructorMethodReferenceOpensConstructor() throws {
+        let app = try launch(file: "MethodReferenceCaller.java")
+        defer { app.terminate() }
+
+        let editor = try sourceEditor(in: app)
+        try clickSourceToken(
+            "MethodReferenceTarget.Constructed::new",
+            offset: "MethodReferenceTarget.Constructed::".count,
+            in: editor
+        )
+        XCTAssertTrue(app.buttons["RepoDesk.FileTab.MethodReferenceTarget.java"].waitForExistence(timeout: 20))
+        XCTAssertTrue(String(describing: editor.value ?? "").contains("Constructed(String value)"))
+    }
+
+    func testCommandClickMethodReferenceTypeAndMemberUseDifferentDefinitions() throws {
+        let app = try launch(file: "MethodReferenceCaller.java")
+        defer { app.terminate() }
+
+        let editor = try sourceEditor(in: app)
+        try clickSourceToken("MethodReferenceTarget::staticName", offset: 1, in: editor)
+        XCTAssertTrue(app.buttons["RepoDesk.FileTab.MethodReferenceTarget.java"].waitForExistence(timeout: 20))
+        XCTAssertTrue(String(describing: editor.value ?? "").contains("class MethodReferenceTarget"))
+
+        try clickSourceToken("MethodReferenceTarget::staticName", offset: "MethodReferenceTarget::".count, in: editor)
+        XCTAssertTrue(app.buttons["RepoDesk.FileTab.MethodReferenceTarget.java"].waitForExistence(timeout: 20))
+        XCTAssertTrue(String(describing: editor.value ?? "").contains("staticName(String value)"))
+    }
+
+    func testCommandClickGeneratedGetterAndProjectClassLiteral() throws {
+        let app = try launch(file: "GeneratedInventoryKey.java")
+        defer { app.terminate() }
+
+        let editor = try sourceEditor(in: app)
+        try clickSourceToken(
+            "GeneratedInventoryDO::getItemTitle",
+            offset: "GeneratedInventoryDO::".count,
+            in: editor
+        )
+        XCTAssertTrue(app.buttons["RepoDesk.FileTab.GeneratedInventoryDO.java"].waitForExistence(timeout: 20))
+        XCTAssertTrue(String(describing: editor.value ?? "").contains("private String itemTitle;"))
+        captureScreenshot(from: app, named: "generated-getter-navigates-to-source-field")
+
+        app.buttons["RepoDesk.FileTab.GeneratedInventoryKey.java"].click()
+        XCTAssertTrue(waitUntilSelected(app.buttons["RepoDesk.FileTab.GeneratedInventoryKey.java"]))
+        try clickSourceToken("CustomValue.class", offset: 1, in: editor)
+        XCTAssertTrue(app.buttons["RepoDesk.FileTab.CustomValue.java"].waitForExistence(timeout: 20))
+        XCTAssertTrue(String(describing: editor.value ?? "").contains("class CustomValue"))
+        captureScreenshot(from: app, named: "project-class-literal-navigates-to-source")
+    }
+
     private func launch(file: String) throws -> XCUIApplication {
         continueAfterFailure = false
         let fixture = try JavaNavigationFixture.prepare()
@@ -222,13 +292,8 @@ final class JavaNavigationUITests: XCTestCase {
             XCTFail("Java indexing status did not appear")
             throw JavaNavigationUITestError.preconditionFailed
         }
-        let ready = NSPredicate { object, _ in
-            guard let element = object as? XCUIElement else { return false }
-            return "\(element.label) \(element.value ?? "")".contains("Java 索引已就绪")
-        }
-        let expectation = XCTNSPredicateExpectation(predicate: ready, object: indexStatus)
-        guard XCTWaiter.wait(for: [expectation], timeout: 120) == .completed else {
-            captureDiagnostics(from: app, named: "index-not-ready")
+        guard indexStatus.waitForNonExistence(timeout: 120) else {
+            captureDiagnostics(from: app, named: "index-status-did-not-hide")
             XCTFail("Java indexing did not become ready")
             throw JavaNavigationUITestError.preconditionFailed
         }
@@ -466,6 +531,80 @@ private struct JavaNavigationFixture {
             }
             """,
             to: sourceURL.appendingPathComponent("Caller.java")
+        )
+        try write(
+            """
+            package sample;
+
+            public final class MethodReferenceTarget {
+                public static String staticName(String value) {
+                    return value;
+                }
+
+                public String instanceName(String value) {
+                    return value;
+                }
+
+                public static final class Constructed {
+                    public Constructed(String value) {}
+                }
+            }
+            """,
+            to: sourceURL.appendingPathComponent("MethodReferenceTarget.java")
+        )
+        try write(
+            """
+            package sample;
+
+            import java.util.function.Function;
+
+            public final class MethodReferenceCaller {
+                private final MethodReferenceTarget target = new MethodReferenceTarget();
+
+                public void use() {
+                    Function<String, String> staticReference = MethodReferenceTarget::staticName;
+                    Function<String, String> instanceReference = target::instanceName;
+                    Function<String, MethodReferenceTarget.Constructed> constructorReference = MethodReferenceTarget.Constructed::new;
+                }
+            }
+            """,
+            to: sourceURL.appendingPathComponent("MethodReferenceCaller.java")
+        )
+        try write(
+            """
+            package sample;
+
+            public final class GeneratedInventoryDO {
+                private String itemTitle;
+            }
+            """,
+            to: sourceURL.appendingPathComponent("GeneratedInventoryDO.java")
+        )
+        try write(
+            """
+            package sample;
+
+            public final class CustomValue {}
+            """,
+            to: sourceURL.appendingPathComponent("CustomValue.java")
+        )
+        try write(
+            """
+            package sample;
+
+            import java.util.function.Function;
+
+            public enum GeneratedInventoryKey {
+                ITEM_TITLE(GeneratedInventoryDO::getItemTitle, CustomValue.class, String.class);
+
+                GeneratedInventoryKey(
+                    Function<GeneratedInventoryDO, String> extractor,
+                    Class<?> customType,
+                    Class<?> jdkType
+                ) {}
+            }
+            """,
+            to: sourceURL.appendingPathComponent("GeneratedInventoryKey.java")
         )
         try ensureGitRepository(at: repositoryURL)
 

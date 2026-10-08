@@ -13,6 +13,7 @@ struct AppPreferences: Codable, Equatable, Sendable {
     var fileContentFontSize: Double
     var maximumOpenFileTabs: Int
     var javaIndexSettings: JavaIndexSettings
+    var shortcuts: [AppShortcutID: ShortcutBinding]
 
     init(
         automaticallyRefreshesWorkspace: Bool = true,
@@ -26,7 +27,8 @@ struct AppPreferences: Codable, Equatable, Sendable {
         interfaceFontSize: Double = RepoDeskFontSize.default,
         fileContentFontSize: Double = RepoDeskFontSize.default,
         maximumOpenFileTabs: Int = 5,
-        javaIndexSettings: JavaIndexSettings = .default
+        javaIndexSettings: JavaIndexSettings = .default,
+        shortcuts: [AppShortcutID: ShortcutBinding] = ShortcutBinding.defaults()
     ) {
         self.automaticallyRefreshesWorkspace = automaticallyRefreshesWorkspace
         self.refreshesWhenBecomingActive = refreshesWhenBecomingActive
@@ -40,6 +42,7 @@ struct AppPreferences: Codable, Equatable, Sendable {
         self.fileContentFontSize = RepoDeskFontSize.normalized(fileContentFontSize)
         self.maximumOpenFileTabs = min(max(maximumOpenFileTabs, 1), 50)
         self.javaIndexSettings = javaIndexSettings
+        self.shortcuts = AppPreferences.normalizedShortcuts(shortcuts)
     }
 
     init(from decoder: any Decoder) throws {
@@ -89,6 +92,22 @@ struct AppPreferences: Codable, Equatable, Sendable {
             JavaIndexSettings.self,
             forKey: .javaIndexSettings
         ) ?? .default
+        shortcuts = AppPreferences.normalizedShortcuts(
+            try container.decodeIfPresent(
+                [AppShortcutID: ShortcutBinding].self,
+                forKey: .shortcuts
+            ) ?? [:]
+        )
+    }
+
+    private static func normalizedShortcuts(
+        _ shortcuts: [AppShortcutID: ShortcutBinding]
+    ) -> [AppShortcutID: ShortcutBinding] {
+        var result = ShortcutBinding.defaults()
+        for (id, binding) in shortcuts {
+            result[id] = binding
+        }
+        return result
     }
 
     static let `default` = AppPreferences()

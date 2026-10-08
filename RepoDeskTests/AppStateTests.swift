@@ -565,6 +565,76 @@ struct AppStateTests {
         #expect(state.selectedFileURL == nil)
     }
 
+    @Test func commandWShortcutOnlyClosesSelectedFileInFilesSection() {
+        #expect(
+            RepoDeskKeyboardShortcut.isCloseFileTab(
+                key: "w",
+                modifiers: .command,
+                selectedSection: .files,
+                hasSelectedFile: true
+            )
+        )
+        #expect(
+            !RepoDeskKeyboardShortcut.isCloseFileTab(
+                key: "w",
+                modifiers: [.command, .shift],
+                selectedSection: .files,
+                hasSelectedFile: true
+            )
+        )
+        #expect(
+            !RepoDeskKeyboardShortcut.isCloseFileTab(
+                key: "w",
+                modifiers: .command,
+                selectedSection: .changes,
+                hasSelectedFile: true
+            )
+        )
+        #expect(
+            !RepoDeskKeyboardShortcut.isCloseFileTab(
+                key: "w",
+                modifiers: .command,
+                selectedSection: .files,
+                hasSelectedFile: false
+            )
+        )
+    }
+
+    @Test func commandZShortcutOnlyUndoesDeletionInFilesSection() {
+        #expect(
+            RepoDeskKeyboardShortcut.isUndoFileDeletion(
+                key: "z",
+                modifiers: .command,
+                selectedSection: .files,
+                canUndo: true
+            )
+        )
+        #expect(
+            !RepoDeskKeyboardShortcut.isUndoFileDeletion(
+                key: "z",
+                modifiers: [.command, .shift],
+                selectedSection: .files,
+                canUndo: true
+            )
+        )
+        #expect(
+            !RepoDeskKeyboardShortcut.isUndoFileDeletion(
+                key: "z",
+                modifiers: .command,
+                selectedSection: .changes,
+                canUndo: true
+            )
+        )
+        #expect(
+            !RepoDeskKeyboardShortcut.isUndoFileDeletion(
+                key: "z",
+                modifiers: .command,
+                selectedSection: .files,
+                canUndo: false
+            )
+        )
+    }
+
     @Test func closingOtherFileTabsKeepsTargetAndActivatesIt() async throws {
         let urls = (1...3).map { URL(fileURLWithPath: "/tmp/other-file\($0).txt") }
         let state = AppState(
@@ -841,6 +911,142 @@ struct AppStateTests {
         #expect(!state.canRevealSelectedFileInTree)
         state.selectedFileURL = URL(fileURLWithPath: "/tmp/other/Outside.swift")
         #expect(!state.canRevealSelectedFileInTree)
+    }
+
+    @Test func openingWorkspaceJavaNavigationSourceUsesResolvedSourceFile() {
+        let workspaceURL = URL(fileURLWithPath: "/tmp/java-navigation-workspace", isDirectory: true)
+        let sourceURL = workspaceURL
+            .appendingPathComponent(
+                "manager/inventorymanager-client/src/main/java/com/example/InventoryManagerClientService.java"
+            )
+        let repository = RegisteredRepository(
+            displayName: "manager",
+            relativePath: "manager",
+            isPinned: false
+        )
+        let dependencyURL = URL(
+            string: "jdt://contents/inventorymanager-client-2.6.1-SNAPSHOT.jar/com/example/InventoryManagerClientService.class"
+        )!
+        let target = JavaNavigationTarget(
+            fileURL: dependencyURL,
+            range: JavaSourceRange(
+                start: JavaSourcePosition(line: 12, character: 4),
+                end: JavaSourcePosition(line: 12, character: 28)
+            ),
+            selectionRange: nil,
+            name: "InventoryManagerClientService",
+            detail: nil,
+            containerName: nil,
+            kind: .interface,
+            origin: .workspaceRepository(
+                repositoryID: repository.id,
+                repositoryName: repository.name,
+                fileURL: sourceURL
+            )
+        )
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "workspace", path: workspaceURL.path),
+            repositories: [repository],
+            selectedRepositoryID: "other",
+            selectedSection: .changes,
+            restoresWorkspaceOnLaunch: false
+        )
+        state.javaNavigationSourcePresentation = JavaNavigationSourcePresentation(
+            target: target,
+            origin: target.origin!,
+            navigationOrigin: nil,
+            anchor: nil
+        )
+
+        state.openJavaNavigationSource()
+
+        #expect(state.navigationContext == .repository(repository.id))
+        #expect(state.selectedSection == .files)
+        #expect(state.selectedFileURL == sourceURL.standardizedFileURL)
+        #expect(state.openFileTabs.map(\.url) == [sourceURL.standardizedFileURL])
+        #expect(state.javaNavigationSourcePresentation == nil)
+    }
+
+    @Test func crossRepositoryJavaNavigationPreservesBackForwardContext() {
+        let workspaceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-CrossRepositoryNavigation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+
+        let sourceURL = workspaceURL
+            .appendingPathComponent("consumer/src/main/java/example/Consumer.java")
+        let targetURL = workspaceURL
+            .appendingPathComponent("manager/src/main/java/example/InventoryManagerClientService.java")
+        try? FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? FileManager.default.createDirectory(
+            at: targetURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? Data("class Consumer {}".utf8).write(to: sourceURL)
+        try? Data("interface InventoryManagerClientService {}".utf8).write(to: targetURL)
+
+        let consumer = RegisteredRepository(
+            displayName: "consumer",
+            relativePath: "consumer",
+            isPinned: false
+        )
+        let manager = RegisteredRepository(
+            displayName: "manager",
+            relativePath: "manager",
+            isPinned: false
+        )
+        let origin = JavaNavigationHistoryEntry(
+            fileURL: sourceURL,
+            range: JavaSourceRange(
+                start: JavaSourcePosition(line: 4, character: 8),
+                end: JavaSourcePosition(line: 4, character: 8)
+            )
+        )
+        let target = JavaNavigationTarget(
+            fileURL: targetURL,
+            range: JavaSourceRange(
+                start: JavaSourcePosition(line: 12, character: 4),
+                end: JavaSourcePosition(line: 12, character: 28)
+            ),
+            selectionRange: nil,
+            name: "InventoryManagerClientService",
+            detail: nil,
+            containerName: nil,
+            kind: .interface,
+            origin: .workspaceRepository(
+                repositoryID: manager.id,
+                repositoryName: manager.name,
+                fileURL: targetURL
+            )
+        )
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "workspace", path: workspaceURL.path),
+            repositories: [consumer, manager],
+            selectedRepositoryID: consumer.id,
+            selectedSection: .files,
+            restoresWorkspaceOnLaunch: false
+        )
+        state.selectRepositoryContext(consumer.id)
+        state.selectFile(sourceURL, range: origin.range)
+        state.javaNavigationSourcePresentation = JavaNavigationSourcePresentation(
+            target: target,
+            origin: target.origin!,
+            navigationOrigin: origin,
+            anchor: nil
+        )
+
+        state.openJavaNavigationSource()
+
+        #expect(state.navigationContext == .repository(manager.id))
+        #expect(state.selectedFileURL == targetURL.standardizedFileURL)
+        #expect(state.navigateFileBack())
+        #expect(state.navigationContext == .repository(consumer.id))
+        #expect(state.selectedFileURL == sourceURL.standardizedFileURL)
+        #expect(state.navigateFileForward())
+        #expect(state.navigationContext == .repository(manager.id))
+        #expect(state.selectedFileURL == targetURL.standardizedFileURL)
     }
 
     private func waitForDocument(in state: AppState) async {

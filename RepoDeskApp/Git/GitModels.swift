@@ -86,6 +86,50 @@ struct GitConflictFile: Equatable, Identifiable, Sendable {
     let theirs: String
     var result: String
     var isResolved: Bool
+    /// The common ancestor (Git index stage 1). `nil` means the base is absent
+    /// or cannot be represented as text; inspect `hasBase`/`baseData` to tell
+    /// those cases apart.
+    let base: String?
+    let baseData: Data?
+    let oursData: Data?
+    let theirsData: Data?
+    var resultData: Data?
+    let hasBase: Bool
+    let hasOurs: Bool
+    let hasTheirs: Bool
+    let isBinary: Bool
+
+    init(
+        path: String,
+        ours: String,
+        theirs: String,
+        result: String,
+        isResolved: Bool,
+        base: String? = nil,
+        baseData: Data? = nil,
+        oursData: Data? = nil,
+        theirsData: Data? = nil,
+        resultData: Data? = nil,
+        hasBase: Bool? = nil,
+        hasOurs: Bool = true,
+        hasTheirs: Bool = true,
+        isBinary: Bool = false
+    ) {
+        self.path = path
+        self.ours = ours
+        self.theirs = theirs
+        self.result = result
+        self.isResolved = isResolved
+        self.base = base
+        self.baseData = baseData
+        self.oursData = oursData
+        self.theirsData = theirsData
+        self.resultData = resultData
+        self.hasBase = hasBase ?? (base != nil || baseData != nil)
+        self.hasOurs = hasOurs
+        self.hasTheirs = hasTheirs
+        self.isBinary = isBinary
+    }
 
     var id: String { path }
 }

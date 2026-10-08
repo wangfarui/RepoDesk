@@ -71,13 +71,53 @@ enum JavaNavigationPopupLayout {
 }
 
 @MainActor
+struct JavaNavigationLoadingPopover: View {
+    let presentation: JavaNavigationLoadingPresentation
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(statusText)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 34)
+        .background(.regularMaterial)
+        .clipShape(.rect(cornerRadius: 7))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(.separator, lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 10, y: 4)
+        .accessibilityIdentifier("RepoDesk.JavaNavigationLoading")
+        .accessibilityLabel(statusText)
+        .allowsHitTesting(false)
+    }
+
+    private var statusText: String {
+        switch presentation.action {
+        case .contextual: "正在查找目标…"
+        case .declaration: "正在查找声明…"
+        case .implementation: "正在查找实现…"
+        case .incomingCalls: "正在查找调用方…"
+        case .references: "正在查找引用…"
+        case .superDeclaration: "正在查找父级…"
+        }
+    }
+}
+
+@MainActor
 struct JavaIndexStatusView: View {
     @Bindable var appState: AppState
     @State private var showsDetails = false
 
     var body: some View {
         Group {
-            if appState.javaIndexSnapshot.javaRepositoryCount > 0 {
+            if appState.javaIndexSnapshot.javaRepositoryCount > 0,
+               !appState.javaIndexSnapshot.isFullyReady {
                 Button {
                     showsDetails.toggle()
                 } label: {
@@ -104,7 +144,7 @@ struct JavaIndexStatusView: View {
                     detailsPopover
                 }
             } else {
-                Color.clear.frame(width: 310, height: 20)
+                EmptyView()
             }
         }
     }
@@ -440,6 +480,110 @@ struct JavaNavigationResultsPopup: View {
     private func open(_ target: JavaNavigationTarget) {
         selectTarget(target)
         dismiss()
+    }
+}
+
+@MainActor
+struct JavaNavigationSourcePopover: View {
+    let presentation: JavaNavigationSourcePresentation
+    let size: CGSize
+    let openWorkspaceTarget: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: sourceIcon)
+                    .foregroundStyle(.secondary)
+                Text("目标来源")
+                    .font(.callout.weight(.semibold))
+                Spacer()
+                Button("关闭", systemImage: "xmark", action: dismiss)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("关闭目标来源")
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(presentation.target.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                sourceDetails
+                Spacer(minLength: 0)
+                if isWorkspaceTarget {
+                    Button("在项目 Files 中打开", systemImage: "arrow.right") {
+                        openWorkspaceTarget()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(12)
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .background(.regularMaterial)
+        .clipShape(.rect(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(.separator, lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 18, y: 7)
+        .accessibilityIdentifier("RepoDesk.JavaNavigationSource")
+    }
+
+    @ViewBuilder
+    private var sourceDetails: some View {
+        switch presentation.origin {
+        case .workspaceRepository(_, let repositoryName, let fileURL):
+            detailRow("Git 项目", value: repositoryName)
+            detailRow("文件", value: fileURL.path)
+            detailRow("位置", value: locationText)
+        case .dependency(let dependency):
+            detailRow("依赖包", value: dependency.jarName)
+            if let mavenCoordinate = dependency.mavenCoordinate {
+                detailRow("Maven 坐标", value: mavenCoordinate)
+            }
+            if let qualifiedTypeName = dependency.qualifiedTypeName {
+                detailRow("类型", value: qualifiedTypeName)
+            }
+            detailRow("位置", value: locationText)
+        case .external(let uri):
+            detailRow("外部目标", value: uri)
+            detailRow("位置", value: locationText)
+        }
+    }
+
+    private func detailRow(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption)
+                .lineLimit(2)
+                .truncationMode(.middle)
+        }
+    }
+
+    private var locationText: String {
+        let position = presentation.target.selectionRange?.start ?? presentation.target.range.start
+        return "\(position.line + 1):\(position.character + 1)"
+    }
+
+    private var isWorkspaceTarget: Bool {
+        if case .workspaceRepository = presentation.origin { return true }
+        return false
+    }
+
+    private var sourceIcon: String {
+        switch presentation.origin {
+        case .workspaceRepository: "shippingbox"
+        case .dependency: "shippingbox.fill"
+        case .external: "link"
+        }
     }
 }
 

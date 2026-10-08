@@ -46,20 +46,34 @@ struct FileSystemPathCopyValues: Equatable, Sendable {
     }
 }
 
+@MainActor
+func openFileSystemItemInFinder(at itemURL: URL, isDirectory: Bool) {
+    let itemURL = itemURL.standardizedFileURL
+    if isDirectory {
+        NSWorkspace.shared.open(itemURL)
+    } else {
+        NSWorkspace.shared.activateFileViewerSelecting([itemURL])
+    }
+}
+
 private struct FileSystemPathCopyMenuModifier: ViewModifier {
     let values: FileSystemPathCopyValues?
     let copyItem: (() -> Void)?
     let pasteItem: (() -> Void)?
     let newFileItem: (() -> Void)?
     let newDirectoryItem: (() -> Void)?
+    let renameItem: (() -> Void)?
     let deleteItem: (() -> Void)?
     let rollbackItem: (() -> Void)?
+    let viewGitHistoryItem: (() -> Void)?
+    let openInFinderItem: (() -> Void)?
     let isContextMenuPresented: Binding<Bool>?
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if values != nil || copyItem != nil || pasteItem != nil || newFileItem != nil
-            || newDirectoryItem != nil || deleteItem != nil || rollbackItem != nil {
+            || newDirectoryItem != nil || renameItem != nil || deleteItem != nil || rollbackItem != nil
+            || viewGitHistoryItem != nil || openInFinderItem != nil {
             if let isContextMenuPresented {
                 content.overlay {
                     FileSystemContextMenuPresenter(
@@ -68,8 +82,11 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
                         pasteItem: pasteItem,
                         newFileItem: newFileItem,
                         newDirectoryItem: newDirectoryItem,
+                        renameItem: renameItem,
                         deleteItem: deleteItem,
                         rollbackItem: rollbackItem,
+                        viewGitHistoryItem: viewGitHistoryItem,
+                        openInFinderItem: openInFinderItem,
                         isPresented: isContextMenuPresented
                     )
                 }
@@ -97,15 +114,27 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
         if let newDirectoryItem {
             Button("新建目录", systemImage: "folder.badge.plus", action: newDirectoryItem)
         }
+        if let renameItem {
+            Button("重命名", systemImage: "pencil", action: renameItem)
+        }
         if let deleteItem {
             Button("删除", systemImage: "trash", role: .destructive, action: deleteItem)
         }
         if let rollbackItem {
             Button("Rollback", systemImage: "arrow.uturn.backward", action: rollbackItem)
         }
+        if let viewGitHistoryItem {
+            Button("查看 Git 提交历史", systemImage: "clock.arrow.circlepath", action: viewGitHistoryItem)
+        }
+        if let openInFinderItem {
+            Button("在Finder中打开", systemImage: "folder", action: openInFinderItem)
+        }
         if (copyItem != nil || pasteItem != nil || newFileItem != nil || newDirectoryItem != nil
+            || renameItem != nil
             || deleteItem != nil
-            || rollbackItem != nil), values != nil {
+            || rollbackItem != nil
+            || viewGitHistoryItem != nil
+            || openInFinderItem != nil), values != nil {
             Divider()
         }
         if let values {
@@ -134,8 +163,11 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
     let pasteItem: (() -> Void)?
     let newFileItem: (() -> Void)?
     let newDirectoryItem: (() -> Void)?
+    let renameItem: (() -> Void)?
     let deleteItem: (() -> Void)?
     let rollbackItem: (() -> Void)?
+    let viewGitHistoryItem: (() -> Void)?
+    let openInFinderItem: (() -> Void)?
     @Binding var isPresented: Bool
 
     func makeCoordinator() -> Coordinator {
@@ -145,8 +177,11 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             pasteItem: pasteItem,
             newFileItem: newFileItem,
             newDirectoryItem: newDirectoryItem,
+            renameItem: renameItem,
             deleteItem: deleteItem,
             rollbackItem: rollbackItem,
+            viewGitHistoryItem: viewGitHistoryItem,
+            openInFinderItem: openInFinderItem,
             isPresented: $isPresented
         )
     }
@@ -163,8 +198,11 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
         context.coordinator.pasteItem = pasteItem
         context.coordinator.newFileItem = newFileItem
         context.coordinator.newDirectoryItem = newDirectoryItem
+        context.coordinator.renameItem = renameItem
         context.coordinator.deleteItem = deleteItem
         context.coordinator.rollbackItem = rollbackItem
+        context.coordinator.viewGitHistoryItem = viewGitHistoryItem
+        context.coordinator.openInFinderItem = openInFinderItem
         context.coordinator.isPresented = $isPresented
         view.coordinator = context.coordinator
     }
@@ -175,8 +213,11 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
         var pasteItem: (() -> Void)?
         var newFileItem: (() -> Void)?
         var newDirectoryItem: (() -> Void)?
+        var renameItem: (() -> Void)?
         var deleteItem: (() -> Void)?
         var rollbackItem: (() -> Void)?
+        var viewGitHistoryItem: (() -> Void)?
+        var openInFinderItem: (() -> Void)?
         var isPresented: Binding<Bool>
 
         init(
@@ -185,8 +226,11 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             pasteItem: (() -> Void)?,
             newFileItem: (() -> Void)?,
             newDirectoryItem: (() -> Void)?,
+            renameItem: (() -> Void)?,
             deleteItem: (() -> Void)?,
             rollbackItem: (() -> Void)?,
+            viewGitHistoryItem: (() -> Void)?,
+            openInFinderItem: (() -> Void)?,
             isPresented: Binding<Bool>
         ) {
             self.values = values
@@ -194,8 +238,11 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             self.pasteItem = pasteItem
             self.newFileItem = newFileItem
             self.newDirectoryItem = newDirectoryItem
+            self.renameItem = renameItem
             self.deleteItem = deleteItem
             self.rollbackItem = rollbackItem
+            self.viewGitHistoryItem = viewGitHistoryItem
+            self.openInFinderItem = openInFinderItem
             self.isPresented = isPresented
         }
 
@@ -214,15 +261,27 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             if newDirectoryItem != nil {
                 menu.addItem(menuItem("新建目录", symbol: "folder.badge.plus", action: #selector(createDirectoryItem)))
             }
+            if renameItem != nil {
+                menu.addItem(menuItem("重命名", symbol: "pencil", action: #selector(renameFileItem)))
+            }
             if deleteItem != nil {
                 menu.addItem(menuItem("删除", symbol: "trash", action: #selector(deleteFileItem)))
             }
             if rollbackItem != nil {
                 menu.addItem(menuItem("Rollback", symbol: "arrow.uturn.backward", action: #selector(rollbackFileItem)))
             }
+            if viewGitHistoryItem != nil {
+                menu.addItem(menuItem("查看 Git 提交历史", symbol: "clock.arrow.circlepath", action: #selector(viewGitHistory)))
+            }
+            if openInFinderItem != nil {
+                menu.addItem(menuItem("在Finder中打开", symbol: "folder", action: #selector(openInFinder)))
+            }
             if (copyItem != nil || pasteItem != nil || newFileItem != nil || newDirectoryItem != nil
+                || renameItem != nil
                 || deleteItem != nil
-                || rollbackItem != nil), values != nil {
+                || rollbackItem != nil
+                || viewGitHistoryItem != nil
+                || openInFinderItem != nil), values != nil {
                 menu.addItem(.separator())
             }
             if values != nil {
@@ -267,12 +326,24 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             newDirectoryItem?()
         }
 
+        @objc private func renameFileItem() {
+            renameItem?()
+        }
+
         @objc private func deleteFileItem() {
             deleteItem?()
         }
 
         @objc private func rollbackFileItem() {
             rollbackItem?()
+        }
+
+        @objc private func viewGitHistory() {
+            viewGitHistoryItem?()
+        }
+
+        @objc private func openInFinder() {
+            openInFinderItem?()
         }
 
         @objc private func copyRelativePath() {
@@ -329,8 +400,11 @@ extension View {
         pasteItem: (() -> Void)? = nil,
         newFileItem: (() -> Void)? = nil,
         newDirectoryItem: (() -> Void)? = nil,
+        renameItem: (() -> Void)? = nil,
         deleteItem: (() -> Void)? = nil,
         rollbackItem: (() -> Void)? = nil,
+        viewGitHistoryItem: (() -> Void)? = nil,
+        openInFinderItem: (() -> Void)? = nil,
         isContextMenuPresented: Binding<Bool>? = nil
     ) -> some View {
         modifier(
@@ -340,8 +414,11 @@ extension View {
                 pasteItem: pasteItem,
                 newFileItem: newFileItem,
                 newDirectoryItem: newDirectoryItem,
+                renameItem: renameItem,
                 deleteItem: deleteItem,
                 rollbackItem: rollbackItem,
+                viewGitHistoryItem: viewGitHistoryItem,
+                openInFinderItem: openInFinderItem,
                 isContextMenuPresented: isContextMenuPresented
             )
         )

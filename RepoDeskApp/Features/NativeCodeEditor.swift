@@ -22,47 +22,61 @@ private final class NativeCodeTextView: NSTextView {
     var navigationBackHandler: (() -> Void)?
     var navigationForwardHandler: (() -> Void)?
     var isJavaNavigationEnabled = false
+    var shortcuts: [AppShortcutID: ShortcutBinding] = ShortcutBinding.defaults()
     private var javaTrackingArea: NSTrackingArea?
     private var hoveredJavaRange: NSRange?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if window?.firstResponder === self,
-           modifiers == .command,
-           event.charactersIgnoringModifiers?.lowercased() == "l" {
+           matches(.goToLine, event: event) {
             goToLineHandler?()
             return true
         }
-        if window?.firstResponder === self, modifiers == [.command, .option] {
-            if event.keyCode == 123, let navigationBackHandler {
+        if window?.firstResponder === self {
+            if matches(.navigationBack, event: event), let navigationBackHandler {
                 navigationBackHandler()
                 return true
             }
-            if event.keyCode == 124, let navigationForwardHandler {
+            if matches(.navigationForward, event: event), let navigationForwardHandler {
                 navigationForwardHandler()
                 return true
             }
         }
-        if window?.firstResponder === self, isJavaNavigationEnabled {
-            let key = event.charactersIgnoringModifiers?.lowercased()
-            if modifiers == [.command, .option], key == "b" {
+        // SwiftUI's NSViewRepresentable wrapper can leave the text view as an
+        // accessibility-focused editor without making it the exact window
+        // first responder. Java navigation still has an explicit editor gate,
+        // so do not drop the shortcut in that intermediate state.
+        if isJavaNavigationEnabled {
+            if matches(.implementation, event: event) {
                 requestJavaNavigation(.implementation, at: selectedRange().location, anchor: nil)
                 return true
             }
-            if modifiers == .command, key == "b" {
+            if matches(.declaration, event: event) {
                 requestJavaNavigation(.declaration, at: selectedRange().location, anchor: nil)
                 return true
             }
-            if modifiers == .command, key == "u" {
+            if matches(.superDeclaration, event: event) {
                 requestJavaNavigation(.superDeclaration, at: selectedRange().location, anchor: nil)
                 return true
             }
-            if modifiers == [.command, .option], event.keyCode == 36 {
+            if matches(.implementationAlternate, event: event) {
                 requestJavaNavigation(.implementation, at: selectedRange().location, anchor: nil)
                 return true
             }
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    private func matches(_ id: AppShortcutID, event: NSEvent) -> Bool {
+        guard let binding = shortcuts[id] else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if modifiers != binding.modifierFlags { return false }
+        if ["left", "right"].contains(binding.key) {
+            return (binding.key == "left" && event.keyCode == 123)
+                || (binding.key == "right" && event.keyCode == 124)
+        }
+        if binding.key == "return" { return event.keyCode == 36 }
+        return event.charactersIgnoringModifiers?.lowercased() == binding.key
     }
 
     override func updateTrackingAreas() {
@@ -81,7 +95,7 @@ private final class NativeCodeTextView: NSTextView {
     override func mouseMoved(with event: NSEvent) {
         guard isJavaNavigationEnabled,
               event.modifierFlags.intersection([.command, .option, .control, .shift]) == .command,
-              let range = javaIdentifierRange(at: event) else {
+              let range = javaNavigationRange(at: event) else {
             clearJavaHover()
             super.mouseMoved(with: event)
             return
@@ -105,7 +119,7 @@ private final class NativeCodeTextView: NSTextView {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if isJavaNavigationEnabled,
            modifiers == .command,
-           let range = javaIdentifierRange(at: event) {
+           let range = javaNavigationRange(at: event) {
             setSelectedRange(NSRange(location: range.location, length: 0))
             let point = convert(event.locationInWindow, from: nil)
             requestJavaNavigation(
@@ -147,7 +161,7 @@ private final class NativeCodeTextView: NSTextView {
         )
     }
 
-    private func javaIdentifierRange(at event: NSEvent) -> NSRange? {
+    private func javaNavigationRange(at event: NSEvent) -> NSRange? {
         guard let layoutManager, let textContainer, !string.isEmpty else { return nil }
         let point = convert(event.locationInWindow, from: nil)
         let containerPoint = NSPoint(
@@ -165,7 +179,9 @@ private final class NativeCodeTextView: NSTextView {
             in: textContainer
         )
         guard glyphRect.insetBy(dx: -2, dy: -2).contains(containerPoint) else { return nil }
-        return javaIdentifierRange(atUTF16Offset: layoutManager.characterIndexForGlyph(at: glyph))
+        let offset = layoutManager.characterIndexForGlyph(at: glyph)
+        return javaIdentifierRange(atUTF16Offset: offset)
+            ?? JavaMethodReferenceSyntax.constructorKeywordRange(in: string, atUTF16Offset: offset)
     }
 
     private func javaIdentifierRange(atUTF16Offset offset: Int) -> NSRange? {
@@ -276,9 +292,7 @@ private final class NativeLineNumberRulerView: NSRulerView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard canToggleGitBlame, onToggleGitBlame != nil else {
-            return super.menu(for: event)
-        }
+        guard canToggleGitBlame, onToggleGitBlame != nil else { return nil }
         let menu = NSMenu()
         let item = NSMenuItem(
             title: "Annotate with Git Blame",
@@ -426,6 +440,7 @@ struct NativeCodeEditor: NSViewRepresentable {
     var onJavaPopupDismiss: (() -> Void)? = nil
     var onNavigationBack: (() -> Void)? = nil
     var onNavigationForward: (() -> Void)? = nil
+    var shortcuts: [AppShortcutID: ShortcutBinding] = ShortcutBinding.defaults()
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -468,6 +483,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         textView.javaPopupDismissHandler = onJavaPopupDismiss
         textView.navigationBackHandler = onNavigationBack
         textView.navigationForwardHandler = onNavigationForward
+        textView.shortcuts = shortcuts
         context.coordinator.configureFont(in: textView)
         textView.textColor = .textColor
         textView.backgroundColor = .textBackgroundColor
@@ -539,6 +555,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         textView.javaPopupDismissHandler = onJavaPopupDismiss
         textView.navigationBackHandler = onNavigationBack
         textView.navigationForwardHandler = onNavigationForward
+        textView.shortcuts = shortcuts
         let styleChanged = context.coordinator.style != style
             || context.coordinator.fontSize != fontSize
             || context.coordinator.lastAppliedSemanticTokens != semanticTokens

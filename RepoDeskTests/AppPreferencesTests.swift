@@ -26,7 +26,11 @@ struct AppPreferencesTests {
                 processorCountPerJVM: 3,
                 maximumHeapMegabytes: 3_072,
                 cacheLimitGigabytes: 20
-            )
+            ),
+            shortcuts: [
+                .save: ShortcutBinding(key: "k", modifiers: [.command, .shift]),
+                .closeFileTab: ShortcutBinding(key: "q", modifiers: [.command])
+            ]
         )
 
         store.save(preferences)
@@ -72,6 +76,7 @@ struct AppPreferencesTests {
         #expect(preferences.fileContentFontSize == RepoDeskFontSize.default)
         #expect(preferences.maximumOpenFileTabs == 5)
         #expect(preferences.javaIndexSettings == .default)
+        #expect(preferences.shortcuts == ShortcutBinding.defaults())
     }
 
     @Test func appStateLoadsAndPersistsCentralSettings() throws {
@@ -104,6 +109,10 @@ struct AppPreferencesTests {
                 cacheLimitGigabytes: 20
             )
         )
+        state.setShortcut(
+            ShortcutBinding(key: "k", modifiers: [.command, .shift]),
+            for: .save
+        )
 
         let restored = AppState(
             appPreferencesStore: store,
@@ -112,6 +121,7 @@ struct AppPreferencesTests {
         #expect(!restored.automaticallyRefreshesWorkspace)
         #expect(!restored.refreshesWhenBecomingActive)
         #expect(restored.showsHiddenFiles)
+        #expect(restored.shortcut(for: .save) == ShortcutBinding(key: "k", modifiers: [.command, .shift]))
         #expect(!restored.compactsSingleChildDirectories)
         #expect(restored.opensMarkdownInPreview)
         #expect(restored.diffPresentation == .sideBySide)

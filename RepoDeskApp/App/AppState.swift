@@ -43,7 +43,7 @@ struct GitFileBlameTarget: Equatable, Sendable {
 }
 
 struct OpenFileTab: Equatable, Identifiable, Sendable {
-    let url: URL
+    var url: URL
     var loadedDocument: LoadedDocument?
     var text: String
     var originalText: String
@@ -125,6 +125,8 @@ final class AppState {
     var branchComparison: GitBranchComparison?
     var isLoadingBranchComparison = false
     var conflictFiles: [GitConflictFile] = []
+    /// Files staged as resolved during the current merge, retained for review/revert.
+    var resolvedConflictFiles: [GitConflictFile] = []
     var mergeSourceBranch: String?
     var isResolvingMergeConflict = false
     var fileChildren: [URL: [WorkspaceFileEntry]] = [:]
@@ -132,6 +134,10 @@ final class AppState {
     var loadingDirectoryURLs: Set<URL> = []
     var directoryLoadErrors: [URL: String] = [:]
     var fileTreeRevealRequest: FileTreeRevealRequest?
+    var lastDeletedFileSession: WorkspaceFileDeletionSession?
+    var lastDeletedFileTabs: [OpenFileTab] = []
+    var lastDeletedSelectedFileURL: URL?
+    var fileDeletionRestoreErrorMessage: String?
     var workspaceMonitoringErrorMessage: String?
     var automaticallyRefreshesWorkspace = true
     var refreshesWhenBecomingActive = true
@@ -142,10 +148,13 @@ final class AppState {
     var interfaceFontSize = RepoDeskFontSize.default
     var fileContentFontSize = RepoDeskFontSize.default
     var maximumOpenFileTabs = 5
+    var shortcuts: [AppShortcutID: ShortcutBinding] = ShortcutBinding.defaults()
     var javaIndexSettings = JavaIndexSettings.default
     var javaIndexSnapshot = JavaIndexSnapshot.idle
     var javaSemanticTokens: [JavaSemanticToken] = []
+    var javaNavigationLoadingPresentation: JavaNavigationLoadingPresentation?
     var javaNavigationResultPresentation: JavaNavigationResultPresentation?
+    var javaNavigationSourcePresentation: JavaNavigationSourcePresentation?
     var javaSymbolSearchResults: [JavaNavigationTarget] = []
     var isSearchingJavaSymbols = false
     var openFileTabs: [OpenFileTab] = []
@@ -185,6 +194,8 @@ final class AppState {
     var historyCurrentUserErrorMessage: String?
     var commitErrorMessage: String?
     var hasMoreHistory = true
+    var historyFileRepositoryID: RegisteredRepository.ID?
+    var historyFilePath: String?
     var historyBranchFilter: GitHistoryBranchFilter = .current
     var historyAuthorFilter: GitHistoryAuthorFilter = .all
     var historyGrouping: GitChangesGrouping = .directory
@@ -249,6 +260,7 @@ final class AppState {
     private var fileSearchRequestID: UUID?
     private var textSearchRequestID: UUID?
     private var javaSymbolSearchRequestID: UUID?
+    private var javaNavigationRequestID: UUID?
     private var mavenRunID: UUID?
     private var repositoryRefreshContextID = UUID()
     private let repositoryRefreshLimiter = RepositoryRefreshLimiter(limit: 4)
@@ -262,6 +274,10 @@ final class AppState {
     @ObservationIgnored private var gitRemoteOperationSuccessDismissTask: Task<Void, Never>?
     @ObservationIgnored private var javaLanguageEventTask: Task<Void, Never>?
     @ObservationIgnored private var javaSemanticTokensTask: Task<Void, Never>?
+    @ObservationIgnored private var javaNavigationLoadingTask: Task<Void, Never>?
+    @ObservationIgnored private var javaWorkspaceMavenProjectsTask: Task<[JavaWorkspaceMavenProject], Never>?
+    @ObservationIgnored private var javaWorkspaceMavenProjectsCacheKey: String?
+    @ObservationIgnored private var javaNavigationOriginCache: [String: JavaNavigationTargetOrigin] = [:]
     @ObservationIgnored private var javaSemanticTokenCacheByFile: [URL: JavaSemanticTokenCacheEntry] = [:]
     @ObservationIgnored private var fileNavigationBackStack: [JavaNavigationHistoryEntry] = []
     @ObservationIgnored private var fileNavigationForwardStack: [JavaNavigationHistoryEntry] = []
@@ -348,6 +364,7 @@ final class AppState {
         interfaceFontSize = appPreferences.interfaceFontSize
         fileContentFontSize = appPreferences.fileContentFontSize
         maximumOpenFileTabs = appPreferences.maximumOpenFileTabs
+        shortcuts = appPreferences.shortcuts
         javaIndexSettings = appPreferences.javaIndexSettings
         recentTaskRuns = self.taskStore.recentRuns()
         repositoryDiscoveryID = nil
@@ -479,6 +496,15 @@ final class AppState {
         guard let selectedFileURL,
               let workspaceURL,
               case .text = loadedDocument else { return false }
+        return GitFileBlameTarget.resolve(
+            fileURL: selectedFileURL,
+            workspaceURL: workspaceURL,
+            repositories: repositories
+        ) != nil
+    }
+
+    var canShowGitHistoryForSelectedFile: Bool {
+        guard let selectedFileURL, let workspaceURL else { return false }
         return GitFileBlameTarget.resolve(
             fileURL: selectedFileURL,
             workspaceURL: workspaceURL,
@@ -628,6 +654,7 @@ final class AppState {
     func openWorkspace(at url: URL) {
         guard !isGitWriteOperationRunning else { return }
         persistWindowState()
+        discardLastDeletedFileSession()
         if mavenExecution.runningRequestID != nil {
             stopMaven()
         }
@@ -705,6 +732,7 @@ final class AppState {
         branchComparison = nil
         isLoadingBranchComparison = false
         conflictFiles = []
+        resolvedConflictFiles = []
         mergeSourceBranch = nil
         changesRepositoryScopeID = nil
         changesGrouping = .directory
@@ -770,6 +798,7 @@ final class AppState {
 
     private func performCloseWorkspace() {
         persistWindowState()
+        discardLastDeletedFileSession()
         if runningTaskID != nil {
             stopRunningTask()
         }
@@ -835,12 +864,19 @@ final class AppState {
         branchComparison = nil
         isLoadingBranchComparison = false
         conflictFiles = []
+        resolvedConflictFiles = []
         mergeSourceBranch = nil
         javaIndexSnapshot = .idle
         javaIndexPhases = [:]
         javaSemanticTokens = []
         javaSemanticTokenCacheByFile = [:]
+        javaNavigationRequestID = nil
+        javaNavigationLoadingTask?.cancel()
+        javaNavigationLoadingTask = nil
+        javaNavigationLoadingPresentation = nil
+        clearJavaNavigationCaches()
         javaNavigationResultPresentation = nil
+        javaNavigationSourcePresentation = nil
         javaSymbolSearchResults = []
         resetFileNavigationHistory()
         Task { await javaLanguageProvider.shutdown() }
@@ -970,11 +1006,14 @@ final class AppState {
         branchOperationStatusMessage = nil
         branchComparison = nil
         conflictFiles = []
+        resolvedConflictFiles = []
         mergeSourceBranch = nil
         historyAuthorsErrorMessage = nil
         historyCurrentUserName = nil
         historyCurrentUserErrorMessage = nil
         commitErrorMessage = nil
+        historyFileRepositoryID = nil
+        historyFilePath = nil
         historyBranchFilter = rememberedHistoryBranchFilters[id] ?? .current
         historyAuthorFilter = rememberedHistoryAuthorFilters[id] ?? .all
         selectedCommitHash = rememberedCommitHashes[id]
@@ -1224,6 +1263,28 @@ final class AppState {
         }
     }
 
+    func showFileHistory(for fileURL: URL) {
+        guard let workspaceURL,
+              let target = GitFileBlameTarget.resolve(
+                  fileURL: fileURL,
+                  workspaceURL: workspaceURL,
+                  repositories: repositories
+              ) else { return }
+
+        selectRepositoryContext(target.repositoryID)
+        historyFileRepositoryID = target.repositoryID
+        historyFilePath = target.path
+        selectedSection = .history
+        resetHistorySelectionAndReload()
+    }
+
+    func clearFileHistoryScope() {
+        guard historyFilePath != nil else { return }
+        historyFileRepositoryID = nil
+        historyFilePath = nil
+        resetHistorySelectionAndReload()
+    }
+
     private func commitExecutionContext(
         repository: RegisteredRepository,
         fileCount: Int,
@@ -1454,6 +1515,7 @@ final class AppState {
                 branchOperationErrorMessage = error.localizedDescription
             } else {
                 conflictFiles = files
+                resolvedConflictFiles = []
                 mergeSourceBranch = branch.name
             }
             await refreshAfterBranchOperation()
@@ -1495,7 +1557,7 @@ final class AppState {
     }
 
     @discardableResult
-    func resolveConflict(path: String, result: String) async -> Bool {
+    func resolveConflict(path: String, result: String, resultData: Data? = nil) async -> Bool {
         guard let file = conflictFiles.first(where: { $0.path == path }),
               let repositoryURL = activeRepositoryURL,
               !isResolvingMergeConflict else { return false }
@@ -1511,9 +1573,64 @@ final class AppState {
         var resolvedFile = file
         resolvedFile.result = result
         resolvedFile.isResolved = true
+        resolvedFile.resultData = resultData
         do {
             try await gitRepositoryOperator.resolveConflict(repositoryURL: repositoryURL, file: resolvedFile)
             conflictFiles.removeAll { $0.path == path }
+            resolvedConflictFiles.removeAll { $0.path == path }
+            resolvedConflictFiles.append(resolvedFile)
+            return true
+        } catch {
+            branchOperationErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func saveConflictProgress(path: String, result: String) async -> Bool {
+        guard let fileIndex = conflictFiles.firstIndex(where: { $0.path == path }),
+              let repositoryURL = activeRepositoryURL,
+              !isResolvingMergeConflict else { return false }
+        guard GitConflictParser.blocks(in: result).isEmpty == false else {
+            branchOperationErrorMessage = "保存进度前仍需保留冲突块，或选择完成当前文件。"
+            return false
+        }
+        isResolvingMergeConflict = true
+        branchOperationErrorMessage = nil
+        defer { isResolvingMergeConflict = false }
+        var savedFile = conflictFiles[fileIndex]
+        savedFile.result = result
+        do {
+            try await gitRepositoryOperator.saveConflictProgress(
+                repositoryURL: repositoryURL,
+                file: savedFile
+            )
+            conflictFiles[fileIndex] = savedFile
+            return true
+        } catch {
+            branchOperationErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func revertConflictResolution(path: String) async -> Bool {
+        guard let resolvedIndex = resolvedConflictFiles.firstIndex(where: { $0.path == path }),
+              let repositoryURL = activeRepositoryURL,
+              !isResolvingMergeConflict else { return false }
+        isResolvingMergeConflict = true
+        branchOperationErrorMessage = nil
+        defer { isResolvingMergeConflict = false }
+        var file = resolvedConflictFiles[resolvedIndex]
+        file.isResolved = false
+        do {
+            try await gitRepositoryOperator.restoreConflictProgress(
+                repositoryURL: repositoryURL,
+                file: file
+            )
+            resolvedConflictFiles.remove(at: resolvedIndex)
+            conflictFiles.append(file)
+            conflictFiles.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
             return true
         } catch {
             branchOperationErrorMessage = error.localizedDescription
@@ -1524,8 +1641,34 @@ final class AppState {
     @discardableResult
     func acceptConflictFile(path: String, side: GitConflictSide) async -> Bool {
         guard let file = conflictFiles.first(where: { $0.path == path }) else { return false }
-        let result = side == .ours ? file.ours : file.theirs
-        return await resolveConflict(path: path, result: result)
+        var selected = file
+        selected.result = side == .ours ? file.ours : file.theirs
+        selected.resultData = side == .ours ? file.oursData : file.theirsData
+        return await resolveConflict(path: path, result: selected.result, resultData: selected.resultData)
+    }
+
+    @discardableResult
+    func updateResolvedConflict(path: String, result: String) async -> Bool {
+        guard let index = resolvedConflictFiles.firstIndex(where: { $0.path == path }) else { return false }
+        guard GitConflictParser.blocks(in: result).isEmpty else {
+            let didRevert = await revertConflictResolution(path: path)
+            guard didRevert else { return false }
+            return await saveConflictProgress(path: path, result: result)
+        }
+        guard let repositoryURL = activeRepositoryURL, !isResolvingMergeConflict else { return false }
+        isResolvingMergeConflict = true
+        branchOperationErrorMessage = nil
+        defer { isResolvingMergeConflict = false }
+        var file = resolvedConflictFiles[index]
+        file.result = result
+        do {
+            try await gitRepositoryOperator.resolveConflict(repositoryURL: repositoryURL, file: file)
+            resolvedConflictFiles[index] = file
+            return true
+        } catch {
+            branchOperationErrorMessage = error.localizedDescription
+            return false
+        }
     }
 
     func acceptConflictBlock(fileIndex: Int, blockIndex: Int, side: GitConflictSide) {
@@ -1556,6 +1699,7 @@ final class AppState {
         do {
             try await gitRepositoryOperator.abortMerge(repositoryURL: repositoryURL)
             conflictFiles = []
+            resolvedConflictFiles = []
             mergeSourceBranch = nil
             if let remoteContext,
                let repository = repositories.first(where: { $0.id == remoteContext.repositoryID }) {
@@ -1585,6 +1729,7 @@ final class AppState {
         do {
             try await gitRepositoryOperator.continueMerge(repositoryURL: repositoryURL)
             conflictFiles = []
+            resolvedConflictFiles = []
             mergeSourceBranch = nil
             if let remoteContext,
                let repository = repositories.first(where: { $0.id == remoteContext.repositoryID }) {
@@ -1657,6 +1802,7 @@ final class AppState {
                 guard gitRemoteOperationState == .running(context) else { return }
                 if !files.isEmpty {
                     conflictFiles = files
+                    resolvedConflictFiles = []
                     mergeSourceBranch = "upstream"
                     setGitRemoteOperationState(
                         .requiresConflictResolution(context: context, fileCount: files.count)
@@ -2137,6 +2283,252 @@ final class AppState {
         }
     }
 
+    func recordDeletedFileSession(
+        _ session: WorkspaceFileDeletionSession,
+        tabs: [OpenFileTab],
+        selectedFileURL: URL?
+    ) {
+        discardLastDeletedFileSession()
+        lastDeletedFileSession = session
+        lastDeletedFileTabs = tabs
+        lastDeletedSelectedFileURL = selectedFileURL
+        fileDeletionRestoreErrorMessage = nil
+    }
+
+    private func discardLastDeletedFileSession() {
+        if let previousSession = lastDeletedFileSession {
+            try? FileManager.default.removeItem(at: previousSession.backupDirectoryURL)
+        }
+        lastDeletedFileSession = nil
+        lastDeletedFileTabs = []
+        lastDeletedSelectedFileURL = nil
+        fileDeletionRestoreErrorMessage = nil
+    }
+
+    func restoreLastDeletedFiles() async {
+        guard let session = lastDeletedFileSession else { return }
+        guard let visibleWorkspaceRootURL,
+              visibleWorkspaceRootURL.standardizedFileURL == session.workspaceRootURL.standardizedFileURL else {
+            return
+        }
+        do {
+            try await FileSystemWorkspaceFileDeleter().restore(session)
+            lastDeletedFileSession = nil
+            fileDeletionRestoreErrorMessage = nil
+            let parentDirectories = Set(session.items.map {
+                $0.originalURL.deletingLastPathComponent().standardizedFileURL
+            })
+            for directoryURL in parentDirectories {
+                await loadDirectory(directoryURL, forceReload: true)
+            }
+            let restoredTabs = lastDeletedFileTabs.filter {
+                FileManager.default.fileExists(atPath: $0.url.path)
+            }
+            for tab in restoredTabs where !openFileTabs.contains(where: { $0.id == tab.id }) {
+                openFileTabs.append(tab)
+            }
+            trimOpenFileTabsIfNeeded()
+            if let lastDeletedSelectedFileURL,
+               let restoredTab = openFileTabs.first(where: { $0.url == lastDeletedSelectedFileURL }) {
+                activateFileTab(restoredTab)
+            }
+            if let firstURL = session.items.first?.originalURL {
+                await revealFileTreeItem(firstURL)
+            }
+        } catch {
+            fileDeletionRestoreErrorMessage = error.localizedDescription
+        }
+    }
+
+    func fileItemWasRenamed(from oldURL: URL, to newURL: URL) {
+        let oldURL = oldURL.standardizedFileURL
+        let newURL = newURL.standardizedFileURL
+        guard oldURL != newURL else {
+            persistWindowState()
+            return
+        }
+
+        syncActiveFileTab()
+        let selectedFileWasRenamed = selectedFileURL.map {
+            Self.isSameOrDescendant($0, of: oldURL)
+        } ?? false
+        let selectedDocumentWasLoading = selectedFileWasRenamed && isLoadingDocument
+        let shouldResumeDocumentAutoSave = selectedFileWasRenamed && hasUnsavedDocumentChanges
+
+        let autoSaveURLs = documentAutoSaveTasks.keys.filter {
+            Self.isSameOrDescendant($0, of: oldURL)
+        }
+        for fileURL in autoSaveURLs {
+            documentAutoSaveTasks[fileURL]?.cancel()
+            documentAutoSaveTasks[fileURL] = nil
+            documentAutoSaveRequestIDs[fileURL] = nil
+        }
+        if selectedDocumentWasLoading {
+            documentRequestID = nil
+        }
+
+        fileChildren = fileChildren.reduce(into: [:]) { result, item in
+            let directoryURL = Self.relocatedFileURL(item.key, from: oldURL, to: newURL)
+            result[directoryURL] = item.value.map { entry in
+                let entryURL = Self.relocatedFileURL(entry.url, from: oldURL, to: newURL)
+                return WorkspaceFileEntry(
+                    url: entryURL,
+                    name: entryURL.lastPathComponent,
+                    isDirectory: entry.isDirectory
+                )
+            }
+        }
+        directoryLoadErrors = directoryLoadErrors.reduce(into: [:]) { result, item in
+            result[Self.relocatedFileURL(item.key, from: oldURL, to: newURL)] = item.value
+        }
+        expandedDirectoryURLs = Set(
+            expandedDirectoryURLs.map { Self.relocatedFileURL($0, from: oldURL, to: newURL) }
+        )
+        loadingDirectoryURLs = Set(
+            loadingDirectoryURLs.map { Self.relocatedFileURL($0, from: oldURL, to: newURL) }
+        )
+        fileTreeRevealRequest = fileTreeRevealRequest.map {
+            FileTreeRevealRequest(fileURL: Self.relocatedFileURL($0.fileURL, from: oldURL, to: newURL))
+        }
+        fileSearchResults = fileSearchResults.map { entry in
+            let entryURL = Self.relocatedFileURL(entry.url, from: oldURL, to: newURL)
+            return WorkspaceFileEntry(
+                url: entryURL,
+                name: entryURL.lastPathComponent,
+                isDirectory: entry.isDirectory
+            )
+        }
+        textSearchResults = textSearchResults.map { result in
+            WorkspaceTextSearchResult(
+                fileURL: Self.relocatedFileURL(result.fileURL, from: oldURL, to: newURL),
+                line: result.line,
+                lineText: result.lineText
+            )
+        }
+
+        openFileTabs = openFileTabs.map { tab in
+            var relocatedTab = tab
+            relocatedTab.url = Self.relocatedFileURL(tab.url, from: oldURL, to: newURL)
+            return relocatedTab
+        }
+        selectedFileURL = selectedFileURL.map {
+            Self.relocatedFileURL($0, from: oldURL, to: newURL)
+        }
+        javaSemanticTokenCacheByFile = javaSemanticTokenCacheByFile.reduce(into: [:]) { result, item in
+            result[Self.relocatedFileURL(item.key, from: oldURL, to: newURL)] = item.value
+        }
+        fileNavigationBackStack = fileNavigationBackStack.map {
+            JavaNavigationHistoryEntry(
+                fileURL: Self.relocatedFileURL($0.fileURL, from: oldURL, to: newURL),
+                range: $0.range
+            )
+        }
+        fileNavigationForwardStack = fileNavigationForwardStack.map {
+            JavaNavigationHistoryEntry(
+                fileURL: Self.relocatedFileURL($0.fileURL, from: oldURL, to: newURL),
+                range: $0.range
+            )
+        }
+        currentFileNavigationLocation = currentFileNavigationLocation.map {
+            JavaNavigationHistoryEntry(
+                fileURL: Self.relocatedFileURL($0.fileURL, from: oldURL, to: newURL),
+                range: $0.range
+            )
+        }
+        javaNavigationResultPresentation = nil
+        javaNavigationSourcePresentation = nil
+        fileTabSessionsByContext = fileTabSessionsByContext.mapValues { session in
+            FileTabSessionState(
+                tabs: session.tabs.map { tab in
+                    PersistedFileTab(
+                        path: Self.relocatedFileURL(
+                            URL(fileURLWithPath: tab.path),
+                            from: oldURL,
+                            to: newURL
+                        ).path,
+                        showsMarkdownPreview: tab.showsMarkdownPreview,
+                        visibleLine: tab.visibleLine
+                    )
+                },
+                selectedFilePath: session.selectedFilePath.map {
+                    Self.relocatedFileURL(
+                        URL(fileURLWithPath: $0),
+                        from: oldURL,
+                        to: newURL
+                    ).path
+                }
+            )
+        }
+
+        let affectedRepositories = repositories.compactMap { repository -> (old: RegisteredRepository, new: RegisteredRepository, oldURL: URL, newURL: URL)? in
+            guard let repositoryURL = repositoryURL(for: repository),
+                  Self.isSameOrDescendant(repositoryURL, of: oldURL),
+                  let workspaceURL,
+                  let newRelativePath = Self.relativePath(of: Self.relocatedFileURL(repositoryURL, from: oldURL, to: newURL), from: workspaceURL)
+            else { return nil }
+            let relocatedRepository = RegisteredRepository(
+                displayName: repository.displayName,
+                relativePath: newRelativePath,
+                isPinned: repository.isPinned
+            )
+            return (repository, relocatedRepository, repositoryURL, Self.relocatedFileURL(repositoryURL, from: oldURL, to: newURL))
+        }
+
+        if !affectedRepositories.isEmpty {
+            repositoryRefreshContextID = UUID()
+            for affected in affectedRepositories {
+                migrateRepositoryWindowState(
+                    from: affected.old.id,
+                    to: affected.new.id,
+                    previousRepositoryURL: affected.oldURL,
+                    relocatedRepositoryURL: affected.newURL
+                )
+                if let snapshot = repositorySnapshots.removeValue(forKey: affected.old.id) {
+                    repositorySnapshots[affected.new.id] = snapshot
+                }
+                if let error = repositorySnapshotErrors.removeValue(forKey: affected.old.id) {
+                    repositorySnapshotErrors[affected.new.id] = error
+                }
+                if let excluded = excludedCommitChanges.removeValue(forKey: affected.old.id) {
+                    excludedCommitChanges[affected.new.id] = excluded
+                }
+                javaIndexPhases[affected.old.id] = nil
+                refreshingRepositoryIDs.remove(affected.old.id)
+                if selectedRepositoryID == affected.old.id {
+                    selectedRepositoryID = affected.new.id
+                }
+                if selectedChangeRepositoryID == affected.old.id {
+                    selectedChangeRepositoryID = affected.new.id
+                }
+                if case .repository(let repositoryID) = navigationContext,
+                   repositoryID == affected.old.id {
+                    navigationContext = .repository(affected.new.id)
+                }
+                mavenProjectRevisions[affected.oldURL.standardizedFileURL.path] = nil
+                mavenProjectRevisions[affected.newURL.standardizedFileURL.path, default: 0] += 1
+            }
+            repositories = repositories.map { repository in
+                affectedRepositories.first(where: { $0.old.id == repository.id })?.new ?? repository
+            }
+            persistRepositoryState()
+            reloadJavaWorkspaceConfiguration()
+        }
+
+        if shouldResumeDocumentAutoSave {
+            scheduleDocumentAutoSave()
+        } else if let selectedFileURL {
+            isSavingDocument = documentAutoSaveRequestIDs[selectedFileURL] != nil
+        }
+        persistWindowState()
+        if selectedDocumentWasLoading, let selectedFileURL {
+            loadFile(selectedFileURL, preservesMarkdownPreview: true)
+        }
+        if !affectedRepositories.isEmpty {
+            let repositoriesToRefresh = affectedRepositories.map { $0.new }
+            Task { await refreshRepositories(repositoriesToRefresh) }
+        }
+    }
+
     func retryDirectory(_ directoryURL: URL) {
         Task { await loadDirectory(directoryURL, forceReload: true) }
     }
@@ -2205,6 +2597,34 @@ final class AppState {
         persistWindowState()
     }
 
+    func shortcut(for id: AppShortcutID) -> ShortcutBinding {
+        shortcuts[id] ?? id.defaultBinding
+    }
+
+    func shortcutConflict(for id: AppShortcutID) -> AppShortcutID? {
+        let binding = shortcut(for: id)
+        return AppShortcutID.allCases.first {
+            $0 != id
+                && $0.group == id.group
+                && shortcut(for: $0) == binding
+        }
+    }
+
+    func setShortcut(_ binding: ShortcutBinding, for id: AppShortcutID) {
+        guard binding != shortcut(for: id) else { return }
+        shortcuts[id] = binding
+        persistAppPreferences()
+    }
+
+    func resetShortcut(_ id: AppShortcutID) {
+        setShortcut(id.defaultBinding, for: id)
+    }
+
+    func resetAllShortcuts() {
+        shortcuts = ShortcutBinding.defaults()
+        persistAppPreferences()
+    }
+
     func setJavaIndexSettings(_ settings: JavaIndexSettings) {
         guard javaIndexSettings != settings else { return }
         javaIndexSettings = settings
@@ -2233,12 +2653,32 @@ final class AppState {
     ) {
         guard fileURL.pathExtension.lowercased() == "java",
               let repositoryID = repositoryID(containing: fileURL) else { return }
+        let requestID = UUID()
+        javaNavigationRequestID = requestID
+        javaNavigationLoadingTask?.cancel()
+        javaNavigationLoadingPresentation = nil
+        javaNavigationLoadingTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(150))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            guard let self, self.javaNavigationRequestID == requestID else { return }
+            self.javaNavigationLoadingPresentation = JavaNavigationLoadingPresentation(
+                id: requestID,
+                action: action,
+                anchor: anchor
+            )
+        }
         let origin = JavaNavigationHistoryEntry(
             fileURL: fileURL.standardizedFileURL,
             range: JavaSourceRange(start: position, end: position)
         )
         currentFileNavigationLocation = origin
-        Task {
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.finishJavaNavigation(requestID: requestID) }
             let targets = await javaLanguageProvider.navigationTargets(
                 repositoryID: repositoryID,
                 request: JavaNavigationRequest(
@@ -2248,10 +2688,38 @@ final class AppState {
                     documentText: documentText
                 )
             )
-            let filteredTargets = await filterJavaNavigationTargets(targets, action: action)
-            guard !filteredTargets.isEmpty else { return }
+            guard javaNavigationRequestID == requestID else { return }
+            let fallbackTargets = targets.isEmpty
+                ? await JavaWorkspaceNavigationFallback.targets(
+                    for: JavaNavigationRequest(
+                        action: action,
+                        fileURL: fileURL.standardizedFileURL,
+                        position: position,
+                        documentText: documentText
+                    ),
+                    workspaceURL: workspaceURL,
+                    repositories: repositories
+                )
+                : []
+            guard javaNavigationRequestID == requestID else { return }
+            let resolvedTargets = await annotateJavaNavigationTargets(targets + fallbackTargets)
+            let filteredTargets = await filterJavaNavigationTargets(resolvedTargets, action: action)
+            guard javaNavigationRequestID == requestID else { return }
+            guard !filteredTargets.isEmpty else {
+                let indexState = javaIndexSnapshot.repositories.first {
+                    $0.repositoryID == repositoryID
+                }
+                jumpToSourceErrorMessage = Self.javaNavigationFailureMessage(
+                    repositoryName: indexState?.displayName
+                        ?? repositories.first(where: { $0.id == repositoryID })?.name,
+                    phase: indexState?.phase,
+                    detail: indexState?.detail,
+                    action: action
+                )
+                return
+            }
             if filteredTargets.count == 1, let target = filteredTargets.first {
-                navigateToJavaTarget(target, origin: origin)
+                handleJavaNavigationTarget(target, origin: origin, anchor: anchor)
             } else {
                 javaNavigationResultPresentation = JavaNavigationResultPresentation(
                     title: filteredTargets.first?.kind == .enum
@@ -2265,10 +2733,23 @@ final class AppState {
         }
     }
 
+    private func finishJavaNavigation(requestID: UUID) {
+        guard javaNavigationRequestID == requestID else { return }
+        javaNavigationLoadingTask?.cancel()
+        javaNavigationLoadingTask = nil
+        javaNavigationLoadingPresentation = nil
+        javaNavigationRequestID = nil
+    }
+
     func selectJavaNavigationTarget(_ target: JavaNavigationTarget) {
         let origin = javaNavigationResultPresentation?.origin
+        let anchor = javaNavigationResultPresentation?.anchor
         javaNavigationResultPresentation = nil
-        navigateToJavaTarget(target, origin: origin)
+        handleJavaNavigationTarget(
+            annotateJavaNavigationTarget(target),
+            origin: origin,
+            anchor: anchor
+        )
     }
 
     func searchJavaSymbols(query: String, scope: JavaSymbolSearchScope) {
@@ -2294,7 +2775,39 @@ final class AppState {
     }
 
     func selectJavaSymbolTarget(_ target: JavaNavigationTarget) {
-        navigateToJavaTarget(target, origin: currentJavaNavigationLocation())
+        let origin = currentJavaNavigationLocation()
+        Task {
+            let resolvedTarget = await annotateJavaNavigationTargets([target]).first
+            guard let resolvedTarget else { return }
+            handleJavaNavigationTarget(resolvedTarget, origin: origin, anchor: nil)
+        }
+    }
+
+    func dismissJavaNavigationSource() {
+        javaNavigationSourcePresentation = nil
+    }
+
+    func openJavaNavigationSource() {
+        guard let presentation = javaNavigationSourcePresentation else { return }
+        guard case .workspaceRepository(let repositoryID, _, let fileURL) = presentation.origin else {
+            return
+        }
+
+        javaNavigationSourcePresentation = nil
+        selectRepositoryContext(repositoryID)
+        selectSection(.files)
+        let sourceTarget = JavaNavigationTarget(
+            fileURL: fileURL,
+            range: presentation.target.range,
+            selectionRange: presentation.target.selectionRange,
+            name: presentation.target.name,
+            detail: presentation.target.detail,
+            containerName: presentation.target.containerName,
+            kind: presentation.target.kind,
+            origin: presentation.target.origin
+        )
+        navigateToJavaTarget(sourceTarget, origin: presentation.navigationOrigin)
+        Task { await revealFileTreeItem(fileURL) }
     }
 
     @discardableResult
@@ -2341,10 +2854,159 @@ final class AppState {
         _ target: JavaNavigationTarget,
         origin: JavaNavigationHistoryEntry?
     ) {
-        if let origin, selectedFileURL == origin.fileURL {
-            currentFileNavigationLocation = origin
+        navigateToFile(
+            target.fileURL,
+            range: target.selectionRange ?? target.range,
+            recordsHistory: true,
+            historyOrigin: origin
+        )
+    }
+
+    private func handleJavaNavigationTarget(
+        _ target: JavaNavigationTarget,
+        origin: JavaNavigationHistoryEntry?,
+        anchor: JavaNavigationPopupAnchor?
+    ) {
+        guard let targetOrigin = target.origin else {
+            navigateToJavaTarget(target, origin: origin)
+            return
         }
-        selectFile(target.fileURL, range: target.selectionRange ?? target.range)
+
+        if case .workspaceRepository(let repositoryID, _, _) = targetOrigin,
+           repositoryID == selectedFileURL.flatMap(repositoryID(containing:)) {
+            navigateToJavaTarget(target, origin: origin)
+            return
+        }
+
+        javaNavigationSourcePresentation = JavaNavigationSourcePresentation(
+            target: target,
+            origin: targetOrigin,
+            navigationOrigin: origin,
+            anchor: anchor
+        )
+    }
+
+    private func annotateJavaNavigationTarget(_ target: JavaNavigationTarget) -> JavaNavigationTarget {
+        guard target.origin == nil else { return target }
+        var target = target
+        target.origin = JavaNavigationTargetSourceResolver.origin(
+            for: target,
+            workspaceURL: workspaceURL,
+            repositories: repositories,
+            mavenLocalRepositoryURL: nil
+        )
+        return target
+    }
+
+    private func annotateJavaNavigationTargets(
+        _ targets: [JavaNavigationTarget]
+    ) async -> [JavaNavigationTarget] {
+        let workspaceURL = self.workspaceURL
+        let repositories = self.repositories
+        let mavenLocalRepositoryURL = javaMavenLocalRepositoryURL
+        var resolvedTargets = targets
+        var targetsToResolve: [JavaNavigationTarget] = []
+        for target in targets where target.origin == nil {
+            if let cachedOrigin = javaNavigationOriginCache[target.fileURL.absoluteString] {
+                if let index = resolvedTargets.firstIndex(where: { $0.id == target.id }) {
+                    resolvedTargets[index].origin = cachedOrigin
+                }
+            } else {
+                targetsToResolve.append(target)
+            }
+        }
+        guard !targetsToResolve.isEmpty else { return resolvedTargets }
+
+        let workspaceMavenProjects = await cachedJavaWorkspaceMavenProjects()
+        let jarNames = Set(
+            targetsToResolve.compactMap {
+                JavaNavigationTargetSourceResolver.jarName(for: $0.fileURL.absoluteString)
+            }
+        )
+        let mavenCoordinates = await Task.detached(priority: .utility) {
+            JavaNavigationTargetSourceResolver.mavenCoordinates(
+                for: jarNames,
+                localRepositoryURL: mavenLocalRepositoryURL
+            )
+        }.value
+        let coordinateLookup = JavaMavenCoordinateLookup(
+            coordinates: mavenCoordinates,
+            misses: jarNames.subtracting(mavenCoordinates.keys)
+        )
+        let origins = await Task.detached(priority: .utility) {
+            targetsToResolve.reduce(into: [String: JavaNavigationTargetOrigin]()) { result, target in
+                result[target.fileURL.absoluteString] = JavaNavigationTargetSourceResolver.origin(
+                    for: target,
+                    workspaceURL: workspaceURL,
+                    repositories: repositories,
+                    mavenLocalRepositoryURL: mavenLocalRepositoryURL,
+                    workspaceMavenProjectIndex: workspaceMavenProjects,
+                    mavenCoordinateLookup: coordinateLookup
+                )
+            }
+        }.value
+        javaNavigationOriginCache.merge(origins) { _, new in new }
+        let maximumCachedOrigins = 512
+        if javaNavigationOriginCache.count > maximumCachedOrigins {
+            let keysToRemove = javaNavigationOriginCache.keys.prefix(
+                javaNavigationOriginCache.count - maximumCachedOrigins
+            )
+            for key in keysToRemove {
+                javaNavigationOriginCache.removeValue(forKey: key)
+            }
+        }
+        return resolvedTargets.map { target in
+            guard target.origin == nil,
+                  let origin = origins[target.fileURL.absoluteString]
+                    ?? javaNavigationOriginCache[target.fileURL.absoluteString] else {
+                return target
+            }
+            var target = target
+            target.origin = origin
+            return target
+        }
+    }
+
+    private func cachedJavaWorkspaceMavenProjects() async -> [JavaWorkspaceMavenProject] {
+        guard let workspaceURL else { return [] }
+        let cacheKey = workspaceURL.standardizedFileURL.path + "\n"
+            + repositories.map { "\($0.id):\($0.name)" }.joined(separator: "\n")
+        if javaWorkspaceMavenProjectsCacheKey != cacheKey {
+            javaWorkspaceMavenProjectsTask?.cancel()
+            let workspaceURL = workspaceURL.standardizedFileURL
+            let repositories = repositories
+            javaWorkspaceMavenProjectsCacheKey = cacheKey
+            javaWorkspaceMavenProjectsTask = Task.detached(priority: .utility) {
+                JavaNavigationTargetSourceResolver.workspaceMavenProjects(
+                    workspaceURL: workspaceURL,
+                    repositories: repositories
+                )
+            }
+        }
+        guard let task = javaWorkspaceMavenProjectsTask else { return [] }
+        return await task.value
+    }
+
+    private func clearJavaNavigationCaches() {
+        javaWorkspaceMavenProjectsTask?.cancel()
+        javaWorkspaceMavenProjectsTask = nil
+        javaWorkspaceMavenProjectsCacheKey = nil
+        javaNavigationOriginCache.removeAll(keepingCapacity: true)
+        if let workspaceURL {
+            let workspaceURL = workspaceURL.standardizedFileURL
+            Task {
+                await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: workspaceURL)
+            }
+        }
+    }
+
+    private var javaMavenLocalRepositoryURL: URL? {
+        let configuredPath = mavenSettings.localRepository
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = configuredPath.isEmpty
+            ? "/usr/local/maven/repository"
+            : NSString(string: configuredPath).expandingTildeInPath
+        return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
     }
 
     private func currentJavaNavigationLocation() -> JavaNavigationHistoryEntry? {
@@ -2402,6 +3064,31 @@ final class AppState {
         case .incomingCalls: "选择调用方或使用位置"
         case .references: "选择使用位置"
         case .superDeclaration: "选择父类、接口或父方法"
+        }
+    }
+
+    nonisolated static func javaNavigationFailureMessage(
+        repositoryName: String?,
+        phase: JavaRepositoryIndexPhase?,
+        detail: String?,
+        action: JavaNavigationAction
+    ) -> String {
+        let repository = repositoryName ?? "当前项目"
+        let target = switch action {
+        case .contextual, .declaration, .implementation, .superDeclaration:
+            "目标定义"
+        case .incomingCalls, .references:
+            "目标"
+        }
+
+        switch phase {
+        case .failed:
+            let reason = detail?.isEmpty == false ? detail! : "未知错误"
+            return "\(repository) 的 Java 索引失败，暂时无法查找\(target)：\(reason)。请点击顶部的 Java 索引状态查看详情，或重建索引后重试。"
+        case .queued, .starting, .indexing, .stale, .paused:
+            return "\(repository) 的 Java 索引尚未就绪，暂时无法查找\(target)。请等待索引完成后重试。"
+        case .ready, .notRequired, nil:
+            return "未找到\(target)。如果它来自依赖包，请确认依赖源码已在当前工作区或 Maven 本地仓库中。"
         }
     }
 
@@ -2504,6 +3191,7 @@ final class AppState {
     }
 
     private func reloadJavaWorkspaceConfiguration() {
+        clearJavaNavigationCaches()
         let workspaceURL = self.workspaceURL
         let repositories = self.repositories
         let javaHome = mavenSettings.javaHome.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2628,18 +3316,30 @@ final class AppState {
     private func navigateToFile(
         _ fileURL: URL,
         range requestedRange: JavaSourceRange?,
-        recordsHistory: Bool
+        recordsHistory: Bool,
+        historyOrigin: JavaNavigationHistoryEntry? = nil
     ) {
         let fileURL = fileURL.standardizedFileURL
         let destinationRange = requestedRange ?? navigationRange(for: fileURL)
         let destination = JavaNavigationHistoryEntry(fileURL: fileURL, range: destinationRange)
-        let current = currentNavigationLocation()
+        let current = historyOrigin ?? currentNavigationLocation()
         if recordsHistory, current != destination {
             if let current {
                 Self.appendNavigationLocation(current, to: &fileNavigationBackStack)
             }
             fileNavigationForwardStack = []
         }
+
+        if let repositoryID = repositoryID(containing: fileURL) {
+            if navigationContext != .repository(repositoryID) {
+                selectRepositoryContext(repositoryID)
+            }
+        } else if let workspaceURL,
+                  !isWorkspaceContext,
+                  Self.isSameOrDescendant(fileURL, of: workspaceURL) {
+            selectWorkspaceContext()
+        }
+
         currentFileNavigationLocation = destination
         if fileURL != selectedFileURL {
             clearJavaSemanticTokensForFileTransition()
@@ -2853,6 +3553,11 @@ final class AppState {
         scheduleWindowStatePersistence()
     }
 
+    var selectedFileVisibleLine: Int {
+        guard let selectedFileURL else { return 1 }
+        return openFileTabs.first { $0.url == selectedFileURL }?.visibleLine ?? 1
+    }
+
     func clearSelectedSourceNavigationRequest(_ id: UUID) {
         guard selectedSourceNavigationRequest?.id == id else { return }
         selectedSourceNavigationRequest = nil
@@ -3045,6 +3750,11 @@ final class AppState {
 
     func setMarkdownPreview(_ showsPreview: Bool) {
         guard showsMarkdownPreview != showsPreview else { return }
+        if !showsPreview {
+            selectedSourceNavigationRequest = NativeTextNavigationRequest(
+                line: selectedFileVisibleLine
+            )
+        }
         showsMarkdownPreview = showsPreview
         syncActiveFileTab()
         persistWindowState()
@@ -3076,6 +3786,7 @@ final class AppState {
             return
         }
         workspaceMonitoringErrorMessage = nil
+        clearJavaNavigationCaches()
         await refreshLoadedDirectories(for: batch, workspaceURL: workspaceURL)
         if let traceID {
             await diagnosticLogger.record(
@@ -3369,6 +4080,7 @@ final class AppState {
     func loadHistory(reset: Bool = true) async {
         guard let repository = selectedRepository,
               let repositoryURL = repositoryURL(for: repository) else { return }
+        let repositoryID = repository.id
         let requestID = UUID()
         historyRequestID = requestID
         isLoadingHistory = true
@@ -3392,13 +4104,26 @@ final class AppState {
         }
 
         do {
-            let history = try await gitRepositoryReader.history(
-                repositoryURL: repositoryURL,
-                limit: 50,
-                skip: skip,
-                revision: historyRevision,
-                author: author
-            )
+            let history: [GitCommitSummary]
+            if let historyFilePath,
+               historyFileRepositoryID == repositoryID {
+                history = try await gitRepositoryReader.fileHistory(
+                    repositoryURL: repositoryURL,
+                    path: historyFilePath,
+                    limit: 50,
+                    skip: skip,
+                    revision: historyRevision,
+                    author: author
+                )
+            } else {
+                history = try await gitRepositoryReader.history(
+                    repositoryURL: repositoryURL,
+                    limit: 50,
+                    skip: skip,
+                    revision: historyRevision,
+                    author: author
+                )
+            }
             guard historyRequestID == requestID else { return }
             if reset {
                 commitHistory = history
@@ -3480,7 +4205,7 @@ final class AppState {
                         guard selection.commitHash == hash else { return nil }
                         return detail.files.first { $0.path == selection.path }
                     }
-                selectedCommitFile = rememberedFile ?? detail.files.first
+                selectedCommitFile = rememberedFile ?? preferredHistoryFile(in: detail) ?? detail.files.first
                 if let repositoryID = selectedRepositoryID,
                    let selectedCommitFile {
                     rememberedCommitFileSelections[repositoryID] = HistoryCommitFileSelection(
@@ -3522,6 +4247,14 @@ final class AppState {
         commitDiffErrorMessage = nil
         isLoadingCommitDiff = true
         Task { await loadSelectedCommitDiff() }
+    }
+
+    private func preferredHistoryFile(in detail: GitCommitDetail) -> GitCommitFile? {
+        guard let historyFilePath,
+              historyFileRepositoryID == selectedRepositoryID else { return nil }
+        return detail.files.first {
+            $0.path == historyFilePath || $0.originalPath == historyFilePath
+        } ?? (detail.files.count == 1 ? detail.files.first : nil)
     }
 
     func loadSelectedCommitDiff() async {
@@ -3956,7 +4689,8 @@ final class AppState {
                 interfaceFontSize: interfaceFontSize,
                 fileContentFontSize: fileContentFontSize,
                 maximumOpenFileTabs: maximumOpenFileTabs,
-                javaIndexSettings: javaIndexSettings
+                javaIndexSettings: javaIndexSettings,
+                shortcuts: shortcuts
             )
         )
     }
@@ -4498,13 +5232,41 @@ final class AppState {
     private func relocatedFilePath(_ path: String, from oldRoot: URL, to newRoot: URL) -> String {
         let fileURL = URL(fileURLWithPath: path).standardizedFileURL
         let oldRoot = oldRoot.standardizedFileURL
-        guard WorkspaceTreeRefreshPlanner.isSameOrDescendant(fileURL, of: oldRoot) else {
+        guard Self.isSameOrDescendant(fileURL, of: oldRoot) else {
             return fileURL.path
         }
         let prefix = oldRoot.path.hasSuffix("/") ? oldRoot.path : oldRoot.path + "/"
         guard fileURL.path.hasPrefix(prefix) else { return fileURL.path }
         let relativePath = String(fileURL.path.dropFirst(prefix.count))
         return newRoot.appendingPathComponent(relativePath).standardizedFileURL.path
+    }
+
+    private static func relocatedFileURL(_ fileURL: URL, from oldRoot: URL, to newRoot: URL) -> URL {
+        let fileURL = fileURL.standardizedFileURL
+        let oldRoot = oldRoot.standardizedFileURL
+        let newRoot = newRoot.standardizedFileURL
+        guard fileURL != oldRoot else { return newRoot }
+        let prefix = oldRoot.path.hasSuffix("/") ? oldRoot.path : oldRoot.path + "/"
+        guard fileURL.path.hasPrefix(prefix) else { return fileURL }
+        let relativePath = String(fileURL.path.dropFirst(prefix.count))
+        return newRoot.appendingPathComponent(relativePath).standardizedFileURL
+    }
+
+    private static func isSameOrDescendant(_ fileURL: URL, of rootURL: URL) -> Bool {
+        let fileURL = fileURL.standardizedFileURL
+        let rootURL = rootURL.standardizedFileURL
+        guard fileURL != rootURL else { return true }
+        let prefix = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        return fileURL.path.hasPrefix(prefix)
+    }
+
+    private static func relativePath(of itemURL: URL, from rootURL: URL) -> String? {
+        let itemURL = itemURL.standardizedFileURL
+        let rootURL = rootURL.standardizedFileURL
+        if itemURL == rootURL { return "." }
+        let prefix = rootURL.path.hasSuffix("/") ? rootURL.path : rootURL.path + "/"
+        guard itemURL.path.hasPrefix(prefix) else { return nil }
+        return String(itemURL.path.dropFirst(prefix.count))
     }
 
     private func selectedFilePath(relativeTo repositoryURL: URL) -> String? {
@@ -4570,6 +5332,7 @@ final class AppState {
 
     private func restoreFileTabsForCurrentContext() {
         selectedFileURL = nil
+        openFileTabs = []
         currentFileNavigationLocation = nil
         selectedFileFingerprint = nil
         loadedDocument = nil

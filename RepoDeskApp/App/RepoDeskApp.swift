@@ -7,6 +7,36 @@ extension Notification.Name {
     static let repoDeskJavaSymbolSearchRequested = Notification.Name("RepoDesk.JavaSymbolSearchRequested")
 }
 
+enum RepoDeskKeyboardShortcut {
+    static func isCloseFileTab(
+        key: String?,
+        modifiers: NSEvent.ModifierFlags,
+        binding: ShortcutBinding = AppShortcutID.closeFileTab.defaultBinding,
+        selectedSection: AppSection,
+        hasSelectedFile: Bool
+    ) -> Bool {
+        let normalizedModifiers = modifiers.intersection(.deviceIndependentFlagsMask)
+        return key?.lowercased() == binding.key
+            && normalizedModifiers == binding.modifierFlags
+            && selectedSection == .files
+            && hasSelectedFile
+    }
+
+    static func isUndoFileDeletion(
+        key: String?,
+        modifiers: NSEvent.ModifierFlags,
+        binding: ShortcutBinding = AppShortcutID.undoFileDeletion.defaultBinding,
+        selectedSection: AppSection,
+        canUndo: Bool
+    ) -> Bool {
+        let normalizedModifiers = modifiers.intersection(.deviceIndependentFlagsMask)
+        return key?.lowercased() == binding.key
+            && normalizedModifiers == binding.modifierFlags
+            && selectedSection == .files
+            && canUndo
+    }
+}
+
 @main
 @MainActor
 struct RepoDeskApp: App {
@@ -36,18 +66,18 @@ struct RepoDeskApp: App {
                 Button("保存") {
                     Task { await appState.saveSelectedDocument() }
                 }
-                .keyboardShortcut("s", modifiers: .command)
+                .keyboardShortcut(appState.shortcut(for: .save).keyEquivalent, modifiers: appState.shortcut(for: .save).eventModifiers)
                 .disabled(!appState.hasUnsavedDocumentChanges || appState.isSavingDocument)
             }
             CommandMenu("导航") {
                 Button("Java 类") {
                     NotificationCenter.default.post(name: .repoDeskJavaTypeSearchRequested, object: nil)
                 }
-                .keyboardShortcut("o", modifiers: .command)
+                .keyboardShortcut(appState.shortcut(for: .javaTypeSearch).keyEquivalent, modifiers: appState.shortcut(for: .javaTypeSearch).eventModifiers)
                 Button("Java 符号") {
                     NotificationCenter.default.post(name: .repoDeskJavaSymbolSearchRequested, object: nil)
                 }
-                .keyboardShortcut("o", modifiers: [.command, .option])
+                .keyboardShortcut(appState.shortcut(for: .javaSymbolSearch).keyEquivalent, modifiers: appState.shortcut(for: .javaSymbolSearch).eventModifiers)
             }
         }
 
@@ -82,6 +112,8 @@ final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
     weak var appState: AppState?
     private var shiftMonitor: Any?
     private var contentFindMonitor: Any?
+    private var closeFileTabMonitor: Any?
+    private var undoFileDeletionMonitor: Any?
     private var fileNavigationMouseMonitor: Any?
     private var lastShiftPressTimestamp: TimeInterval?
 
@@ -112,29 +144,66 @@ final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
             }
             return event
         }
-        contentFindMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        contentFindMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            guard let key = event.charactersIgnoringModifiers?.lowercased(),
+            guard let appState = self?.appState,
+                  let key = event.charactersIgnoringModifiers?.lowercased(),
                   let window = event.window ?? NSApp.keyWindow,
                   ContentFindWindowRegistry.shared.contains(window) else {
                 return event
             }
-            if modifiers == .command, key == "f" {
+            let findBinding = appState.shortcut(for: .contentFind)
+            let nextBinding = appState.shortcut(for: .nextMatch)
+            let previousBinding = appState.shortcut(for: .previousMatch)
+            if modifiers == findBinding.modifierFlags, key == findBinding.key {
                 NotificationCenter.default.post(
                     name: .repoDeskContentFindRequested,
                     object: window
                 )
                 return nil
             }
-            if key == "g", modifiers == .command || modifiers == [.command, .shift] {
+            if (modifiers == nextBinding.modifierFlags && key == nextBinding.key)
+                || (modifiers == previousBinding.modifierFlags && key == previousBinding.key) {
                 NotificationCenter.default.post(
                     name: .repoDeskContentFindNavigationRequested,
                     object: window,
-                    userInfo: ["offset": modifiers.contains(.shift) ? -1 : 1]
+                    userInfo: ["offset": modifiers == previousBinding.modifierFlags ? -1 : 1]
                 )
                 return nil
             }
             return event
+        }
+        closeFileTabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  let appState = self.appState,
+                  RepoDeskKeyboardShortcut.isCloseFileTab(
+                    key: event.charactersIgnoringModifiers,
+                    modifiers: event.modifierFlags,
+                    binding: appState.shortcut(for: .closeFileTab),
+                    selectedSection: appState.selectedSection,
+                    hasSelectedFile: appState.selectedFileURL != nil
+                  ) else {
+                return event
+            }
+            appState.closeSelectedFileTab()
+            return nil
+        }
+        undoFileDeletionMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self,
+                  let appState = self.appState,
+                  RepoDeskKeyboardShortcut.isUndoFileDeletion(
+                    key: event.charactersIgnoringModifiers,
+                    modifiers: event.modifierFlags,
+                    binding: appState.shortcut(for: .undoFileDeletion),
+                    selectedSection: appState.selectedSection,
+                    canUndo: appState.lastDeletedFileSession != nil
+                  ) else {
+                return event
+            }
+            Task { @MainActor in
+                await appState.restoreLastDeletedFiles()
+            }
+            return nil
         }
         fileNavigationMouseMonitor = NSEvent.addLocalMonitorForEvents(
             matching: .otherMouseDown
@@ -162,11 +231,19 @@ final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
         if let contentFindMonitor {
             NSEvent.removeMonitor(contentFindMonitor)
         }
+        if let closeFileTabMonitor {
+            NSEvent.removeMonitor(closeFileTabMonitor)
+        }
+        if let undoFileDeletionMonitor {
+            NSEvent.removeMonitor(undoFileDeletionMonitor)
+        }
         if let fileNavigationMouseMonitor {
             NSEvent.removeMonitor(fileNavigationMouseMonitor)
         }
         shiftMonitor = nil
         contentFindMonitor = nil
+        closeFileTabMonitor = nil
+        undoFileDeletionMonitor = nil
         fileNavigationMouseMonitor = nil
     }
 

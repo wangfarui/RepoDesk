@@ -10,6 +10,7 @@ private struct VerificationError: Error {
 enum VerifyMergeConflictResolution {
     static func main() async throws {
         try verifyStableConflictNavigationModel()
+        try verifyNavigationScopeModel()
         let repository = RegisteredRepository(
             displayName: "repo",
             relativePath: ".",
@@ -106,6 +107,23 @@ enum VerifyMergeConflictResolution {
         try require(
             document.unresolvedBlockIDs == [0],
             "Reopened conflict did not return to unresolved navigation."
+        )
+    }
+
+    private static func verifyNavigationScopeModel() throws {
+        try require(
+            MergeConflictNavigationScope.unresolved.blockIDs(
+                allBlockIDs: [0, 1, 2],
+                unresolvedBlockIDs: [1, 2]
+            ) == [1, 2],
+            "Unresolved navigation scope included resolved conflicts."
+        )
+        try require(
+            MergeConflictNavigationScope.all.blockIDs(
+                allBlockIDs: [0, 1, 2],
+                unresolvedBlockIDs: [1, 2]
+            ) == [0, 1, 2],
+            "All navigation scope omitted resolved conflicts."
         )
     }
 

@@ -257,7 +257,105 @@ struct FilesModuleTests {
         #expect(blocks.contains(.heading(level: 1, text: "Heading")))
         #expect(blocks.contains(.listItem(MarkdownPreviewListItem(marker: .unordered, depth: 0, text: "First item"))))
         #expect(blocks.contains(.codeBlock(language: "swift", code: "let value = 1")))
-        #expect(blocks.contains(.table(headers: ["Name", "Value"], rows: [["one", "1"]])))
+        #expect(blocks.contains(.table(
+            headers: ["Name", "Value"],
+            alignments: [.left, .left],
+            rows: [["one", "1"]]
+        )))
+    }
+
+    @Test func markdownPreviewParserPreservesSourceLineRanges() {
+        let source = """
+        # Heading
+
+        Paragraph text.
+
+        ```swift
+        let value = 1
+        ```
+
+        | Name | Value |
+        | --- | --- |
+        | one | 1 |
+        """
+
+        let blocks = MarkdownPreviewParser.parseWithSourceLines(source)
+
+        #expect(blocks[0].sourceLineRange == 1...1)
+        #expect(blocks[1].sourceLineRange == 3...3)
+        #expect(blocks[2].sourceLineRange == 5...7)
+        #expect(blocks[3].sourceLineRange == 9...11)
+    }
+
+    @Test func markdownPreviewParserPreservesTableAlignments() {
+        let blocks = MarkdownPreviewParser.parse("""
+        | Left | Center | Right |
+        | :--- | :---: | ---: |
+        | a | b | c |
+        """)
+
+        #expect(blocks == [
+            .table(
+                headers: ["Left", "Center", "Right"],
+                alignments: [.left, .center, .right],
+                rows: [["a", "b", "c"]]
+            )
+        ])
+    }
+
+    @MainActor
+    @Test func markdownPreviewDocumentExposesRenderedTextForSelectionAndSearch() {
+        let blocks: [MarkdownPreviewBlock] = [
+            .heading(level: 1, text: "**Heading**"),
+            .paragraph("A [link](https://example.com) and `code`."),
+            .listItem(MarkdownPreviewListItem(marker: .task(isChecked: true), depth: 0, text: "Done")),
+            .codeBlock(language: "swift", code: "let value = 1"),
+            .table(
+                headers: ["Name", "Value"],
+                alignments: [.left, .left],
+                rows: [["one", "1"]]
+            )
+        ]
+
+        let document = MarkdownPreviewAttributedDocument(blocks: blocks, fontSize: RepoDeskFontSize.default)
+
+        #expect(document.text.contains("Heading"))
+        #expect(document.text.contains("link and code."))
+        #expect(!document.text.contains("**Heading**"))
+        #expect(!document.text.contains("[link](https://example.com)"))
+        #expect(document.text.contains("☑ Done"))
+        #expect(document.text.contains("let value = 1"))
+
+        let matches = ContentSearchMatcher.matches(
+            in: document.text,
+            query: "let value",
+            options: ContentSearchOptions()
+        )
+        #expect(matches.count == 1)
+        #expect((document.text as NSString).substring(with: matches[0].range) == "let value")
+    }
+
+    @MainActor
+    @Test func markdownPreviewDocumentMapsMissingSourceLinesToNearestVisibleBlock() {
+        let source = """
+        # Heading
+
+        Paragraph text.
+
+        - Item
+        """
+        let document = MarkdownPreviewAttributedDocument(
+            blocks: MarkdownPreviewParser.parseWithSourceLines(source),
+            fontSize: RepoDeskFontSize.default
+        )
+
+        let paragraphRange = document.textRange(forSourceLine: 2)
+        let itemRange = document.textRange(forSourceLine: 5)
+
+        #expect(paragraphRange != nil)
+        #expect(itemRange != nil)
+        #expect(document.sourceLine(forCharacterOffset: paragraphRange?.location ?? 0) == 3)
+        #expect(document.sourceLine(forCharacterOffset: itemRange?.location ?? 0) == 5)
     }
 }
 

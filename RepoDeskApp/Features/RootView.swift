@@ -245,7 +245,7 @@ struct RootView: View {
                 }
                 .labelStyle(.iconOnly)
                 .disabled(appState.workspace == nil || appState.isGitWriteOperationRunning)
-                .keyboardShortcut("r", modifiers: .command)
+                .keyboardShortcut(appState.shortcut(for: .refresh).keyEquivalent, modifiers: appState.shortcut(for: .refresh).eventModifiers)
                 .help("刷新 Repository 和文件状态")
             }
             ToolbarItem(placement: .primaryAction) {
@@ -260,7 +260,7 @@ struct RootView: View {
                 Button("全文检索", systemImage: "text.magnifyingglass") {
                     showsFullTextSearch = true
                 }
-                .keyboardShortcut("f", modifiers: [.command, .shift])
+                .keyboardShortcut(appState.shortcut(for: .fullTextSearch).keyEquivalent, modifiers: appState.shortcut(for: .fullTextSearch).eventModifiers)
                 .labelStyle(.iconOnly)
                 .disabled(appState.workspace == nil)
                 .help("全文检索（Command+Shift+F）")
@@ -477,9 +477,17 @@ struct RootView: View {
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .keyboardShortcut(sectionShortcutKey(for: section), modifiers: .command)
-        .help("\(section.displayName) (Command+\(sectionShortcutNumber(for: section)))")
+        .keyboardShortcut(
+            appState.shortcut(for: shortcutID(for: section)).keyEquivalent,
+            modifiers: appState.shortcut(for: shortcutID(for: section)).eventModifiers
+        )
+        .help("\(section.displayName) (\(appState.shortcut(for: shortcutID(for: section)).displayName))")
         .accessibilityValue(isSelected ? "已选择" : "")
+    }
+
+    private func shortcutID(for section: AppSection) -> AppShortcutID {
+        let index = appState.availableSections.firstIndex(of: section) ?? 0
+        return [.section1, .section2, .section3, .section4][min(index, 3)]
     }
 
     @ViewBuilder
@@ -542,10 +550,6 @@ struct RootView: View {
 
     private func sectionShortcutNumber(for section: AppSection) -> Int {
         (appState.availableSections.firstIndex(of: section) ?? 0) + 1
-    }
-
-    private func sectionShortcutKey(for section: AppSection) -> KeyEquivalent {
-        KeyEquivalent(Character(String(sectionShortcutNumber(for: section))))
     }
 
     private var repositoryContextButton: some View {

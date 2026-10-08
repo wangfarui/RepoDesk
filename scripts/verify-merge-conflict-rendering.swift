@@ -160,12 +160,28 @@ enum VerifyMergeConflictRendering {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
         hostingView.layoutSubtreeIfNeeded()
 
-        let yoursScrollViews = descendants(of: hostingView)
-            .compactMap { $0 as? NSScrollView }
-            .filter {
-                $0.identifier?.rawValue.contains("MergeConflictEditor.yours.") == true
-            }
-        guard yoursScrollViews.count >= 10,
+        let scrollViewsByPane = Dictionary(uniqueKeysWithValues: [
+            "yours",
+            "result",
+            "theirs"
+        ].map { pane in
+            (
+                pane,
+                descendants(of: hostingView)
+                    .compactMap { $0 as? NSScrollView }
+                    .filter {
+                        $0.identifier?.rawValue.contains(
+                            "MergeConflictEditor.\(pane)."
+                        ) == true
+                    }
+            )
+        })
+        guard let yoursScrollViews = scrollViewsByPane["yours"],
+              let resultScrollViews = scrollViewsByPane["result"],
+              let theirsScrollViews = scrollViewsByPane["theirs"],
+              yoursScrollViews.count >= 10,
+              !resultScrollViews.isEmpty,
+              !theirsScrollViews.isEmpty,
               let source = yoursScrollViews.max(by: {
                   ($0.documentView?.frame.width ?? 0) < ($1.documentView?.frame.width ?? 0)
               }) else {
@@ -186,6 +202,15 @@ enum VerifyMergeConflictRendering {
             source.reflectScrolledClipView(source.contentView)
             hostingView.layoutSubtreeIfNeeded()
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.001))
+            let synchronizedOffsets = (yoursScrollViews + resultScrollViews + theirsScrollViews)
+                .map { $0.contentView.bounds.origin.x }
+            guard let minimumOffset = synchronizedOffsets.min(),
+                  let maximumSynchronizedOffset = synchronizedOffsets.max(),
+                  maximumSynchronizedOffset - minimumOffset < 1 else {
+                throw VerificationError(
+                    message: "Merge conflict panes did not share a horizontal offset."
+                )
+            }
         }
         hostingView.displayIfNeeded()
         let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
