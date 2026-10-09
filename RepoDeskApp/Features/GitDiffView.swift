@@ -1031,30 +1031,8 @@ struct GitDiffView: View {
     }
 
     private func blameCell(_ blame: GitBlameLine?) -> some View {
-        HStack(spacing: 6) {
-            Text(blame?.authoredAt.map(Self.blameDateFormatter.string(from:)) ?? "")
-                .frame(width: 58, alignment: .leading)
-            Text(blame?.author ?? "")
-                .lineLimit(1)
-                .frame(width: 92, alignment: .leading)
-            Text(blame?.isUncommitted != false ? "" : String(blame?.commitHash.prefix(8) ?? ""))
-                .foregroundStyle(.tertiary)
-                .frame(width: 58, alignment: .leading)
-        }
-        .font(.caption2.monospaced())
-        .foregroundStyle(blame?.isUncommitted != false ? .secondary : .primary)
-        .padding(.horizontal, 7)
-        .frame(width: 226, alignment: .leading)
-        .frame(height: lineHeight)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.85))
+        GitBlameAnnotationCell(blame: blame, height: lineHeight)
     }
-
-    private static let blameDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yy/MM/dd"
-        return formatter
-    }()
 
     private var sideBySideContentHeight: CGFloat {
         28 + sideRowsContentHeight + GitDiffLayoutMetrics.horizontalScrollerReserve

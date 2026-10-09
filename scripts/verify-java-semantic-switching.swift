@@ -90,6 +90,7 @@ enum VerifyJavaSemanticSwitching {
             javaLanguageProvider: provider,
             restoresWorkspaceOnLaunch: false
         )
+        state.navigationContext = .repository(repository.id)
         state.openFileTabs = [firstTab, secondTab, thirdTab]
         state.selectedFileURL = firstURL
         state.loadedDocument = firstDocument

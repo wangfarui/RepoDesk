@@ -610,8 +610,19 @@ struct HistoryView: View {
         .help(file.path)
         .fileSystemPathCopyMenu(
             commitPathCopyValues(file.path),
+            annotateGitBlameItem: historyBlameMenuAction(for: file),
+            isGitBlameAnnotated: appState.selectedCommitFile == file
+                && appState.isHistoryBlameCurrent && appState.historyBlame.allSidesVisible,
             isContextMenuPresented: contextMenuPresentationBinding(for: rowID)
         )
+    }
+
+    private func historyBlameMenuAction(for file: GitCommitFile) -> (() -> Void)? {
+        guard !appState.isLoadingCommit, !appState.isLoadingCommitDiff,
+              appState.selectedCommitDetail?.summary.hash == appState.selectedCommitHash else { return nil }
+        if appState.selectedCommitFile == file, appState.isHistoryBlameCurrent,
+           appState.historyBlame.availableSides.isEmpty { return nil }
+        return { appState.annotateHistoryCommitFile(file) }
     }
 
     private func commitFileBackground(_ file: GitCommitFile, rowID: String) -> Color {
@@ -651,6 +662,8 @@ struct HistoryView: View {
                         jumpToSource: { line in
                             appState.jumpToSource(repositoryID: repository.id, path: file.path, line: line)
                         },
+                        blame: historyBlameAnnotations,
+                        toggleBlame: historyBlameToggle,
                         fontSize: CGFloat(appState.fileContentFontSize)
                     )
                 } else if let repository = appState.selectedRepository,
@@ -664,6 +677,10 @@ struct HistoryView: View {
                             appState.jumpToSource(repositoryID: repository.id, path: file.path, line: line)
                         },
                         lockedPresentation: .sideBySide,
+                        oldBlame: historyBlameAnnotations[.target],
+                        newBlame: historyBlameAnnotations[.result],
+                        toggleOldBlame: historyBlameToggle(.target),
+                        toggleNewBlame: historyBlameToggle(.result),
                         fontSize: CGFloat(appState.fileContentFontSize)
                     )
                 } else {
@@ -691,7 +708,50 @@ struct HistoryView: View {
                 .background(.regularMaterial)
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if appState.isHistoryBlameCurrent {
+                if !appState.historyBlame.loadingSides.isEmpty {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("正在加载 Git Blame…").font(.caption)
+                        Spacer()
+                    }
+                    .padding(6)
+                    Divider()
+                }
+                ForEach(GitHistoryBlameSide.allCases, id: \.self) { side in
+                    if let error = appState.historyBlame.errors[side] {
+                        Label("\(historyBlameSideTitle(side))：\(error)", systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .padding(6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var historyBlameAnnotations: [GitHistoryBlameSide: [Int: GitBlameLine]] {
+        guard appState.isHistoryBlameCurrent else { return [:] }
+        return GitHistoryBlameSide.allCases.reduce(into: [:]) { result, side in
+            result[side] = appState.historyBlame.annotations(for: side)
+        }
+    }
+
+    private func historyBlameToggle(_ side: GitHistoryBlameSide) -> (() -> Void)? {
+        guard appState.isHistoryBlameCurrent,
+              appState.historyBlame.availableSides.contains(side) else { return nil }
+        return { appState.toggleHistoryBlame(side) }
+    }
+
+    private func historyBlameSideTitle(_ side: GitHistoryBlameSide) -> String {
+        switch side {
+        case .target: appState.mergeCommitFileDiff == nil ? "父提交" : "目标父提交"
+        case .result: appState.mergeCommitFileDiff == nil ? "提交结果" : "合并结果"
+        case .source: "来源父提交"
+        }
     }
 
     private func loadingOverlay(_ title: String) -> some View {

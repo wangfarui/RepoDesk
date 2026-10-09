@@ -428,6 +428,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-layout.swift" \
   -o "${project_dir}/build/verify-git-diff-layout"
@@ -442,6 +443,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-selection.swift" \
   -o "${project_dir}/build/verify-git-diff-selection"
@@ -456,6 +458,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-mouse-copy.swift" \
   -o "${project_dir}/build/verify-git-diff-mouse-copy"
@@ -470,6 +473,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/RepoDeskApp/Features/GitMergeDiffView.swift" \
   "${project_dir}/scripts/verify-git-merge-diff.swift" \
@@ -497,6 +501,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-performance.swift" \
   -o "${project_dir}/build/verify-git-diff-performance"

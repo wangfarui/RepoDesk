@@ -66,6 +66,8 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
     let deleteItem: (() -> Void)?
     let rollbackItem: (() -> Void)?
     let viewGitHistoryItem: (() -> Void)?
+    let annotateGitBlameItem: (() -> Void)?
+    let isGitBlameAnnotated: Bool
     let openInFinderItem: (() -> Void)?
     let isContextMenuPresented: Binding<Bool>?
 
@@ -73,7 +75,7 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
     func body(content: Content) -> some View {
         if values != nil || copyItem != nil || pasteItem != nil || newFileItem != nil
             || newDirectoryItem != nil || renameItem != nil || deleteItem != nil || rollbackItem != nil
-            || viewGitHistoryItem != nil || openInFinderItem != nil {
+            || viewGitHistoryItem != nil || annotateGitBlameItem != nil || openInFinderItem != nil {
             if let isContextMenuPresented {
                 content.overlay {
                     FileSystemContextMenuPresenter(
@@ -86,6 +88,8 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
                         deleteItem: deleteItem,
                         rollbackItem: rollbackItem,
                         viewGitHistoryItem: viewGitHistoryItem,
+                        annotateGitBlameItem: annotateGitBlameItem,
+                        isGitBlameAnnotated: isGitBlameAnnotated,
                         openInFinderItem: openInFinderItem,
                         isPresented: isContextMenuPresented
                     )
@@ -126,6 +130,12 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
         if let viewGitHistoryItem {
             Button("查看 Git 提交历史", systemImage: "clock.arrow.circlepath", action: viewGitHistoryItem)
         }
+        if let annotateGitBlameItem {
+            Toggle("Annotate with Git Blame", isOn: Binding(
+                get: { isGitBlameAnnotated },
+                set: { _ in annotateGitBlameItem() }
+            ))
+        }
         if let openInFinderItem {
             Button("在Finder中打开", systemImage: "folder", action: openInFinderItem)
         }
@@ -134,6 +144,7 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
             || deleteItem != nil
             || rollbackItem != nil
             || viewGitHistoryItem != nil
+            || annotateGitBlameItem != nil
             || openInFinderItem != nil), values != nil {
             Divider()
         }
@@ -167,6 +178,8 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
     let deleteItem: (() -> Void)?
     let rollbackItem: (() -> Void)?
     let viewGitHistoryItem: (() -> Void)?
+    let annotateGitBlameItem: (() -> Void)?
+    let isGitBlameAnnotated: Bool
     let openInFinderItem: (() -> Void)?
     @Binding var isPresented: Bool
 
@@ -181,6 +194,8 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             deleteItem: deleteItem,
             rollbackItem: rollbackItem,
             viewGitHistoryItem: viewGitHistoryItem,
+            annotateGitBlameItem: annotateGitBlameItem,
+            isGitBlameAnnotated: isGitBlameAnnotated,
             openInFinderItem: openInFinderItem,
             isPresented: $isPresented
         )
@@ -202,6 +217,8 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
         context.coordinator.deleteItem = deleteItem
         context.coordinator.rollbackItem = rollbackItem
         context.coordinator.viewGitHistoryItem = viewGitHistoryItem
+        context.coordinator.annotateGitBlameItem = annotateGitBlameItem
+        context.coordinator.isGitBlameAnnotated = isGitBlameAnnotated
         context.coordinator.openInFinderItem = openInFinderItem
         context.coordinator.isPresented = $isPresented
         view.coordinator = context.coordinator
@@ -217,6 +234,8 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
         var deleteItem: (() -> Void)?
         var rollbackItem: (() -> Void)?
         var viewGitHistoryItem: (() -> Void)?
+        var annotateGitBlameItem: (() -> Void)?
+        var isGitBlameAnnotated: Bool
         var openInFinderItem: (() -> Void)?
         var isPresented: Binding<Bool>
 
@@ -230,6 +249,8 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             deleteItem: (() -> Void)?,
             rollbackItem: (() -> Void)?,
             viewGitHistoryItem: (() -> Void)?,
+            annotateGitBlameItem: (() -> Void)?,
+            isGitBlameAnnotated: Bool,
             openInFinderItem: (() -> Void)?,
             isPresented: Binding<Bool>
         ) {
@@ -242,6 +263,8 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             self.deleteItem = deleteItem
             self.rollbackItem = rollbackItem
             self.viewGitHistoryItem = viewGitHistoryItem
+            self.annotateGitBlameItem = annotateGitBlameItem
+            self.isGitBlameAnnotated = isGitBlameAnnotated
             self.openInFinderItem = openInFinderItem
             self.isPresented = isPresented
         }
@@ -273,6 +296,11 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             if viewGitHistoryItem != nil {
                 menu.addItem(menuItem("查看 Git 提交历史", symbol: "clock.arrow.circlepath", action: #selector(viewGitHistory)))
             }
+            if annotateGitBlameItem != nil {
+                let item = menuItem("Annotate with Git Blame", symbol: "person.text.rectangle", action: #selector(annotateGitBlame))
+                item.state = isGitBlameAnnotated ? .on : .off
+                menu.addItem(item)
+            }
             if openInFinderItem != nil {
                 menu.addItem(menuItem("在Finder中打开", symbol: "folder", action: #selector(openInFinder)))
             }
@@ -281,6 +309,7 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
                 || deleteItem != nil
                 || rollbackItem != nil
                 || viewGitHistoryItem != nil
+                || annotateGitBlameItem != nil
                 || openInFinderItem != nil), values != nil {
                 menu.addItem(.separator())
             }
@@ -336,6 +365,10 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
 
         @objc private func rollbackFileItem() {
             rollbackItem?()
+        }
+
+        @objc private func annotateGitBlame() {
+            annotateGitBlameItem?()
         }
 
         @objc private func viewGitHistory() {
@@ -404,6 +437,8 @@ extension View {
         deleteItem: (() -> Void)? = nil,
         rollbackItem: (() -> Void)? = nil,
         viewGitHistoryItem: (() -> Void)? = nil,
+        annotateGitBlameItem: (() -> Void)? = nil,
+        isGitBlameAnnotated: Bool = false,
         openInFinderItem: (() -> Void)? = nil,
         isContextMenuPresented: Binding<Bool>? = nil
     ) -> some View {
@@ -418,6 +453,8 @@ extension View {
                 deleteItem: deleteItem,
                 rollbackItem: rollbackItem,
                 viewGitHistoryItem: viewGitHistoryItem,
+                annotateGitBlameItem: annotateGitBlameItem,
+                isGitBlameAnnotated: isGitBlameAnnotated,
                 openInFinderItem: openInFinderItem,
                 isContextMenuPresented: isContextMenuPresented
             )

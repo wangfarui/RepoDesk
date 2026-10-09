@@ -181,6 +181,7 @@ final class AppState {
     var selectedCommitFile: GitCommitFile?
     var commitFileDiff: GitFileDiff?
     var mergeCommitFileDiff: GitMergeFileDiff?
+    let historyBlame = HistoryGitBlame()
     var isLoadingCommitDiff = false
     var commitDiffErrorMessage: String?
     var isLoadingHistory = false
@@ -695,6 +696,7 @@ final class AppState {
         selectedCommitHash = nil
         selectedCommitDetail = nil
         selectedCommitFile = nil
+        historyBlame.reset()
         commitFileDiff = nil
         mergeCommitFileDiff = nil
         commitDiffRequestID = nil
@@ -839,6 +841,7 @@ final class AppState {
         historyCurrentUserErrorMessage = nil
         selectedCommitDetail = nil
         selectedCommitFile = nil
+        historyBlame.reset()
         commitFileDiff = nil
         mergeCommitFileDiff = nil
         taskCatalog = TaskCatalog(global: [], workspace: [], repository: [])
@@ -998,6 +1001,7 @@ final class AppState {
         selectedCommitHash = nil
         selectedCommitDetail = nil
         selectedCommitFile = nil
+        historyBlame.reset()
         commitFileDiff = nil
         mergeCommitFileDiff = nil
         historyErrorMessage = nil
@@ -4094,6 +4098,7 @@ final class AppState {
                 selectedCommitHash = nil
                 selectedCommitDetail = nil
                 selectedCommitFile = nil
+                historyBlame.reset()
                 commitFileDiff = nil
                 mergeCommitFileDiff = nil
             }
@@ -4158,6 +4163,7 @@ final class AppState {
                     selectedCommitHash = nil
                     selectedCommitDetail = nil
                     selectedCommitFile = nil
+                    historyBlame.reset()
                     commitFileDiff = nil
                     mergeCommitFileDiff = nil
                 }
@@ -4175,6 +4181,7 @@ final class AppState {
         guard let repository = selectedRepository,
               let repositoryURL = repositoryURL(for: repository) else { return }
         selectedCommitHash = hash
+        historyBlame.reset()
         commitDiffRequestID = nil
         isLoadingCommitDiff = false
         commitDiffErrorMessage = nil
@@ -4233,9 +4240,11 @@ final class AppState {
         }
     }
 
-    func selectCommitFile(_ file: GitCommitFile) {
+    func selectCommitFile(_ file: GitCommitFile, annotate: Bool = false) {
         guard selectedCommitDetail?.files.contains(file) == true else { return }
         selectedCommitFile = file
+        commitDiffRequestID = nil
+        historyBlame.reset()
         if let repositoryID = selectedRepositoryID,
            let commitHash = selectedCommitHash {
             rememberedCommitFileSelections[repositoryID] = HistoryCommitFileSelection(
@@ -4246,7 +4255,38 @@ final class AppState {
         }
         commitDiffErrorMessage = nil
         isLoadingCommitDiff = true
-        Task { await loadSelectedCommitDiff() }
+        let repositoryID = selectedRepositoryID
+        let hash = selectedCommitHash
+        Task {
+            guard selectedRepositoryID == repositoryID,
+                  selectedCommitHash == hash,
+                  selectedCommitFile == file else { return }
+            await loadSelectedCommitDiff(annotate: annotate)
+        }
+    }
+
+    func annotateHistoryCommitFile(_ file: GitCommitFile) {
+        guard !isLoadingCommit, !isLoadingCommitDiff else { return }
+        if selectedCommitFile == file, isHistoryBlameCurrent {
+            historyBlame.toggleAll(using: gitRepositoryReader)
+        } else {
+            selectCommitFile(file, annotate: true)
+        }
+    }
+
+    var isHistoryBlameCurrent: Bool {
+        guard let repository = selectedRepository,
+              let context = historyBlame.context else { return false }
+        return context.repositoryURL == repositoryURL(for: repository)
+            && context.commitHash == selectedCommitHash
+            && context.path == selectedCommitFile?.path
+            && !isLoadingCommit && !isLoadingCommitDiff
+            && commitDiffErrorMessage == nil
+    }
+
+    func toggleHistoryBlame(_ side: GitHistoryBlameSide) {
+        guard isHistoryBlameCurrent else { return }
+        historyBlame.toggle(side, using: gitRepositoryReader)
     }
 
     private func preferredHistoryFile(in detail: GitCommitDetail) -> GitCommitFile? {
@@ -4257,7 +4297,7 @@ final class AppState {
         } ?? (detail.files.count == 1 ? detail.files.first : nil)
     }
 
-    func loadSelectedCommitDiff() async {
+    func loadSelectedCommitDiff(annotate: Bool = false) async {
         guard let repository = selectedRepository,
               let repositoryURL = repositoryURL(for: repository),
               let hash = selectedCommitHash,
@@ -4266,6 +4306,7 @@ final class AppState {
               let file = selectedCommitFile else {
             commitFileDiff = nil
             mergeCommitFileDiff = nil
+            historyBlame.reset()
             return
         }
         let requestID = UUID()
@@ -4284,6 +4325,12 @@ final class AppState {
                 guard commitDiffRequestID == requestID else { return }
                 mergeCommitFileDiff = diff
                 commitFileDiff = nil
+                historyBlame.configure(HistoryGitBlameContext(
+                    repositoryURL: repositoryURL,
+                    detail: detail,
+                    diff: diff.target,
+                    source: diff.source
+                ))
             } else if detail.parentHashes.count > 2 {
                 throw GitRepositoryError.unsupportedMergeParentCount(detail.parentHashes.count)
             } else {
@@ -4295,6 +4342,11 @@ final class AppState {
                 guard commitDiffRequestID == requestID else { return }
                 commitFileDiff = diff
                 mergeCommitFileDiff = nil
+                historyBlame.configure(HistoryGitBlameContext(
+                    repositoryURL: repositoryURL,
+                    detail: detail,
+                    diff: diff
+                ))
             }
         } catch {
             guard commitDiffRequestID == requestID else { return }
@@ -4303,6 +4355,9 @@ final class AppState {
         guard commitDiffRequestID == requestID else { return }
         commitDiffRequestID = nil
         isLoadingCommitDiff = false
+        if annotate, isHistoryBlameCurrent {
+            historyBlame.toggleAll(using: gitRepositoryReader)
+        }
     }
 
     func jumpToSource(
@@ -4366,6 +4421,7 @@ final class AppState {
         selectedCommitHash = nil
         selectedCommitDetail = nil
         selectedCommitFile = nil
+        historyBlame.reset()
         commitFileDiff = nil
         mergeCommitFileDiff = nil
         if let repositoryID = selectedRepositoryID {

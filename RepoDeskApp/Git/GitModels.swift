@@ -246,6 +246,12 @@ struct GitMergeFileDiff: Equatable, Sendable {
     var isBinary: Bool { target.isBinary || source.isBinary }
 }
 
+enum GitHistoryBlameSide: String, CaseIterable, Hashable, Sendable {
+    case target
+    case result
+    case source
+}
+
 enum GitBlameSide: Hashable, Sendable {
     case old
     case new

@@ -24,10 +24,41 @@ struct GitMergeDiffRow: Equatable, Identifiable, Sendable {
     var isChanged: Bool {
         differsFromTarget || differsFromSource || result == nil
     }
+
+    var isUnchangedAcrossAllVersions: Bool {
+        guard !isChanged, let target, let result, let source else { return false }
+        return target.text == result.text && source.text == result.text
+    }
+}
+
+struct GitMergeDiffGap: Equatable, Identifiable, Sendable {
+    let rowRange: Range<Int>
+    var id: String { "gap:\(rowRange.lowerBound):\(rowRange.upperBound)" }
+    var count: Int { rowRange.count }
+    var title: String { "已隐藏 \(count) 行 · 点击展开" }
+}
+
+enum GitMergeDiffDisplayRow: Equatable, Identifiable, Sendable {
+    case line(GitMergeDiffRow)
+    case gap(GitMergeDiffGap)
+
+    var id: String {
+        switch self {
+        case .line(let row): "line:\(row.id)"
+        case .gap(let gap): gap.id
+        }
+    }
+
+    var line: GitMergeDiffRow? {
+        guard case .line(let row) = self else { return nil }
+        return row
+    }
 }
 
 struct GitMergeDiffRenderModel: Equatable, Sendable {
     let rows: [GitMergeDiffRow]
+    let gaps: [GitMergeDiffGap]
+    var gapIDs: Set<String> { Set(gaps.map(\.id)) }
 
     init(diff: GitMergeFileDiff) {
         let target = PairwiseMergeAlignment(diff: diff.target)
@@ -73,17 +104,44 @@ struct GitMergeDiffRenderModel: Equatable, Sendable {
         }
         appendDeletedRows(before: diff.resultLines.count + 1)
         self.rows = rows
+        gaps = Self.makeGaps(rows: rows)
+    }
+
+    func displayRows(expandedGapIDs: Set<String> = []) -> [GitMergeDiffDisplayRow] {
+        var displayed: [GitMergeDiffDisplayRow] = []
+        var cursor = 0
+        for gap in gaps where !expandedGapIDs.contains(gap.id) {
+            displayed.append(contentsOf: rows[cursor..<gap.rowRange.lowerBound].map(GitMergeDiffDisplayRow.line))
+            displayed.append(.gap(gap))
+            cursor = gap.rowRange.upperBound
+        }
+        displayed.append(contentsOf: rows[cursor...].map(GitMergeDiffDisplayRow.line))
+        return displayed
+    }
+
+    private static func makeGaps(rows: [GitMergeDiffRow]) -> [GitMergeDiffGap] {
+        let contextCount = 3
+        var gaps: [GitMergeDiffGap] = []
+        var index = 0
+        while index < rows.count {
+            guard rows[index].isUnchangedAcrossAllVersions else {
+                index += 1
+                continue
+            }
+            let start = index
+            while index < rows.count, rows[index].isUnchangedAcrossAllVersions { index += 1 }
+            let hiddenStart = start == 0 ? start : min(index, start + contextCount)
+            let hiddenEnd = index == rows.count ? index : max(start, index - contextCount)
+            if hiddenStart < hiddenEnd {
+                gaps.append(GitMergeDiffGap(rowRange: hiddenStart..<hiddenEnd))
+            }
+        }
+        return gaps
     }
 }
 
-private enum GitMergeDiffPane: String, CaseIterable, Hashable {
-    case target
-    case result
-    case source
-}
-
 private struct GitMergeContentSearchMatch {
-    let pane: GitMergeDiffPane
+    let pane: GitHistoryBlameSide
     let match: ContentSearchMatch
 }
 
@@ -93,12 +151,17 @@ struct GitMergeDiffView: View {
     let ignoresWhitespace: Bool
     let toggleIgnoreWhitespace: () -> Void
     let jumpToSource: (Int?) -> Void
+    let blame: [GitHistoryBlameSide: [Int: GitBlameLine]]
+    let toggleBlame: (GitHistoryBlameSide) -> (() -> Void)?
     let fontSize: CGFloat
 
     private let renderModel: GitMergeDiffRenderModel
-    private let targetSelectableText: GitDiffSelectableTextModel
-    private let resultSelectableText: GitDiffSelectableTextModel
-    private let sourceSelectableText: GitDiffSelectableTextModel
+    private let controlledExpandedGapIDs: Binding<Set<String>>?
+    @State private var expandedGapIDs: Set<String>
+    @State private var displayRows: [GitMergeDiffDisplayRow]
+    @State private var selectableTextModels: [GitHistoryBlameSide: GitDiffSelectableTextModel]
+    @State private var searchExpandedGapIDsSnapshot: Set<String>?
+    @State private var viewportAnchorRequestID: UUID?
     @State private var selectedChangeIndex = 0
     @State private var scrollRequest: GitDiffScrollRequest?
     @State private var verticalViewport = GitDiffVerticalViewport.zero
@@ -114,34 +177,29 @@ struct GitMergeDiffView: View {
         ignoresWhitespace: Bool,
         toggleIgnoreWhitespace: @escaping () -> Void,
         jumpToSource: @escaping (Int?) -> Void,
-        fontSize: CGFloat = NSFont.systemFontSize
+        blame: [GitHistoryBlameSide: [Int: GitBlameLine]] = [:],
+        toggleBlame: @escaping (GitHistoryBlameSide) -> (() -> Void)? = { _ in nil },
+        fontSize: CGFloat = NSFont.systemFontSize,
+        expandedGapIDs: Binding<Set<String>>? = nil
     ) {
         self.diff = diff
         self.ignoresWhitespace = ignoresWhitespace
         self.toggleIgnoreWhitespace = toggleIgnoreWhitespace
         self.jumpToSource = jumpToSource
+        self.blame = blame
+        self.toggleBlame = toggleBlame
         self.fontSize = fontSize
         rowHeight = max(22, ceil(fontSize + 8))
         let renderModel = GitMergeDiffRenderModel(diff: diff)
         self.renderModel = renderModel
-        targetSelectableText = Self.makeSelectableText(
-            rows: renderModel.rows,
-            pane: .target,
-            rowHeight: rowHeight,
-            fontSize: fontSize
-        )
-        resultSelectableText = Self.makeSelectableText(
-            rows: renderModel.rows,
-            pane: .result,
-            rowHeight: rowHeight,
-            fontSize: fontSize
-        )
-        sourceSelectableText = Self.makeSelectableText(
-            rows: renderModel.rows,
-            pane: .source,
-            rowHeight: rowHeight,
-            fontSize: fontSize
-        )
+        controlledExpandedGapIDs = expandedGapIDs
+        let resolvedGapIDs = (expandedGapIDs?.wrappedValue ?? []).intersection(renderModel.gapIDs)
+        _expandedGapIDs = State(initialValue: resolvedGapIDs)
+        let displayRows = renderModel.displayRows(expandedGapIDs: resolvedGapIDs)
+        _displayRows = State(initialValue: displayRows)
+        _selectableTextModels = State(initialValue: Self.makeSelectableTextModels(
+            rows: displayRows, rowHeight: rowHeight, fontSize: fontSize
+        ))
     }
 
     var body: some View {
@@ -152,7 +210,7 @@ struct GitMergeDiffView: View {
                 ContentFindBar(
                     state: $contentFindState,
                     matchCount: contentSearchMatches.count,
-                    dismiss: { contentFindState.dismiss() }
+                    dismiss: dismissContentFind
                 )
             }
             Divider()
@@ -175,7 +233,7 @@ struct GitMergeDiffView: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .background(ContentFindCommandListener(
-            requestFind: { contentFindState.present() },
+            requestFind: presentContentFind,
             navigateMatch: navigateContentFind
         ))
         .onChange(of: diff) { _, _ in
@@ -186,6 +244,26 @@ struct GitMergeDiffView: View {
             horizontalScrollSynchronization.reset()
             contentFindState.dismiss()
             contentFindState.resetSelection()
+            searchExpandedGapIDsSnapshot = nil
+            viewportAnchorRequestID = nil
+            setExpandedGapIDs([])
+            refreshDisplayRows()
+        }
+        .onChange(of: currentExpandedGapIDs) { _, _ in
+            viewportAnchorRequestID = UUID()
+            refreshDisplayRows()
+        }
+        .onChange(of: fontSize) { _, _ in
+            refreshDisplayRows()
+        }
+        .onChange(of: contentFindState.query) { previous, next in
+            if previous.isEmpty, !next.isEmpty {
+                searchExpandedGapIDsSnapshot = currentExpandedGapIDs
+                setExpandedGapIDs(renderModel.gapIDs)
+            } else if !previous.isEmpty, next.isEmpty, let snapshot = searchExpandedGapIDsSnapshot {
+                setExpandedGapIDs(snapshot)
+                searchExpandedGapIDsSnapshot = nil
+            }
         }
     }
 
@@ -213,6 +291,13 @@ struct GitMergeDiffView: View {
             .labelStyle(.iconOnly)
             .disabled(nextChangeIndex == nil)
             .help("下一个改动片段")
+            Button(gapExpansionAction.title, systemImage: gapExpansionAction.systemImage) {
+                setExpandedGapIDs(gapExpansionAction == .expandAll ? renderModel.gapIDs : [])
+            }
+            .labelStyle(.iconOnly)
+            .disabled(renderModel.gaps.isEmpty || (contentFindState.isPresented && !contentFindState.query.isEmpty))
+            .help(gapExpansionAction.title)
+            .accessibilityIdentifier("RepoDesk.MergeDiff.ToggleAllGaps")
             Button(
                 "忽略空白",
                 systemImage: ignoresWhitespace ? "textformat.alt" : "textformat"
@@ -244,6 +329,7 @@ struct GitMergeDiffView: View {
                     ?? navigationTarget(at: selectedChangeIndex),
                 viewport: $verticalViewport,
                 navigationTargetCenters: navigationTargets.map { $0.offset + $0.height / 2 },
+                viewportAnchorRequestID: viewportAnchorRequestID,
                 manualNavigationCursor: $manualNavigationCursor
             ) {
                 HSplitView {
@@ -256,9 +342,10 @@ struct GitMergeDiffView: View {
         }
     }
 
-    private func mergePane(_ pane: GitMergeDiffPane, height: CGFloat) -> some View {
+    private func mergePane(_ pane: GitHistoryBlameSide, height: CGFloat) -> some View {
         GeometryReader { geometry in
-            let viewportWidth = geometry.size.width
+            let blameWidth: CGFloat = blame[pane] == nil ? 0 : 226
+            let viewportWidth = max(0, geometry.size.width - blameWidth)
             let contentWidth = max(
                 viewportWidth,
                 max(requiredWidth(for: pane), GitDiffLayoutMetrics.minimumSidePaneWidth)
@@ -270,49 +357,98 @@ struct GitMergeDiffView: View {
             )
             VStack(spacing: 0) {
                 paneHeader(pane)
-                GitDiffHorizontalScrollView(
-                    identifier: "RepoDesk.MergeDiffHorizontalScroll.\(pane.rawValue)",
-                    contentWidth: contentWidth,
-                    contentHeight: paneContentHeight,
-                    synchronization: horizontalScrollSynchronization
-                ) {
-                    ZStack(alignment: .topLeading) {
-                        mergeCodeColumn(
-                            pane,
-                            width: contentWidth,
-                            height: paneContentHeight
-                        )
-                        GitDiffSelectableTextView(
-                            model: selectableText(for: pane),
-                            accessibilityIdentifier: "RepoDesk.MergeDiff.\(pane.rawValue).SelectableText",
-                            onSelectLine: selectResultLine,
-                            contentSearch: contentSearchPresentation(for: pane)
-                        )
+                HStack(alignment: .top, spacing: 0) {
+                    if blame[pane] != nil {
+                        blameColumn(pane, height: paneContentHeight)
+                            .frame(width: blameWidth, height: paneContentHeight)
+                            .contextMenu { blameContextMenu(pane) }
+                    }
+                    GitDiffHorizontalScrollView(
+                        identifier: "RepoDesk.MergeDiffHorizontalScroll.\(pane.rawValue)",
+                        contentWidth: contentWidth,
+                        contentHeight: paneContentHeight,
+                        synchronization: horizontalScrollSynchronization
+                    ) {
+                        ZStack(alignment: .topLeading) {
+                            mergeCodeColumn(
+                                pane,
+                                width: contentWidth,
+                                height: paneContentHeight
+                            )
+                            .contextMenu { blameContextMenu(pane) }
+                            GitDiffSelectableTextView(
+                                model: selectableText(for: pane),
+                                accessibilityIdentifier: "RepoDesk.MergeDiff.\(pane.rawValue).SelectableText",
+                                contextAction: toggleBlame(pane).map { _ in
+                                    GitDiffSelectableTextContextAction(
+                                        title: "Annotate with Git Blame",
+                                        isOn: blame[pane] != nil
+                                    )
+                                },
+                                onSelectLine: selectResultLine,
+                                onActivateGap: expandGap,
+                                performContextAction: toggleBlame(pane),
+                                contentSearch: contentSearchPresentation(for: pane)
+                            )
+                            .frame(
+                                width: max(1, contentWidth - 56),
+                                height: paneContentHeight
+                            )
+                            .offset(x: 56)
+                        }
                         .frame(
-                            width: max(1, contentWidth - 56),
-                            height: paneContentHeight
+                            width: contentWidth,
+                            height: paneContentHeight,
+                            alignment: .topLeading
                         )
-                        .offset(x: 56)
                     }
                     .frame(
-                        width: contentWidth,
-                        height: paneContentHeight,
+                        width: viewportWidth,
+                        height: paneViewportHeight,
                         alignment: .topLeading
                     )
                 }
-                .frame(
-                    width: viewportWidth,
-                    height: paneViewportHeight,
-                    alignment: .topLeading
-                )
             }
-            .frame(width: viewportWidth, height: height, alignment: .topLeading)
+            .frame(width: geometry.size.width, height: height, alignment: .topLeading)
         }
         .frame(minWidth: GitDiffLayoutMetrics.minimumSidePaneWidth)
         .frame(height: height)
     }
 
-    private func paneHeader(_ pane: GitMergeDiffPane) -> some View {
+    private func blameColumn(_ pane: GitHistoryBlameSide, height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Color.clear.frame(height: visibleRows.leadingHeight)
+            ForEach(visibleRows.rows) { displayed in
+                switch displayed {
+                case .line(let row):
+                    GitBlameAnnotationCell(
+                        blame: line(in: row, pane: pane).flatMap { blame[pane]?[$0.number] },
+                        height: rowHeight
+                    )
+                case .gap(let gap):
+                    Color.clear.frame(height: rowHeight)
+                        .contentShape(.rect)
+                        .onTapGesture { expandGap(gap.id) }
+                }
+            }
+            Color.clear.frame(height: visibleRows.trailingHeight)
+        }
+        .frame(height: height, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.85))
+        .accessibilityIdentifier("RepoDesk.MergeDiff.\(pane.rawValue).Blame")
+    }
+
+    @ViewBuilder
+    private func blameContextMenu(_ pane: GitHistoryBlameSide) -> some View {
+        if let toggle = toggleBlame(pane) {
+            Toggle("Annotate with Git Blame", isOn: Binding(
+                get: { blame[pane] != nil },
+                set: { _ in toggle() }
+            ))
+        }
+    }
+
+    private func paneHeader(_ pane: GitHistoryBlameSide) -> some View {
         HStack(spacing: 6) {
             Image(systemName: paneIcon(pane))
                 .foregroundStyle(paneColor(pane))
@@ -326,26 +462,51 @@ struct GitMergeDiffView: View {
         .padding(.horizontal, 8)
         .frame(height: headerHeight)
         .background(Color(nsColor: .controlBackgroundColor))
+        .contextMenu { blameContextMenu(pane) }
     }
 
     private func mergeCodeColumn(
-        _ pane: GitMergeDiffPane,
+        _ pane: GitHistoryBlameSide,
         width: CGFloat,
         height: CGFloat
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Color.clear.frame(height: visibleRows.leadingHeight)
-            ForEach(visibleRows.rows) { row in
-                mergeCell(row, pane: pane, width: width)
+            ForEach(visibleRows.rows) { displayed in
+                switch displayed {
+                case .line(let row): mergeCell(row, pane: pane, width: width)
+                case .gap(let gap): gapRow(gap, pane: pane, width: width)
+                }
             }
             Color.clear.frame(height: visibleRows.trailingHeight)
         }
         .frame(width: width, height: height, alignment: .topLeading)
     }
 
+    private func gapRow(_ gap: GitMergeDiffGap, pane: GitHistoryBlameSide, width: CGFloat) -> some View {
+        Button { expandGap(gap.id) } label: {
+            HStack(spacing: 0) {
+                Image(systemName: "ellipsis")
+                    .frame(width: 56)
+                Text(gap.title)
+                    .lineLimit(1)
+                    .padding(.horizontal, 8)
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(width: width, height: rowHeight, alignment: .leading)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .background(Color.accentColor.opacity(0.06))
+        .help("已隐藏 \(gap.count) 行未改动内容，点击后在三栏中同步展开")
+        .accessibilityIdentifier("RepoDesk.MergeDiff.\(pane.rawValue).Gap.\(gap.id)")
+    }
+
     private func mergeCell(
         _ row: GitMergeDiffRow,
-        pane: GitMergeDiffPane,
+        pane: GitHistoryBlameSide,
         width: CGFloat
     ) -> some View {
         let line = line(in: row, pane: pane)
@@ -381,29 +542,25 @@ struct GitMergeDiffView: View {
     }
 
     private var rowsContentHeight: CGFloat {
-        CGFloat(renderModel.rows.count) * rowHeight
+        CGFloat(displayRows.count) * rowHeight
     }
 
     private func selectableText(
-        for pane: GitMergeDiffPane
+        for pane: GitHistoryBlameSide
     ) -> GitDiffSelectableTextModel {
-        switch pane {
-        case .target: targetSelectableText
-        case .result: resultSelectableText
-        case .source: sourceSelectableText
-        }
+        selectableTextModels[pane] ?? GitDiffSelectableTextModel(rows: [])
     }
 
     private var contentSearchMatches: [GitMergeContentSearchMatch] {
-        let matchesByPane = Dictionary(uniqueKeysWithValues: GitMergeDiffPane.allCases.map { pane in
+        let matchesByPane = Dictionary(uniqueKeysWithValues: GitHistoryBlameSide.allCases.map { pane in
             let matches = selectableText(for: pane).searchMatches(
                 query: contentFindState.query,
                 options: contentFindState.options
             )
             return (pane, Dictionary(grouping: matches, by: \.lineIndex))
         })
-        return renderModel.rows.indices.flatMap { lineIndex in
-            GitMergeDiffPane.allCases.flatMap { pane in
+        return displayRows.indices.flatMap { lineIndex in
+            GitHistoryBlameSide.allCases.flatMap { pane in
                 (matchesByPane[pane]?[lineIndex] ?? []).map {
                     GitMergeContentSearchMatch(pane: pane, match: $0)
                 }
@@ -412,7 +569,7 @@ struct GitMergeDiffView: View {
     }
 
     private func contentSearchPresentation(
-        for pane: GitMergeDiffPane
+        for pane: GitHistoryBlameSide
     ) -> ContentSearchPresentation? {
         guard contentFindState.isPresented else { return nil }
         let matches = contentSearchMatches
@@ -429,6 +586,7 @@ struct GitMergeDiffView: View {
     }
 
     private var activeContentSearchTarget: GitDiffVerticalNavigationTarget? {
+        guard contentFindState.isPresented else { return nil }
         let matches = contentSearchMatches
         guard let index = contentFindState.activeMatchIndex(matchCount: matches.count) else {
             return nil
@@ -442,19 +600,35 @@ struct GitMergeDiffView: View {
 
     private func navigateContentFind(by offset: Int) {
         if !contentFindState.isPresented {
-            contentFindState.present()
+            presentContentFind()
         }
         contentFindState.navigate(by: offset, matchCount: contentSearchMatches.count)
     }
 
+    private static func makeSelectableTextModels(
+        rows: [GitMergeDiffDisplayRow],
+        rowHeight: CGFloat,
+        fontSize: CGFloat
+    ) -> [GitHistoryBlameSide: GitDiffSelectableTextModel] {
+        Dictionary(uniqueKeysWithValues: GitHistoryBlameSide.allCases.map { pane in
+            (pane, makeSelectableText(rows: rows, pane: pane, rowHeight: rowHeight, fontSize: fontSize))
+        })
+    }
+
     private static func makeSelectableText(
-        rows: [GitMergeDiffRow],
-        pane: GitMergeDiffPane,
+        rows: [GitMergeDiffDisplayRow],
+        pane: GitHistoryBlameSide,
         rowHeight: CGFloat,
         fontSize: CGFloat
     ) -> GitDiffSelectableTextModel {
         GitDiffSelectableTextModel(
-            rows: rows.map { row in
+            rows: rows.map { displayed in
+                if case .gap(let gap) = displayed {
+                    return GitDiffSelectableTextRow(text: "", height: rowHeight, gapID: gap.id)
+                }
+                guard let row = displayed.line else {
+                    return GitDiffSelectableTextRow(text: "", height: rowHeight)
+                }
                 let line: GitMergeDiffLine? = switch pane {
                 case .target: row.target
                 case .result: row.result
@@ -471,6 +645,47 @@ struct GitMergeDiffView: View {
         )
     }
 
+    private var currentExpandedGapIDs: Set<String> {
+        (controlledExpandedGapIDs?.wrappedValue ?? expandedGapIDs).intersection(renderModel.gapIDs)
+    }
+
+    private var gapExpansionAction: GitDiffGapExpansionAction {
+        GitDiffGapExpansionAction.resolve(gapIDs: renderModel.gapIDs, expandedGapIDs: currentExpandedGapIDs)
+    }
+
+    private func expandGap(_ id: String) {
+        setExpandedGapIDs(currentExpandedGapIDs.union([id]))
+    }
+
+    private func setExpandedGapIDs(_ ids: Set<String>) {
+        viewportAnchorRequestID = UUID()
+        if let controlledExpandedGapIDs {
+            controlledExpandedGapIDs.wrappedValue = ids
+        } else {
+            expandedGapIDs = ids
+        }
+        refreshDisplayRows()
+    }
+
+    private func refreshDisplayRows() {
+        displayRows = renderModel.displayRows(expandedGapIDs: currentExpandedGapIDs)
+        selectableTextModels = Self.makeSelectableTextModels(rows: displayRows, rowHeight: rowHeight, fontSize: fontSize)
+    }
+
+    private func presentContentFind() {
+        contentFindState.present()
+        if !contentFindState.query.isEmpty, searchExpandedGapIDsSnapshot == nil {
+            searchExpandedGapIDsSnapshot = currentExpandedGapIDs
+            setExpandedGapIDs(renderModel.gapIDs)
+        }
+    }
+
+    private func dismissContentFind() {
+        if let snapshot = searchExpandedGapIDsSnapshot { setExpandedGapIDs(snapshot) }
+        searchExpandedGapIDsSnapshot = nil
+        contentFindState.dismiss()
+    }
+
     private func selectResultLine(_ resultNumber: Int) {
         if let changeIndex = changedRows.firstIndex(where: {
             $0.result?.number == resultNumber
@@ -485,15 +700,15 @@ struct GitMergeDiffView: View {
         let rowOffset = max(0, verticalViewport.offset - headerHeight)
         let lowerBound = max(0, rowOffset - overscan)
         let upperBound = rowOffset + viewportHeight + overscan
-        let startIndex = min(renderModel.rows.count, Int(lowerBound / rowHeight))
+        let startIndex = min(displayRows.count, Int(lowerBound / rowHeight))
         let endIndex = min(
-            renderModel.rows.count,
+            displayRows.count,
             max(startIndex, Int(ceil(upperBound / rowHeight)))
         )
         return MergeVisibleRows(
             leadingHeight: CGFloat(startIndex) * rowHeight,
-            rows: renderModel.rows[startIndex..<endIndex],
-            trailingHeight: CGFloat(renderModel.rows.count - endIndex) * rowHeight
+            rows: displayRows[startIndex..<endIndex],
+            trailingHeight: CGFloat(displayRows.count - endIndex) * rowHeight
         )
     }
 
@@ -502,9 +717,10 @@ struct GitMergeDiffView: View {
     }
 
     private var navigationTargets: [GitDiffVerticalNavigationTarget] {
-        changedRows.map { row in
-            GitDiffVerticalNavigationTarget(
-                offset: headerHeight + CGFloat(row.id) * rowHeight,
+        displayRows.enumerated().compactMap { index, displayed in
+            guard displayed.line?.isChanged == true else { return nil }
+            return GitDiffVerticalNavigationTarget(
+                offset: headerHeight + CGFloat(index) * rowHeight,
                 height: rowHeight
             )
         }
@@ -548,7 +764,7 @@ struct GitMergeDiffView: View {
             ?? renderModel.rows[..<row.id].lazy.compactMap(\.result?.number).last
     }
 
-    private func requiredWidth(for pane: GitMergeDiffPane) -> CGFloat {
+    private func requiredWidth(for pane: GitHistoryBlameSide) -> CGFloat {
         switch pane {
         case .target: GitDiffLayoutMetrics.requiredSidePaneWidth(lines: diff.target.oldLines)
         case .result: GitDiffLayoutMetrics.requiredSidePaneWidth(lines: diff.resultLines)
@@ -556,7 +772,7 @@ struct GitMergeDiffView: View {
         }
     }
 
-    private func line(in row: GitMergeDiffRow, pane: GitMergeDiffPane) -> GitMergeDiffLine? {
+    private func line(in row: GitMergeDiffRow, pane: GitHistoryBlameSide) -> GitMergeDiffLine? {
         switch pane {
         case .target: row.target
         case .result: row.result
@@ -564,7 +780,7 @@ struct GitMergeDiffView: View {
         }
     }
 
-    private func paneTitle(_ pane: GitMergeDiffPane) -> String {
+    private func paneTitle(_ pane: GitHistoryBlameSide) -> String {
         switch pane {
         case .target: "目标父提交"
         case .result: "合并结果"
@@ -572,7 +788,7 @@ struct GitMergeDiffView: View {
         }
     }
 
-    private func paneHash(_ pane: GitMergeDiffPane) -> String {
+    private func paneHash(_ pane: GitHistoryBlameSide) -> String {
         switch pane {
         case .target: diff.target.oldLabel
         case .result: diff.target.newLabel
@@ -580,7 +796,7 @@ struct GitMergeDiffView: View {
         }
     }
 
-    private func paneIcon(_ pane: GitMergeDiffPane) -> String {
+    private func paneIcon(_ pane: GitHistoryBlameSide) -> String {
         switch pane {
         case .target: "arrow.triangle.branch"
         case .result: "checkmark.circle"
@@ -588,7 +804,7 @@ struct GitMergeDiffView: View {
         }
     }
 
-    private func paneColor(_ pane: GitMergeDiffPane) -> Color {
+    private func paneColor(_ pane: GitHistoryBlameSide) -> Color {
         switch pane {
         case .target: .blue
         case .result: .green
@@ -596,7 +812,7 @@ struct GitMergeDiffView: View {
         }
     }
 
-    private func lineForeground(_ line: GitMergeDiffLine?, pane: GitMergeDiffPane) -> Color {
+    private func lineForeground(_ line: GitMergeDiffLine?, pane: GitHistoryBlameSide) -> Color {
         guard let line else { return .secondary }
         switch (pane, line.kind) {
         case (.result, .changed): return Color.green
@@ -608,7 +824,7 @@ struct GitMergeDiffView: View {
     private func rowBackground(
         _ row: GitMergeDiffRow,
         line: GitMergeDiffLine?,
-        pane: GitMergeDiffPane
+        pane: GitHistoryBlameSide
     ) -> Color {
         guard line != nil else {
             return row.isChanged ? Color(nsColor: .controlBackgroundColor).opacity(0.55) : .clear
@@ -628,7 +844,7 @@ struct GitMergeDiffView: View {
 
 private struct MergeVisibleRows {
     let leadingHeight: CGFloat
-    let rows: ArraySlice<GitMergeDiffRow>
+    let rows: ArraySlice<GitMergeDiffDisplayRow>
     let trailingHeight: CGFloat
 }
 
