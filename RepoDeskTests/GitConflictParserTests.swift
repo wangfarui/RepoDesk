@@ -3,6 +3,26 @@ import Testing
 @testable import RepoDesk
 
 struct GitConflictParserTests {
+    @Test func ancestorIsScopedToEachConflictInALongFile() {
+        let tail = String(repeating: "dependency\n", count: 500)
+        let base = "before\nbase-one\nmiddle\nbase-two\nafter\n" + tail
+        let text = "before\n<<<<<<< HEAD\nours-one\n=======\ntheirs-one\n>>>>>>> master\nmiddle\n<<<<<<< HEAD\nours-two\n=======\ntheirs-two\n>>>>>>> master\nafter\n" + tail
+        let document = GitConflictResolutionDocument(text: text, base: base)
+
+        #expect(document.blocks.map(\.base) == ["base-one\n", "base-two\n"])
+        #expect(document.renderedText() == text)
+    }
+
+    @Test func diff3AncestorIsPreservedWithoutLeakingIntoEitherSide() {
+        let text = "<<<<<<< HEAD\nours\n||||||| ancestor\nbase\n=======\ntheirs\n>>>>>>> master\n"
+        let document = GitConflictResolutionDocument(text: text, base: "whole file\n")
+
+        #expect(document.blocks.first?.ours == "ours\n")
+        #expect(document.blocks.first?.base == "base\n")
+        #expect(document.blocks.first?.theirs == "theirs\n")
+        #expect(GitConflictParser.resolving(0, in: text, with: .theirs) == "theirs\n")
+    }
+
     @Test func resolutionDocumentPreservesSegmentsAndStableConflictIDs() {
         let source = """
         before

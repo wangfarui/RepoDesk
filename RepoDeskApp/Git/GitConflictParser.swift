@@ -80,7 +80,7 @@ enum GitConflictParser {
             GitConflictBlock(
                 index: index,
                 ours: substring(text, range: match.range(at: 1)),
-                theirs: substring(text, range: match.range(at: 2))
+                theirs: substring(text, range: match.range(at: 3))
             )
         }
     }
@@ -91,7 +91,7 @@ enum GitConflictParser {
         let match = matches[blockIndex]
         let replacementRange = Range(match.range, in: text)
         guard let replacementRange else { return nil }
-        let selectedRange = side == .ours ? match.range(at: 1) : match.range(at: 2)
+        let selectedRange = side == .ours ? match.range(at: 1) : match.range(at: 3)
         let replacement = substring(text, range: selectedRange)
         return text.replacingCharacters(in: replacementRange, with: replacement)
     }
@@ -103,6 +103,7 @@ enum GitConflictParser {
         }
 
         let source = text as NSString
+        let ancestorSlices = base.map { baseSlices(in: text, matches: matches, base: $0) }
         var cursor = 0
         var segmentID = 0
         var segments: [GitConflictDocumentSegment] = []
@@ -126,9 +127,11 @@ enum GitConflictParser {
                     GitConflictDocumentBlock(
                         id: blockID,
                         ours: substring(text, range: match.range(at: 1)),
-                        theirs: substring(text, range: match.range(at: 2)),
+                        theirs: substring(text, range: match.range(at: 3)),
                         original: substring(text, range: match.range),
-                        base: base ?? ""
+                        base: match.range(at: 2).location != NSNotFound
+                            ? substring(text, range: match.range(at: 2))
+                            : ancestorSlices?[blockID] ?? ""
                     )
                 )
             )
@@ -148,12 +151,74 @@ enum GitConflictParser {
     }
 
     private static func matches(in text: String) -> [NSTextCheckingResult] {
-        let pattern = #"^<<<<<<<[^\n]*\n(.*?)(?:^\|\|\|\|\|\|\|[^\n]*\n.*?)*?^=======\n(.*?)^>>>>>>>[^\n]*(?:\n|$)"#
+        let pattern = #"^<<<<<<<[^\n]*\n(.*?)(?:^\|\|\|\|\|\|\|[^\n]*\n(.*?))?^=======\r?\n(.*?)^>>>>>>>[^\n]*(?:\n|$)"#
         guard let expression = try? NSRegularExpression(
             pattern: pattern,
             options: [.anchorsMatchLines, .dotMatchesLineSeparators]
         ) else { return [] }
         return expression.matches(in: text, range: NSRange(text.startIndex..., in: text))
+    }
+
+    // Two-way markers omit the ancestor. Align the merged Yours text with stage 1
+    // and use the surrounding matching lines to locate each ancestor span.
+    private static func baseSlices(
+        in text: String,
+        matches: [NSTextCheckingResult],
+        base: String
+    ) -> [String] {
+        let source = text as NSString
+        var cursor = 0
+        var oursLines: [String] = []
+        var conflictRanges: [Range<Int>] = []
+        for match in matches {
+            oursLines += lineChunks(source.substring(with: NSRange(
+                location: cursor, length: match.range.location - cursor
+            )))
+            let start = oursLines.count
+            oursLines += lineChunks(substring(text, range: match.range(at: 1)))
+            conflictRanges.append(start..<oursLines.count)
+            cursor = NSMaxRange(match.range)
+        }
+        oursLines += lineChunks(source.substring(from: cursor))
+        let baseLines = lineChunks(base)
+        let difference = baseLines.difference(from: oursLines)
+        var removed: Set<Int> = []
+        var inserted: Set<Int> = []
+        for change in difference {
+            switch change {
+            case .remove(let offset, _, _): removed.insert(offset)
+            case .insert(let offset, _, _): inserted.insert(offset)
+            }
+        }
+        let anchors = Array(zip(
+            oursLines.indices.filter { !removed.contains($0) },
+            baseLines.indices.filter { !inserted.contains($0) }
+        ))
+        let ranges = conflictRanges.map { conflict -> Range<Int> in
+            let start = anchors.last(where: { $0.0 < conflict.lowerBound })
+                .map { $0.1 + 1 } ?? 0
+            let end = anchors.first(where: { $0.0 >= conflict.upperBound })
+                .map { $0.1 } ?? baseLines.count
+            return start..<max(start, end)
+        }
+        return ranges.enumerated().map { index, range in
+            // Without a common anchor, adjacent conflicts cannot be separated
+            // reliably. Leave the ancestor empty instead of duplicating it.
+            guard !ranges.enumerated().contains(where: {
+                $0.offset != index && $0.element.overlaps(range)
+            }) else { return "" }
+            return baseLines[range].joined()
+        }
+    }
+
+    private static func lineChunks(_ text: String) -> [String] {
+        guard !text.isEmpty else { return [] }
+        var lines = text.components(separatedBy: "\n")
+        let trailingNewline = lines.last == ""
+        if trailingNewline { lines.removeLast() }
+        return lines.enumerated().map { index, line in
+            index < lines.count - 1 || trailingNewline ? line + "\n" : line
+        }
     }
 
     private static func substring(_ text: String, range: NSRange) -> String {

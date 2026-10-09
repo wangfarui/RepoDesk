@@ -75,6 +75,7 @@ enum VerifyMergeConflictRendering {
         let theirsLine = "revision = uat-\(longValue)"
         let ours = (prefix + [oursLine] + suffix).joined(separator: "\n") + "\n"
         let theirs = (prefix + [theirsLine] + suffix).joined(separator: "\n") + "\n"
+        let base = (prefix + ["revision = base"] + suffix).joined(separator: "\n") + "\n"
         let result = (
             prefix
                 + [
@@ -91,7 +92,8 @@ enum VerifyMergeConflictRendering {
             ours: ours,
             theirs: theirs,
             result: result,
-            isResolved: false
+            isResolved: false,
+            base: base
         )
     }
 
@@ -159,6 +161,13 @@ enum VerifyMergeConflictRendering {
         window.layoutIfNeeded()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
         hostingView.layoutSubtreeIfNeeded()
+
+        let conflictScrollers = descendants(of: hostingView).compactMap { $0 as? NSScrollView }
+            .filter { $0.identifier?.rawValue.contains(".Conflict.") == true }
+        guard conflictScrollers.count == 3,
+              conflictScrollers.allSatisfy({ ($0.documentView?.frame.height ?? .infinity) < 100 }) else {
+            throw VerificationError(message: "Single-line conflicts expanded to the entire ancestor file height.")
+        }
 
         let scrollViewsByPane = Dictionary(uniqueKeysWithValues: [
             "yours",

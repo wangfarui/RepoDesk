@@ -10,6 +10,7 @@ private struct VerificationError: Error {
 enum VerifyMergeConflictResolution {
     static func main() async throws {
         try verifyStableConflictNavigationModel()
+        try verifyConflictBaseSlices()
         try verifyNavigationScopeModel()
         let repository = RegisteredRepository(
             displayName: "repo",
@@ -125,6 +126,68 @@ enum VerifyMergeConflictResolution {
             ) == [0, 1, 2],
             "All navigation scope omitted resolved conflicts."
         )
+    }
+
+    private static func verifyConflictBaseSlices() throws {
+        let text = "before\n<<<<<<< HEAD\nours-one\n=======\ntheirs-one\n>>>>>>> master\nmiddle\n<<<<<<< HEAD\nours-two\n=======\ntheirs-two\n>>>>>>> master\nafter\n"
+        let base = "before\nbase-one\nmiddle\nbase-two\nafter\n"
+        let document = GitConflictResolutionDocument(text: text, base: base)
+        try require(
+            document.blocks.map(\.base) == ["base-one\n", "base-two\n"],
+            "Conflict result contains the whole base file instead of each conflict's base lines."
+        )
+        let diff3 = "before\n<<<<<<< HEAD\nours\n||||||| ancestor\nbase\n=======\ntheirs\n>>>>>>> master\nafter\n"
+        let diff3Document = GitConflictResolutionDocument(text: diff3, base: "unrelated\n")
+        try require(diff3Document.blocks.first?.ours == "ours\n", "Diff3 base leaked into Yours.")
+        try require(diff3Document.blocks.first?.base == "base\n", "Diff3 ancestor was not used.")
+        try require(diff3Document.blocks.first?.theirs == "theirs\n", "Diff3 Theirs is wrong.")
+        try require(
+            GitConflictParser.resolving(0, in: diff3, with: .ours) == "before\nours\nafter\n",
+            "Resolving diff3 retained ancestor markers."
+        )
+        let crlf = diff3.replacingOccurrences(of: "\n", with: "\r\n")
+        try require(
+            GitConflictResolutionDocument(text: crlf).blocks.first?.base == "base\r\n",
+            "CRLF diff3 was not parsed correctly."
+        )
+        let added = "before\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> master\nafter\n"
+        try require(
+            GitConflictResolutionDocument(text: added, base: "before\nafter\n").blocks.first?.base == "",
+            "Add/add conflict invented ancestor content."
+        )
+        let deleted = "before\n<<<<<<< HEAD\n=======\ntheirs\n>>>>>>> master\nafter\n"
+        try require(
+            GitConflictResolutionDocument(text: deleted, base: "before\nbase\nafter\n").blocks.first?.base == "base\n",
+            "Modify/delete conflict lost its ancestor."
+        )
+        let shifted = "automatic-addition\n" + text
+        try require(
+            GitConflictResolutionDocument(text: shifted, base: base).blocks.map(\.base)
+                == ["base-one\n", "base-two\n"],
+            "Automatic merge changes shifted the ancestor slices."
+        )
+
+        let fixtureURL = URL(fileURLWithPath: "build/merge-searcher-repro")
+        if FileManager.default.fileExists(atPath: fixtureURL.appendingPathComponent("base.xml").path) {
+            let realBase = try String(contentsOf: fixtureURL.appendingPathComponent("base.xml"), encoding: .utf8)
+            let realResult = try String(contentsOf: fixtureURL.appendingPathComponent("result.xml"), encoding: .utf8)
+            var realDocument = GitConflictResolutionDocument(text: realResult, base: realBase)
+            try require(realDocument.blocks.count == 2, "Searcher repro did not contain two conflicts.")
+            try require(
+                realDocument.blocks.map(\.base) == [
+                    "        <revision>6.5.9-SNAPSHOT</revision>\n",
+                    "        <saasbusinesscenter.version>9.6.1-SNAPSHOT</saasbusinesscenter.version>\n"
+                ],
+                "Searcher conflicts did not isolate the actual ancestor versions."
+            )
+            for block in realDocument.blocks { realDocument.resolve(block.id, with: .theirs) }
+            try require(realDocument.isResolved, "Searcher conflicts could not be resolved.")
+            try require(!realDocument.renderedText().contains("<<<<<<<"), "Searcher result retained conflict markers.")
+            try require(
+                realDocument.renderedText().components(separatedBy: "<?xml").count == 2,
+                "Searcher resolution duplicated the POM."
+            )
+        }
     }
 
     private static func conflict(path: String) -> GitConflictFile {

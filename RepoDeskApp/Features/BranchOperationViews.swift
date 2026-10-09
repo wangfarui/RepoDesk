@@ -58,6 +58,7 @@ struct MergeConflictResolverSheet: View {
     @Bindable var appState: AppState
     @State private var selectedPath: String?
     @State private var groupsFilesByDirectory = false
+    @State private var showsResolvedFiles = false
     @State private var editorSelection: MergeConflictEditorSelection?
 
     var body: some View {
@@ -116,6 +117,9 @@ struct MergeConflictResolverSheet: View {
                 Toggle("Group files by directory", isOn: $groupsFilesByDirectory)
                     .toggleStyle(.checkbox)
                     .disabled(appState.conflictFiles.isEmpty && appState.resolvedConflictFiles.isEmpty)
+                Toggle("显示已解决文件", isOn: $showsResolvedFiles)
+                    .toggleStyle(.checkbox)
+                    .accessibilityIdentifier("RepoDesk.MergeConflicts.ShowResolved")
                 Spacer()
                 if appState.isResolvingMergeConflict {
                     ProgressView()
@@ -141,7 +145,7 @@ struct MergeConflictResolverSheet: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .interactiveDismissDisabled(true)
         .onAppear { selectFirstFileIfNeeded() }
-        .onChange(of: appState.conflictFiles.map(\.path)) { _, _ in
+        .onChange(of: visibleFilePaths) { _, _ in
             selectFirstFileIfNeeded()
         }
         .sheet(item: $editorSelection) { selection in
@@ -183,12 +187,15 @@ struct MergeConflictResolverSheet: View {
             .background(Color(nsColor: .controlBackgroundColor))
             Divider()
 
-            if appState.conflictFiles.isEmpty && appState.resolvedConflictFiles.isEmpty {
+            if visibleFilePaths.isEmpty {
                 ContentUnavailableView(
-                    "No conflict files",
+                    appState.resolvedConflictFiles.isEmpty ? "No conflict files" : "所有冲突已解决",
                     systemImage: "checkmark.circle",
-                    description: Text("The merge operation has no files to review.")
+                    description: Text(appState.resolvedConflictFiles.isEmpty
+                        ? "The merge operation has no files to review."
+                        : "勾选「显示已解决文件」可查看已解决的文件。")
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(selection: $selectedPath) {
                     if groupsFilesByDirectory {
@@ -201,7 +208,7 @@ struct MergeConflictResolverSheet: View {
                                 }
                             }
                         }
-                        if !appState.resolvedConflictFiles.isEmpty {
+                        if !sortedResolvedConflictFiles.isEmpty {
                             ForEach(resolvedConflictFileGroups) { group in
                                 Section("Resolved · \(group.directory)") {
                                     ForEach(group.files) { file in
@@ -230,6 +237,7 @@ struct MergeConflictResolverSheet: View {
                 .listStyle(.inset)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay {
             RoundedRectangle(cornerRadius: 4)
                 .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
@@ -278,7 +286,12 @@ struct MergeConflictResolverSheet: View {
     }
 
     private var sortedResolvedConflictFiles: [GitConflictFile] {
-        appState.resolvedConflictFiles.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+        guard showsResolvedFiles else { return [] }
+        return appState.resolvedConflictFiles.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    private var visibleFilePaths: [String] {
+        sortedConflictFiles.map(\.path) + sortedResolvedConflictFiles.map(\.path)
     }
 
     private var conflictFileGroups: [MergeConflictFileGroup] {
@@ -296,12 +309,12 @@ struct MergeConflictResolverSheet: View {
     private var selectedFile: GitConflictFile? {
         guard let selectedPath else { return nil }
         return appState.conflictFiles.first { $0.path == selectedPath }
-            ?? appState.resolvedConflictFiles.first { $0.path == selectedPath }
+            ?? sortedResolvedConflictFiles.first { $0.path == selectedPath }
     }
 
     private var selectedResolvedFile: GitConflictFile? {
         guard let selectedPath else { return nil }
-        return appState.resolvedConflictFiles.first { $0.path == selectedPath }
+        return sortedResolvedConflictFiles.first { $0.path == selectedPath }
     }
 
     private var selectedUnresolvedFile: GitConflictFile? {
@@ -322,7 +335,7 @@ struct MergeConflictResolverSheet: View {
     }
 
     private func selectFirstFileIfNeeded() {
-        guard !appState.conflictFiles.isEmpty || !appState.resolvedConflictFiles.isEmpty else {
+        guard !visibleFilePaths.isEmpty else {
             selectedPath = nil
             return
         }
@@ -1047,7 +1060,7 @@ struct MergeConflictEditorSheet: View {
                     case .yours:
                         return lines(in: block.ours)
                     case .result:
-                        return lines(in: document.resolution(for: block.id) ?? "")
+                        return lines(in: document.resolution(for: block.id) ?? block.base)
                     case .theirs:
                         return lines(in: block.theirs)
                     }
