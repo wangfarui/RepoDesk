@@ -128,6 +128,20 @@ swiftc \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \
+  "${project_dir}/scripts/verify-mybatis-navigation.swift" \
+  -o "${project_dir}/build/verify-mybatis-navigation"
+
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-mybatis-navigation"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
   "${project_dir}/scripts/verify-java-navigation-popup-layout.swift" \
   -o "${project_dir}/build/verify-java-navigation-popup-layout"
 

@@ -140,6 +140,117 @@ struct JavaLanguageTests {
         #expect(targets.first?.name == "queryInventoryByInventoryId")
     }
 
+    @Test func myBatisMapperImplementationPrefersMatchingXMLStatement() throws {
+        let workspaceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-MyBatisNavigation-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+
+        let javaFile = workspaceURL.appendingPathComponent(
+            "src/main/java/example/inventory/InventoryGoodsSecondMapper.java"
+        )
+        let xmlFile = workspaceURL.appendingPathComponent(
+            "src/main/resources/mapper/InventoryGoodsSecondMapper.xml"
+        )
+        try FileManager.default.createDirectory(
+            at: javaFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: xmlFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("""
+        package example.inventory;
+
+        public interface InventoryGoodsSecondMapper {
+            InventoryGoodsDO queryPricePageList(InventoryGoodsPageForPriceParamDTO queryDTO);
+        }
+        """.utf8).write(to: javaFile)
+        try Data("""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <mapper namespace="example.inventory.InventoryGoodsSecondMapper">
+            <resultMap id="ignored" type="example.inventory.InventoryGoodsDO" />
+            <select id="queryPricePageList">
+                select * from inventory_goods
+            </select>
+            <update id="otherMethod">update inventory_goods set updated_at = now()</update>
+        </mapper>
+        """.utf8).write(to: xmlFile)
+
+        let repositories = [
+            RegisteredRepository(displayName: "inventory", relativePath: ".", isPinned: false)
+        ]
+        let text = try String(contentsOf: javaFile, encoding: .utf8)
+        let offset = (text as NSString).range(of: "queryPricePageList").location
+        let lineIndex = SourceLineIndex(text: text)
+        let line = lineIndex.lineNumber(containingUTF16Offset: offset) - 1
+        let position = JavaSourcePosition(
+            line: line,
+            character: offset - lineIndex.lineStartOffsets[line]
+        )
+
+        let targets = MyBatisMapperNavigationResolver.targets(
+            for: JavaNavigationRequest(
+                action: .implementation,
+                fileURL: javaFile,
+                position: position,
+                documentText: text
+            ),
+            workspaceURL: workspaceURL,
+            repositories: repositories
+        )
+
+        #expect(targets.count == 1)
+        #expect(targets.first?.fileURL == xmlFile.standardizedFileURL)
+        #expect(targets.first?.name == "queryPricePageList")
+        #expect(targets.first?.detail == "MyBatis <select>")
+        #expect(targets.first?.range.start.line == 3)
+        #expect(targets.first?.selectionRange?.start.line == 3)
+    }
+
+    @Test func myBatisMapperImplementationIgnoresNonStatementTagsAndOtherNamespaces() throws {
+        let workspaceURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-MyBatisNavigation-NoMatch-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workspaceURL) }
+
+        let javaFile = workspaceURL.appendingPathComponent("src/main/java/example/Mapper.java")
+        let xmlFile = workspaceURL.appendingPathComponent("src/main/resources/Mapper.xml")
+        try FileManager.default.createDirectory(at: javaFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: xmlFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("""
+        package example;
+        public interface Mapper {
+            String query();
+        }
+        """.utf8).write(to: javaFile)
+        try Data("""
+        <mapper namespace="other.Mapper">
+            <select id="query">select 1</select>
+            <resultMap id="query" type="example.Value" />
+        </mapper>
+        """.utf8).write(to: xmlFile)
+
+        let text = try String(contentsOf: javaFile, encoding: .utf8)
+        let offset = (text as NSString).range(of: "query").location
+        let lineIndex = SourceLineIndex(text: text)
+        let position = JavaSourcePosition(
+            line: lineIndex.lineNumber(containingUTF16Offset: offset) - 1,
+            character: offset - lineIndex.lineStartOffsets[2]
+        )
+        let targets = MyBatisMapperNavigationResolver.targets(
+            for: JavaNavigationRequest(
+                action: .implementation,
+                fileURL: javaFile,
+                position: position,
+                documentText: text
+            ),
+            workspaceURL: workspaceURL,
+            repositories: [RegisteredRepository(displayName: "repo", relativePath: ".", isPinned: false)]
+        )
+
+        #expect(targets.isEmpty)
+    }
+
     @Test func javaIndexSettingsUseRequestedDefaultsAndClampUnsafeValues() {
         #expect(JavaIndexSettings.default.maximumJVMCount == 1)
         #expect(JavaIndexSettings.default.processorCountPerJVM == min(2, ProcessInfo.processInfo.activeProcessorCount))

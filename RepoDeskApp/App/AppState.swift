@@ -2683,15 +2683,33 @@ final class AppState {
         Task { [weak self] in
             guard let self else { return }
             defer { self.finishJavaNavigation(requestID: requestID) }
-            let targets = await javaLanguageProvider.navigationTargets(
-                repositoryID: repositoryID,
-                request: JavaNavigationRequest(
-                    action: action,
-                    fileURL: fileURL.standardizedFileURL,
-                    position: position,
-                    documentText: documentText
-                )
+            let navigationRequest = JavaNavigationRequest(
+                action: action,
+                fileURL: fileURL.standardizedFileURL,
+                position: position,
+                documentText: documentText
             )
+            let myBatisTargets: [JavaNavigationTarget]
+            if action == .implementation {
+                let workspaceURL = self.workspaceURL
+                let repositories = self.repositories
+                myBatisTargets = await Task.detached(priority: .utility) {
+                    MyBatisMapperNavigationResolver.targets(
+                        for: navigationRequest,
+                        workspaceURL: workspaceURL,
+                        repositories: repositories
+                    )
+                }.value
+            } else {
+                myBatisTargets = []
+            }
+            guard javaNavigationRequestID == requestID else { return }
+            let targets = myBatisTargets.isEmpty
+                ? await javaLanguageProvider.navigationTargets(
+                    repositoryID: repositoryID,
+                    request: navigationRequest
+                )
+                : myBatisTargets
             guard javaNavigationRequestID == requestID else { return }
             let fallbackTargets = targets.isEmpty
                 ? await JavaWorkspaceNavigationFallback.targets(
