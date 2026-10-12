@@ -9,6 +9,7 @@ protocol GitRepositoryOperating: Sendable {
     ) async throws -> GitCreatedCommit
     func fetch(repositoryURL: URL) async throws
     func pullCurrentBranch(repositoryURL: URL) async throws
+    func pullBranch(repositoryURL: URL, branchName: String) async throws
     func pushCurrentBranch(repositoryURL: URL) async throws
     func pushCurrentBranchOutcome(repositoryURL: URL) async throws -> GitPushOutcome
     func push(
@@ -46,6 +47,9 @@ extension GitRepositoryOperating {
     }
     func fetch(repositoryURL: URL) async throws {}
     func pullCurrentBranch(repositoryURL: URL) async throws {}
+    func pullBranch(repositoryURL: URL, branchName: String) async throws {
+        throw GitRepositoryOperationError.commandFailed(operation: .pull, message: "不支持指定分支 Pull。")
+    }
     func pushCurrentBranchOutcome(repositoryURL: URL) async throws -> GitPushOutcome {
         try await pushCurrentBranch(repositoryURL: repositoryURL)
         return .pushed
@@ -132,6 +136,8 @@ enum GitRepositoryOperationError: LocalizedError, Equatable, Sendable {
     case invalidRemoteBranch(String)
     case invalidPushTarget(String)
     case missingUpstream(String)
+    case missingPullUpstream(String)
+    case pullCurrentBranchConflict(String)
     case commandFailed(operation: GitRepositoryOperation, message: String)
 
     var errorDescription: String? {
@@ -144,6 +150,10 @@ enum GitRepositoryOperationError: LocalizedError, Equatable, Sendable {
             "'\(name)' 不是有效的远程 Branch 名称。"
         case .missingUpstream(let name):
             "Branch \(name) 没有配置 upstream，无法 Push。"
+        case .missingPullUpstream(let name):
+            "本地分支 \(name) 未配置远程分支，无法 Pull。"
+        case .pullCurrentBranchConflict(let name):
+            "Pull \(name) 需要解决合并冲突。"
         case .commandFailed(let operation, let message):
             "\(operation.displayName)失败：\(message)"
         }
@@ -237,6 +247,110 @@ struct SystemGitRepositoryOperator: GitRepositoryOperating {
             operation: .pull,
             repositoryURL: repositoryURL
         )
+    }
+
+    /// Merge in a detached worktree before atomically advancing a non-current branch.
+    /// The original worktree's HEAD, index and files are never switched or stashed.
+    func pullBranch(repositoryURL: URL, branchName: String) async throws {
+        _ = try await runGit(["check-ref-format", "--branch", branchName], operation: .pull, repositoryURL: repositoryURL)
+        let localRef = "refs/heads/\(branchName)"
+        let oldHash = try await pullGitOutput(["rev-parse", "--verify", localRef], repositoryURL: repositoryURL)
+        let configuration = try await pullGitOutput(
+            ["for-each-ref", "--format=%(upstream)%09%(upstream:remotename)%09%(upstream:remoteref)", localRef],
+            repositoryURL: repositoryURL
+        ).split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+        guard configuration.count == 3,
+              configuration.allSatisfy({ !$0.isEmpty }), configuration[1] != "." else {
+            throw GitRepositoryOperationError.missingPullUpstream(branchName)
+        }
+        let currentRef = try await pullGitOutput(
+            ["symbolic-ref", "--quiet", "HEAD"], repositoryURL: repositoryURL, allowedStatuses: [0, 1]
+        )
+        if currentRef != localRef {
+            try await ensurePullBranchIsNotCheckedOut(localRef, repositoryURL: repositoryURL)
+        }
+        _ = try await runGit(
+            ["fetch", "--no-tags", "--no-write-fetch-head", "--", configuration[1],
+             "+\(configuration[2]):\(configuration[0])"],
+            operation: .pull, repositoryURL: repositoryURL
+        )
+        let upstreamHash = try await pullGitOutput(
+            ["rev-parse", "--verify", "\(configuration[0])^{commit}"], repositoryURL: repositoryURL
+        )
+        let mergeArguments = ["-c", "merge.autoStash=false", "-c", "core.editor=true", "merge", "--no-edit", "--ff", upstreamHash]
+        if currentRef == localRef {
+            // Recheck after the network request; an external checkout must not redirect the merge.
+            guard try await pullGitOutput(["symbolic-ref", "--quiet", "HEAD"], repositoryURL: repositoryURL, allowedStatuses: [0, 1]) == localRef else {
+                throw GitRepositoryOperationError.commandFailed(operation: .pull, message: "当前分支已变化，请重试。")
+            }
+            do {
+                _ = try await runGit(mergeArguments, operation: .pull, repositoryURL: repositoryURL)
+            } catch {
+                if let files = try? await conflictFiles(repositoryURL: repositoryURL), !files.isEmpty {
+                    throw GitRepositoryOperationError.pullCurrentBranchConflict(branchName)
+                }
+                throw error
+            }
+            return
+        }
+
+        let worktreeURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-Pull-\(UUID().uuidString)", isDirectory: true)
+        _ = try await runGit(
+            ["worktree", "add", "--detach", worktreeURL.path, oldHash],
+            operation: .pull, repositoryURL: repositoryURL
+        )
+        let newHash: String
+        do {
+            do {
+                _ = try await runGit(mergeArguments, operation: .pull, repositoryURL: worktreeURL)
+            } catch {
+                let conflicts = try await pullGitOutput(
+                    ["diff", "--name-only", "--diff-filter=U"], repositoryURL: worktreeURL
+                )
+                if !conflicts.isEmpty {
+                    throw GitRepositoryOperationError.commandFailed(
+                        operation: .pull,
+                        message: "分支 \(branchName) 与上游合并存在冲突，本次合并已取消，目标分支未更新。请 Checkout 该分支后 Pull 并解决冲突。\n\(conflicts)"
+                    )
+                }
+                throw error
+            }
+            newHash = try await pullGitOutput(["rev-parse", "--verify", "HEAD"], repositoryURL: worktreeURL)
+        } catch {
+            try await removePullWorktree(worktreeURL, repositoryURL: repositoryURL, failure: error.localizedDescription)
+            throw error
+        }
+        try await removePullWorktree(worktreeURL, repositoryURL: repositoryURL)
+        try await ensurePullBranchIsNotCheckedOut(localRef, repositoryURL: repositoryURL)
+        // Compare-and-swap refuses to overwrite commits made while Pull was running.
+        _ = try await runGit(
+            ["update-ref", "-m", "RepoDesk Pull \(branchName)", localRef, newHash, oldHash],
+            operation: .pull, repositoryURL: repositoryURL
+        )
+    }
+
+    private func ensurePullBranchIsNotCheckedOut(_ localRef: String, repositoryURL: URL) async throws {
+        let worktrees = try await pullGitOutput(["worktree", "list", "--porcelain"], repositoryURL: repositoryURL)
+        guard !worktrees.split(separator: "\n").contains(Substring("branch \(localRef)")) else {
+            throw GitRepositoryOperationError.commandFailed(operation: .pull, message: "目标分支已在工作区中检出，请在对应工作区执行 Pull。")
+        }
+    }
+
+    private func removePullWorktree(_ worktreeURL: URL, repositoryURL: URL, failure: String? = nil) async throws {
+        do {
+            _ = try await runGit(["worktree", "remove", "--force", worktreeURL.path], operation: .pull, repositoryURL: repositoryURL)
+        } catch {
+            throw GitRepositoryOperationError.commandFailed(
+                operation: .pull,
+                message: [failure, "临时工作区清理失败：\(worktreeURL.path)", error.localizedDescription].compactMap { $0 }.joined(separator: "\n")
+            )
+        }
+    }
+
+    private func pullGitOutput(_ arguments: [String], repositoryURL: URL, allowedStatuses: Set<Int32> = [0]) async throws -> String {
+        let result = try await runGit(arguments, operation: .pull, repositoryURL: repositoryURL, allowedStatuses: allowedStatuses)
+        return String(decoding: result.standardOutput, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func stashChanges(repositoryURL: URL, message: String?) async throws {

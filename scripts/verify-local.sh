@@ -247,6 +247,20 @@ swiftc \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \
+  "${project_dir}/scripts/verify-git-branch-pull.swift" \
+  -o "${project_dir}/build/verify-git-branch-pull"
+
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-git-branch-pull"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
   "${project_dir}/scripts/verify-git-push-diff-loading.swift" \
   -o "${project_dir}/build/verify-git-push-diff-loading"
 
@@ -313,6 +327,35 @@ swiftc \
 repodesk_library_path="${project_dir}/build"
 DYLD_LIBRARY_PATH="${repodesk_library_path}" \
   "${project_dir}/build/verify-java-cross-repository-field-navigation"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-java-contextual-method-callers.swift" \
+  -o "${project_dir}/build/verify-java-contextual-method-callers"
+
+repodesk_library_path="${project_dir}/build"
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-java-contextual-method-callers"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-java-navigation-first-click.swift" \
+  -o "${project_dir}/build/verify-java-navigation-first-click"
+
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-java-navigation-first-click"
 
 "${script_dir}/bootstrap-java-language-runtime.sh"
 

@@ -1024,6 +1024,15 @@ final class AppState {
         persistRepositoryState()
         persistWindowState()
         Task { await javaLanguageProvider.prioritize(repositoryID: id) }
+        if let repositoryURL = selectedRepository.flatMap(repositoryURL(for:)) {
+            let workspaceURL = self.workspaceURL
+            let repositories = self.repositories
+            Task {
+                await JavaWorkspaceNavigationFallback.prepareMethodCallers(
+                    fileURL: repositoryURL, workspaceURL: workspaceURL, repositories: repositories
+                )
+            }
+        }
         loadTaskCatalog()
     }
 
@@ -1374,6 +1383,11 @@ final class AppState {
         }
     }
 
+    func pullBranch(_ branch: GitBranch) async {
+        guard !branch.isRemote, isRepositoryContext, let repository = selectedRepository else { return }
+        await performGitRemoteOperation(.pull, repository: repository, pullBranchName: branch.name)
+    }
+
     func performGitRemoteOperation(_ kind: GitRemoteOperationKind) async {
         guard !isGitWriteOperationRunning,
               isRepositoryContext,
@@ -1470,7 +1484,7 @@ final class AppState {
                 await performGitRemoteOperation(.push, repository: repository)
             }
         case .fetch, .pull:
-            await performGitRemoteOperation(context.kind, repository: repository)
+            await performGitRemoteOperation(context.kind, repository: repository, pullBranchName: context.pullBranchName)
         }
     }
 
@@ -1776,11 +1790,20 @@ final class AppState {
 
     private func performGitRemoteOperation(
         _ kind: GitRemoteOperationKind,
-        repository: RegisteredRepository
+        repository: RegisteredRepository,
+        pullBranchName: String? = nil
     ) async {
         guard !isGitWriteOperationRunning,
               let repositoryURL = repositoryURL(for: repository) else { return }
-        let context = gitRemoteOperationContext(kind: kind, repository: repository)
+        let context: GitRemoteOperationContext
+        if let pullBranchName {
+            context = GitRemoteOperationContext(
+                kind: kind, repositoryID: repository.id, repositoryName: repository.name,
+                branch: pullBranchName, pullBranchName: pullBranchName
+            )
+        } else {
+            context = gitRemoteOperationContext(kind: kind, repository: repository)
+        }
         branchOperationErrorMessage = nil
         branchOperationStatusMessage = nil
         setGitRemoteOperationState(.running(context))
@@ -1791,7 +1814,11 @@ final class AppState {
             case .fetch:
                 try await gitRepositoryOperator.fetch(repositoryURL: repositoryURL)
             case .pull:
-                try await gitRepositoryOperator.pullCurrentBranch(repositoryURL: repositoryURL)
+                if let pullBranchName {
+                    try await gitRepositoryOperator.pullBranch(repositoryURL: repositoryURL, branchName: pullBranchName)
+                } else {
+                    try await gitRepositoryOperator.pullCurrentBranch(repositoryURL: repositoryURL)
+                }
             case .push:
                 pushOutcome = try await gitRepositoryOperator.pushCurrentBranchOutcome(
                     repositoryURL: repositoryURL
@@ -1801,7 +1828,13 @@ final class AppState {
             }
         } catch {
             guard gitRemoteOperationState == .running(context) else { return }
-            if kind == .pull {
+            let hasCurrentBranchConflict: Bool
+            if case .pullCurrentBranchConflict = error as? GitRepositoryOperationError {
+                hasCurrentBranchConflict = true
+            } else {
+                hasCurrentBranchConflict = false
+            }
+            if kind == .pull && (pullBranchName == nil || hasCurrentBranchConflict) {
                 let files = (try? await gitRepositoryOperator.conflictFiles(repositoryURL: repositoryURL)) ?? []
                 guard gitRemoteOperationState == .running(context) else { return }
                 if !files.isEmpty {
@@ -2704,12 +2737,32 @@ final class AppState {
                 myBatisTargets = []
             }
             guard javaNavigationRequestID == requestID else { return }
-            let targets = myBatisTargets.isEmpty
-                ? await javaLanguageProvider.navigationTargets(
+            // A ready semantic session remains authoritative for inheritance,
+            // overloads and unsaved working copies. Direct source callers let a
+            // cold session navigate without waiting for JVM/project startup.
+            let hasReadyJavaSession = javaIndexSnapshot.activeRepositoryID == repositoryID
+                && javaIndexSnapshot.runningJVMCount > 0
+                && javaIndexSnapshot.repositories.first(where: { $0.repositoryID == repositoryID })?.phase == .ready
+            let hasUnsavedJavaTabs = hasUnsavedDocumentChanges || openFileTabs.contains {
+                $0.url.pathExtension.lowercased() == "java" && $0.text != $0.originalText
+            }
+            let sourceCallerTargets = !hasReadyJavaSession && !hasUnsavedJavaTabs
+                && JavaWorkspaceNavigationFallback.isMethodDeclaration(navigationRequest)
+                ? await JavaWorkspaceNavigationFallback.targets(
+                    for: navigationRequest, workspaceURL: workspaceURL, repositories: repositories
+                ) : []
+            guard javaNavigationRequestID == requestID else { return }
+            let targets: [JavaNavigationTarget]
+            if !myBatisTargets.isEmpty {
+                targets = myBatisTargets
+            } else if !sourceCallerTargets.isEmpty {
+                targets = sourceCallerTargets
+            } else {
+                targets = await javaLanguageProvider.navigationTargets(
                     repositoryID: repositoryID,
                     request: navigationRequest
                 )
-                : myBatisTargets
+            }
             guard javaNavigationRequestID == requestID else { return }
             let fallbackTargets = targets.isEmpty
                 ? await JavaWorkspaceNavigationFallback.targets(
@@ -3009,15 +3062,24 @@ final class AppState {
         return await task.value
     }
 
-    private func clearJavaNavigationCaches() {
+    private func clearJavaNavigationCaches(changedFileURLs: [URL]? = nil) {
         javaWorkspaceMavenProjectsTask?.cancel()
         javaWorkspaceMavenProjectsTask = nil
         javaWorkspaceMavenProjectsCacheKey = nil
         javaNavigationOriginCache.removeAll(keepingCapacity: true)
         if let workspaceURL {
             let workspaceURL = workspaceURL.standardizedFileURL
+            let selectedJavaFileURL = selectedFileURL?.pathExtension.lowercased() == "java" ? selectedFileURL : nil
+            let repositories = self.repositories
             Task {
-                await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: workspaceURL)
+                await JavaWorkspaceNavigationFallback.invalidate(
+                    workspaceURL: workspaceURL, changedFileURLs: changedFileURLs
+                )
+                if let selectedJavaFileURL {
+                    await JavaWorkspaceNavigationFallback.prepareMethodCallers(
+                        fileURL: selectedJavaFileURL, workspaceURL: workspaceURL, repositories: repositories
+                    )
+                }
             }
         }
     }
@@ -3218,6 +3280,13 @@ final class AppState {
         let repositories = self.repositories
         let javaHome = mavenSettings.javaHome.trimmingCharacters(in: .whitespacesAndNewlines)
         let settingsFile = mavenSettings.userSettingsFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let repository = selectedRepository, let repositoryURL = repositoryURL(for: repository) {
+            Task {
+                await JavaWorkspaceNavigationFallback.prepareMethodCallers(
+                    fileURL: repositoryURL, workspaceURL: workspaceURL, repositories: repositories
+                )
+            }
+        }
         Task {
             await javaLanguageProvider.configure(javaIndexSettings)
             await javaLanguageProvider.updateWorkspace(
@@ -3243,6 +3312,13 @@ final class AppState {
         }
         let fileURL = selectedFileURL.standardizedFileURL
         let text = documentText
+        let workspaceURL = self.workspaceURL
+        let repositories = self.repositories
+        Task {
+            await JavaWorkspaceNavigationFallback.prepareMethodCallers(
+                fileURL: fileURL, workspaceURL: workspaceURL, repositories: repositories
+            )
+        }
         if let cached = javaSemanticTokenCacheByFile[fileURL], cached.text == text {
             javaSemanticTokens = cached.tokens
             return
@@ -3808,7 +3884,7 @@ final class AppState {
             return
         }
         workspaceMonitoringErrorMessage = nil
-        clearJavaNavigationCaches()
+        clearJavaNavigationCaches(changedFileURLs: batch.requiresFullRescan ? nil : Array(batch.changedURLs))
         await refreshLoadedDirectories(for: batch, workspaceURL: workspaceURL)
         if let traceID {
             await diagnosticLogger.record(

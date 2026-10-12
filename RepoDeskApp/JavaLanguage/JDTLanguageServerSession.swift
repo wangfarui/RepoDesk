@@ -253,6 +253,15 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
                 if !definitionTargets.isEmpty { return definitionTargets }
                 return try await methodReferenceTargets(request: request)
             }
+            // Recognize declarations from the current text even when the server
+            // has not supplied a matching document symbol yet. An empty caller
+            // result must never change a declaration click into a definition jump.
+            if Self.isMethodDeclaration(
+                in: request.documentText,
+                atUTF16Offset: utf16Offset(for: request.position, in: request.documentText)
+            ) {
+                return try await incomingCallTargets(params: params)
+            }
             let symbols = try await sendRequest(
                 method: "textDocument/documentSymbol",
                 params: .object(["textDocument": .object(["uri": .uri(request.fileURL)])])
@@ -327,6 +336,13 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
             }
         }
         return false
+    }
+
+    private static func isMethodDeclaration(in text: String, atUTF16Offset offset: Int) -> Bool {
+        JavaSyntaxHighlighter.highlights(in: text).contains {
+            guard $0.style == .methodDeclaration else { return false }
+            return NSLocationInRange(offset, $0.range) || offset == NSMaxRange($0.range)
+        }
     }
 
     static func isEnumDeclaration(in symbols: JSONValue, at position: JavaSourcePosition) -> Bool {

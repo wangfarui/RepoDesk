@@ -16,6 +16,7 @@ struct GitRemoteOperationContext: Equatable, Sendable {
     let repositoryID: RegisteredRepository.ID
     let repositoryName: String
     let branch: String
+    let pullBranchName: String?
     let stashReference: String?
     let stashMessage: String?
     let rollbackSelections: [GitChangeSelection]
@@ -30,6 +31,7 @@ struct GitRemoteOperationContext: Equatable, Sendable {
         repositoryID: RegisteredRepository.ID,
         repositoryName: String,
         branch: String,
+        pullBranchName: String? = nil,
         stashReference: String? = nil,
         stashMessage: String? = nil,
         rollbackSelections: [GitChangeSelection] = [],
@@ -43,6 +45,7 @@ struct GitRemoteOperationContext: Equatable, Sendable {
         self.repositoryID = repositoryID
         self.repositoryName = repositoryName
         self.branch = branch
+        self.pullBranchName = pullBranchName
         self.stashReference = stashReference
         self.stashMessage = stashMessage
         self.rollbackSelections = rollbackSelections

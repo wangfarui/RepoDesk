@@ -802,6 +802,12 @@ struct RootView: View {
                     }
                     Divider().padding(.vertical, 3)
                 }
+                branchAction("Pull", systemImage: "arrow.down.circle") {
+                    closeBranchPopovers()
+                    Task { await appState.pullBranch(branch) }
+                }
+                .disabled(appState.isGitWriteOperationRunning)
+                .accessibilityIdentifier("RepoDesk.Branch.Pull")
                 branchAction("Push", systemImage: "arrow.up.circle") {
                     closeBranchPopovers()
                     Task { await appState.pushBranch(branch) }

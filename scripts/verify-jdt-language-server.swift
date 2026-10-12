@@ -241,7 +241,37 @@ enum VerifyJDTLanguageServer {
             ) {}
         }
         """
+        let priceHandler = """
+        package sample;
+        import java.util.Map;
+        public class PriceHandler {
+            public Map<String, Long> searchPriceVersions(Object request) { return null; }
+        }
+        """
+        let priceDao = """
+        package sample;
+        import java.util.Map;
+        public class PriceDao {
+            private PriceHandler handler;
+            public Map<String, Long> searchPriceVersions(Object request) {
+                return handler.searchPriceVersions(request);
+            }
+        }
+        """
+        let priceManager = """
+        package sample;
+        import java.util.Map;
+        public class PriceManager {
+            private PriceDao dao;
+            public Map<String, Long> searchByPriceId(Object request) {
+                return dao.searchPriceVersions(request);
+            }
+        }
+        """
         let files: [(String, String)] = [
+            ("PriceHandler.java", priceHandler),
+            ("PriceDao.java", priceDao),
+            ("PriceManager.java", priceManager),
             ("Greeter.java", greeter),
             ("BaseGreeter.java", baseGreeter),
             ("FriendlyGreeter.java", friendlyGreeter),
@@ -299,6 +329,26 @@ enum VerifyJDTLanguageServer {
             )
             try await session.waitUntilReady(timeout: .seconds(120))
             try verifyNoProjectMetadata(in: root)
+
+            // Query declarations before opening or navigating from any caller.
+            for (file, text, expectedFile, expectedText, expectedSymbol) in [
+                ("PriceHandler.java", priceHandler, "PriceDao.java", priceDao,
+                 "handler.searchPriceVersions(request)"),
+                ("PriceDao.java", priceDao, "PriceManager.java", priceManager,
+                 "dao.searchPriceVersions(request)")
+            ] {
+                let result = try await targets(
+                    session: session, action: .contextual,
+                    fileURL: sourceRoot.appendingPathComponent(file), text: text,
+                    symbol: "searchPriceVersions(Object"
+                )
+                let callPosition = try position(text: expectedText, symbol: expectedSymbol,
+                                                symbolOffset: expectedSymbol.range(of: ".")!.upperBound
+                                                    .utf16Offset(in: expectedSymbol))
+                try require(result.count == 1 && result.contains {
+                    target($0, in: sourceRoot.appendingPathComponent(expectedFile), contains: callPosition)
+                }, "Cold declaration click on \(file) did not find its actual caller: \(result)")
+            }
             try await Task.sleep(for: .milliseconds(500))
 
             let nestedSymbols = try await session.searchSymbols(query: "NestedOnly", scope: .types)
