@@ -2169,6 +2169,50 @@ final class AppState {
         }
     }
 
+    func blameForMergeConflict(
+        file: GitConflictFile,
+        resultContent: String
+    ) async throws -> GitMergeConflictBlame {
+        guard let repositoryURL = activeRepositoryURL else {
+            return GitMergeConflictBlame()
+        }
+
+        async let yoursRequest = try? gitRepositoryReader.blame(
+            repositoryURL: repositoryURL,
+            path: file.path,
+            revision: "HEAD",
+            contentsPath: nil
+        )
+        async let theirsRequest = try? gitRepositoryReader.blame(
+            repositoryURL: repositoryURL,
+            path: file.path,
+            revision: "MERGE_HEAD",
+            contentsPath: nil
+        )
+
+        let temporaryDirectoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-MergeConflict-Blame-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: temporaryDirectoryURL,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectoryURL) }
+        let contentsURL = temporaryDirectoryURL.appendingPathComponent("result")
+        try Data(resultContent.utf8).write(to: contentsURL, options: .atomic)
+        let resultLines = (try? await gitRepositoryReader.blame(
+            repositoryURL: repositoryURL,
+            path: file.path,
+            revision: "HEAD",
+            contentsPath: contentsURL.path
+        )) ?? uncommittedBlameLines(for: resultContent)
+
+        return GitMergeConflictBlame(
+            yours: (await yoursRequest ?? []).indexedByLineNumber,
+            result: resultLines.indexedByLineNumber,
+            theirs: (await theirsRequest ?? []).indexedByLineNumber
+        )
+    }
+
     func blameForSelectedFile() async throws -> [GitBlameLine] {
         guard let selectedFileURL,
               let workspaceURL,

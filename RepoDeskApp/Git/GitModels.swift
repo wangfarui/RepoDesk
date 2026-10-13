@@ -268,6 +268,22 @@ struct GitBlameLine: Equatable, Sendable {
     }
 }
 
+struct GitMergeConflictBlame: Equatable, Sendable {
+    let yours: [Int: GitBlameLine]
+    let result: [Int: GitBlameLine]
+    let theirs: [Int: GitBlameLine]
+
+    init(
+        yours: [Int: GitBlameLine] = [:],
+        result: [Int: GitBlameLine] = [:],
+        theirs: [Int: GitBlameLine] = [:]
+    ) {
+        self.yours = yours
+        self.result = result
+        self.theirs = theirs
+    }
+}
+
 extension Sequence where Element == GitBlameLine {
     var indexedByLineNumber: [Int: GitBlameLine] {
         reduce(into: [:]) { result, line in

@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct GitBlameAnnotationCell: View {
+    static let width: CGFloat = 226
+
     let blame: GitBlameLine?
     let height: CGFloat
 
@@ -19,7 +21,7 @@ struct GitBlameAnnotationCell: View {
         .font(.caption2.monospaced())
         .foregroundStyle(blame?.isUncommitted != false ? .secondary : .primary)
         .padding(.horizontal, 7)
-        .frame(width: 226, alignment: .leading)
+        .frame(width: Self.width, alignment: .leading)
         .frame(height: height)
         .background(Color(nsColor: .controlBackgroundColor).opacity(0.85))
     }

@@ -165,6 +165,12 @@ struct MergeConflictResolverSheet: View {
                         return await appState.saveConflictProgress(path: selection.file.path, result: result)
                     }
                     return await appState.updateResolvedConflict(path: selection.file.path, result: result)
+                },
+                loadBlame: { result in
+                    try await appState.blameForMergeConflict(
+                        file: selection.file,
+                        resultContent: result
+                    )
                 }
             )
         }
@@ -396,6 +402,7 @@ struct MergeConflictEditorSheet: View {
     let fontSize: CGFloat
     let apply: (String) async -> Bool
     let saveProgress: (String) async -> Bool
+    let loadBlame: (String) async throws -> GitMergeConflictBlame
 
     @Environment(\.dismiss) private var dismiss
     @State private var document: GitConflictResolutionDocument
@@ -406,6 +413,8 @@ struct MergeConflictEditorSheet: View {
     @State private var horizontalScroll = GitDiffHorizontalScrollSynchronization()
     @State private var horizontalOffset: CGFloat = 0
     @State private var resultContentWidth: CGFloat
+    @State private var blameAnnotations: GitMergeConflictBlame?
+    @State private var isLoadingBlame = false
     private let yoursContentWidth: CGFloat
     private let theirsContentWidth: CGFloat
     @State private var isApplying = false
@@ -416,7 +425,8 @@ struct MergeConflictEditorSheet: View {
         theirsBranch: String,
         fontSize: CGFloat,
         apply: @escaping (String) async -> Bool,
-        saveProgress: @escaping (String) async -> Bool = { _ in false }
+        saveProgress: @escaping (String) async -> Bool = { _ in false },
+        loadBlame: @escaping (String) async throws -> GitMergeConflictBlame = { _ in GitMergeConflictBlame() }
     ) {
         self.file = file
         self.yoursBranch = yoursBranch
@@ -424,6 +434,7 @@ struct MergeConflictEditorSheet: View {
         self.fontSize = fontSize
         self.apply = apply
         self.saveProgress = saveProgress
+        self.loadBlame = loadBlame
         let document = GitConflictResolutionDocument(text: file.result, base: file.base)
         let contentWidths = Self.initialContentWidths(
             document: document,
@@ -832,19 +843,42 @@ struct MergeConflictEditorSheet: View {
         blockID: Int,
         height: CGFloat
     ) -> some View {
-        GitDiffHorizontalScrollView(
+        let lines = Self.lines(in: text)
+        let displayLines = lines.isEmpty ? [""] : lines
+        return GitDiffHorizontalScrollView(
             identifier: "RepoDesk.MergeConflictEditor.\(pane.rawValue).Conflict.\(blockID)",
             contentWidth: paneContentWidth(pane),
             contentHeight: height,
             synchronization: horizontalSynchronization(for: pane),
             showsHorizontalScroller: false
         ) {
-            Text(numberedText(text, startingLine: startingLine))
-                .font(.system(size: fontSize, design: .monospaced))
-                .textSelection(.enabled)
-                .fixedSize(horizontal: true, vertical: true)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
+            HStack(spacing: 0) {
+                if blameIsVisible {
+                    VStack(spacing: 0) {
+                        ForEach(displayLines.indices, id: \.self) { index in
+                            blameCell(startingLine + index, pane: pane)
+                        }
+                    }
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(displayLines.indices, id: \.self) { index in
+                        HStack(spacing: 9) {
+                            Text(String(startingLine + index))
+                                .font(.system(size: max(9, fontSize - 2), design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .frame(width: 38, alignment: .trailing)
+                            Divider()
+                            Text(displayLines[index].isEmpty ? " " : displayLines[index])
+                                .font(.system(size: fontSize, design: .monospaced))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .frame(height: codeLineHeight, alignment: .leading)
+                        .contextMenu { blameContextMenu() }
+                    }
+                }
+            }
+            .padding(.horizontal, 7)
                 .frame(
                     width: paneContentWidth(pane),
                     height: height,
@@ -862,6 +896,11 @@ struct MergeConflictEditorSheet: View {
         height: CGFloat
     ) -> some View {
         let contentWidth = paneContentWidth(.result)
+        let resultText = customDrafts[block.id] ?? text
+        let resultLines = Self.lines(in: resultText)
+        let displayLines = resultLines.isEmpty ? [""] : resultLines
+        let blameWidth = blameIsVisible ? GitBlameAnnotationCell.width : 0
+        let editorWidth = max(1, contentWidth - blameWidth)
         return GitDiffHorizontalScrollView(
             identifier: "RepoDesk.MergeConflictEditor.Result.Conflict.\(block.id)",
             contentWidth: contentWidth,
@@ -870,6 +909,14 @@ struct MergeConflictEditorSheet: View {
             showsHorizontalScroller: false
         ) {
             ZStack(alignment: .topLeading) {
+                if blameIsVisible {
+                    VStack(spacing: 0) {
+                        ForEach(displayLines.indices, id: \.self) { index in
+                            blameCell(startingLine + index, pane: .result)
+                        }
+                    }
+                    .frame(width: blameWidth, alignment: .topLeading)
+                }
                 TextField("", text: customDraftBinding(for: block), axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: fontSize, design: .monospaced))
@@ -877,20 +924,27 @@ struct MergeConflictEditorSheet: View {
                     .padding(.trailing, 7)
                     .padding(.vertical, 7)
                     .frame(
-                        width: contentWidth,
+                        width: editorWidth,
                         height: height,
                         alignment: .topLeading
                     )
-                Text(String(startingLine))
-                    .font(.system(size: max(9, fontSize - 2), design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 42, alignment: .trailing)
-                    .padding(.top, 7)
+                    .offset(x: blameWidth)
+                VStack(spacing: 0) {
+                    ForEach(displayLines.indices, id: \.self) { index in
+                        Text(String(startingLine + index))
+                            .font(.system(size: max(9, fontSize - 2), design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 42, height: codeLineHeight, alignment: .trailing)
+                            .contextMenu { blameContextMenu() }
+                    }
+                }
+                .padding(.top, 7)
+                .offset(x: blameWidth)
                 if text.isEmpty {
                         Text("Base revision")
                         .font(.system(size: max(11, fontSize - 1), design: .monospaced))
                         .foregroundStyle(.tertiary)
-                        .padding(.leading, 58)
+                        .padding(.leading, 58 + blameWidth)
                         .padding(.top, 7)
                         .allowsHitTesting(false)
                 }
@@ -932,6 +986,7 @@ struct MergeConflictEditorSheet: View {
             showsHorizontalScroller: false
         ) {
             HStack(spacing: 9) {
+                blameCell(lineNumber, pane: pane)
                 Text(String(lineNumber))
                     .font(.system(size: max(9, fontSize - 2), design: .monospaced))
                     .foregroundStyle(.tertiary)
@@ -948,6 +1003,7 @@ struct MergeConflictEditorSheet: View {
                 height: codeLineHeight,
                 alignment: .leading
             )
+            .contextMenu { blameContextMenu() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
@@ -1039,10 +1095,68 @@ struct MergeConflictEditorSheet: View {
     }
 
     private func paneContentWidth(_ pane: MergeConflictPane) -> CGFloat {
+        let baseWidth: CGFloat
         switch pane {
-        case .yours: yoursContentWidth
-        case .result: resultContentWidth
-        case .theirs: theirsContentWidth
+        case .yours: baseWidth = yoursContentWidth
+        case .result: baseWidth = resultContentWidth
+        case .theirs: baseWidth = theirsContentWidth
+        }
+        return baseWidth + (blameIsVisible ? GitBlameAnnotationCell.width : 0)
+    }
+
+    private var blameIsVisible: Bool {
+        blameAnnotations != nil
+    }
+
+    private func blame(for pane: MergeConflictPane) -> [Int: GitBlameLine] {
+        switch pane {
+        case .yours: blameAnnotations?.yours ?? [:]
+        case .result: blameAnnotations?.result ?? [:]
+        case .theirs: blameAnnotations?.theirs ?? [:]
+        }
+    }
+
+    @ViewBuilder
+    private func blameContextMenu() -> some View {
+        Button {
+            toggleBlame()
+        } label: {
+            if blameIsVisible {
+                Label("Close Annotations", systemImage: "checkmark")
+            } else if isLoadingBlame {
+                Label("Loading Git Blame…", systemImage: "hourglass")
+            } else {
+                Label("Annotation With Git Blame", systemImage: "person.text.rectangle")
+            }
+        }
+        .disabled(isLoadingBlame)
+    }
+
+    private func toggleBlame() {
+        guard !isLoadingBlame else { return }
+        if blameIsVisible {
+            blameAnnotations = nil
+            return
+        }
+        isLoadingBlame = true
+        Task {
+            let annotations = try? await loadBlame(document.renderedText(overrides: customDrafts))
+            await MainActor.run {
+                if let annotations {
+                    blameAnnotations = annotations
+                }
+                isLoadingBlame = false
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func blameCell(_ lineNumber: Int, pane: MergeConflictPane) -> some View {
+        if blameIsVisible {
+            GitBlameAnnotationCell(
+                blame: blame(for: pane)[lineNumber],
+                height: codeLineHeight
+            )
         }
     }
 
