@@ -61,6 +61,7 @@ enum VerifyFileNavigationHistory {
         }
         try verifyBackForwardAndBranching(root: root, files: files)
         try verifyTabSelection(root: root, files: files)
+        try verifyImportFoldingTabs(root: root, files: files)
         try verifyClosedFileReopens(root: root, files: files)
         try verifyDeletedFileIsSkipped(root: root, files: files)
         try verifyMouseButtons()
@@ -105,6 +106,28 @@ enum VerifyFileNavigationHistory {
         try require(state.selectedFileURL == files[0], "Tab selection did not activate its file")
         try require(state.navigateFileBack(), "Tab selection was not added to history")
         try requireLocation(state, file: files[1], line: 8)
+    }
+
+    private static func verifyImportFoldingTabs(root: URL, files: [URL]) throws {
+        let state = makeState(root: root)
+        let javaFile = files[1]
+        state.selectFile(javaFile, line: 1)
+        guard let index = state.openFileTabs.firstIndex(where: { $0.url == javaFile }) else {
+            throw FileNavigationVerificationError(description: "Java tab did not open")
+        }
+        try require(!state.openFileTabs[index].importsExpanded, "New Java tab should default to folded imports")
+        state.openFileTabs[index].importsExpanded = true
+        state.selectFile(files[0], line: 1)
+        guard let javaTab = state.openFileTabs.first(where: { $0.url == javaFile }) else {
+            throw FileNavigationVerificationError(description: "Java tab disappeared on switch")
+        }
+        state.selectFileTab(javaTab)
+        try require(state.openFileTabs.first { $0.url == javaFile }?.importsExpanded == true,
+                    "Switching tabs lost the expanded import state")
+        state.closeFileTab(id: javaFile)
+        state.selectFile(javaFile, line: 1)
+        try require(state.openFileTabs.first { $0.url == javaFile }?.importsExpanded == false,
+                    "Closing and reopening a Java tab should reset import folding")
     }
 
     private static func verifyClosedFileReopens(root: URL, files: [URL]) throws {

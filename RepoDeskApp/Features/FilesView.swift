@@ -481,7 +481,8 @@ struct FilesView: View {
                         onNavigationBack: { appState.navigateFileBack() },
                         onNavigationForward: { appState.navigateFileForward() },
                         shortcuts: appState.shortcuts,
-                        loadGitBlame: selectedFileGitBlameLoader
+                        loadGitBlame: selectedFileGitBlameLoader,
+                        importsExpanded: selectedFileImportsExpanded
                     )
                 }
             case .binary(let size):
@@ -592,6 +593,17 @@ struct FilesView: View {
     private var selectedFileGitBlameLoader: (() async throws -> [GitBlameLine])? {
         guard appState.canBlameSelectedFile else { return nil }
         return { try await appState.blameForSelectedFile() }
+    }
+
+    private var selectedFileImportsExpanded: Binding<Bool> {
+        let fileURL = appState.selectedFileURL
+        return Binding(
+            get: { appState.openFileTabs.first { $0.url == fileURL }?.importsExpanded ?? false },
+            set: { value in
+                guard let index = appState.openFileTabs.firstIndex(where: { $0.url == fileURL }) else { return }
+                appState.openFileTabs[index].importsExpanded = value
+            }
+        )
     }
 
     private var documentHeaderActions: DocumentHeaderActions {
@@ -1585,6 +1597,7 @@ struct SourceDocumentView: View {
     let onNavigationForward: () -> Void
     let shortcuts: [AppShortcutID: ShortcutBinding]
     let loadGitBlame: (() async throws -> [GitBlameLine])?
+    var importsExpanded: Binding<Bool>? = nil
     @State private var showsGoToLine = false
     @State private var goToLineInput = ""
     @State private var goToLineError: String?
@@ -1632,6 +1645,22 @@ struct SourceDocumentView: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
+                Button("跳转到首行", systemImage: "arrow.up.to.line") {
+                    goToLine(1)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("跳转到首行")
+                .accessibilityIdentifier("RepoDesk.GoToFirstLine")
+
+                Button("跳转到尾行", systemImage: "arrow.down.to.line") {
+                    goToLine(SourceLineIndex(text: text).lineCount)
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("跳转到尾行")
+                .accessibilityIdentifier("RepoDesk.GoToLastLine")
+
                 headerActions
             }
             .padding(.horizontal, 12)
@@ -1688,7 +1717,9 @@ struct SourceDocumentView: View {
                         onJavaPopupDismiss: onJavaNavigationDismissed,
                         onNavigationBack: onNavigationBack,
                         onNavigationForward: onNavigationForward,
-                        shortcuts: shortcuts
+                        shortcuts: shortcuts,
+                        foldsJavaImports: fileExtension == "java",
+                        importsExpanded: importsExpanded
                     )
 
                     if let presentation = javaNavigationLoadingPresentation {
@@ -1960,13 +1991,18 @@ struct SourceDocumentView: View {
     private func performGoToLine() {
         do {
             let line = try GoToLineValidator.validate(goToLineInput, maximumLine: maximumLine)
-            goToLineNavigationRequest = NativeTextNavigationRequest(line: line)
-            dismissGoToLine()
+            goToLine(line)
         } catch let error as GoToLineValidationError {
             goToLineError = error.message
         } catch {
             goToLineError = "无法跳转到该行。"
         }
+    }
+
+    private func goToLine(_ line: Int) {
+        dismissContentFind()
+        dismissGoToLine()
+        goToLineNavigationRequest = NativeTextNavigationRequest(line: line)
     }
 
     private func dismissGoToLine() {

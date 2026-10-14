@@ -53,6 +53,20 @@ swiftc \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \
+  "${project_dir}/scripts/verify-java-import-folding.swift" \
+  -o "${project_dir}/build/verify-java-import-folding"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-java-import-folding"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
   "${project_dir}/scripts/verify-file-tree-horizontal-scrolling.swift" \
   -o "${project_dir}/build/verify-file-tree-horizontal-scrolling"
 
@@ -625,6 +639,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
+  "${project_dir}/RepoDeskApp/Features/JavaImportFolding.swift" \
   "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
   "${project_dir}/RepoDeskApp/Features/StreamingOutputView.swift" \
   "${project_dir}/scripts/verify-output-follow.swift" \
@@ -644,6 +659,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
+  "${project_dir}/RepoDeskApp/Features/JavaImportFolding.swift" \
   "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
   "${project_dir}/scripts/verify-source-editor-scroll-performance.swift" \
   -o "${project_dir}/build/verify-source-editor-scroll-performance"

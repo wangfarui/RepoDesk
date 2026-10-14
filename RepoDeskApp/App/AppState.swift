@@ -51,6 +51,7 @@ struct OpenFileTab: Equatable, Identifiable, Sendable {
     var showsMarkdownPreview: Bool
     var isLoading: Bool
     var visibleLine: Int
+    var importsExpanded = false
 
     var id: URL { url }
 }

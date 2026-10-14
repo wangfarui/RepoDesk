@@ -234,6 +234,8 @@ private final class NativeLineNumberRulerView: NSRulerView {
     private var gitBlame: [Int: NativeGitBlameAnnotation]?
     private var canToggleGitBlame = false
     private var onToggleGitBlame: (() -> Void)?
+    weak var importFolding: NativeJavaImportFolding?
+    private var importToggleRect: NSRect?
 
     private static let gitBlameWidth: CGFloat = 226
 
@@ -266,7 +268,8 @@ private final class NativeLineNumberRulerView: NSRulerView {
         lineIndex = SourceLineIndex(text: text)
         let digits = max(2, String(lineIndex.lineCount).count)
         let digitWidth = ("0" as NSString).size(withAttributes: [.font: labelFont]).width
-        let lineNumberWidth = max(40, ceil(CGFloat(digits) * digitWidth + 18))
+        let foldingWidth: CGFloat = importFolding?.region == nil ? 0 : 14
+        let lineNumberWidth = max(40, ceil(CGFloat(digits) * digitWidth + 18)) + foldingWidth
         let updatedThickness = lineNumberWidth + (gitBlame == nil ? 0 : Self.gitBlameWidth)
         if ruleThickness != updatedThickness {
             ruleThickness = updatedThickness
@@ -347,8 +350,10 @@ private final class NativeLineNumberRulerView: NSRulerView {
             .foregroundColor: NSColor.secondaryLabelColor
         ]
 
+        importToggleRect = nil
         for line in firstLine...max(firstLine, lastLine) {
             let start = lineIndex.lineStartOffsets[line - 1]
+            if importFolding?.isHidden(lineStart: start) == true { continue }
             let lineRect: NSRect
             if start < lineIndex.utf16Length {
                 let glyphIndex = layoutManager.glyphIndexForCharacter(at: start)
@@ -371,13 +376,31 @@ private final class NativeLineNumberRulerView: NSRulerView {
             let label = "\(line)" as NSString
             let labelSize = label.size(withAttributes: attributes)
             let labelRect = NSRect(
-                x: bounds.maxX - labelSize.width - 9,
+                x: bounds.maxX - labelSize.width - 9 - (importFolding?.region == nil ? 0 : 14),
                 y: rulerOrigin.y + (lineRect.height - labelSize.height) / 2,
                 width: labelSize.width,
                 height: labelSize.height
             )
             label.draw(in: labelRect, withAttributes: attributes)
+            if let folding = importFolding, let region = folding.region,
+               line == lineIndex.lineNumber(containingUTF16Offset: region.keywordRange.location) {
+                let toggleRect = NSRect(x: bounds.maxX - 14, y: labelRect.minY, width: 14, height: labelRect.height)
+                importToggleRect = toggleRect
+                let symbol = folding.isExpanded ? "chevron.down" : "chevron.right"
+                NSImage(systemSymbolName: symbol, accessibilityDescription: "折叠或展开 import")?
+                    .withSymbolConfiguration(.init(paletteColors: [.secondaryLabelColor]))?
+                    .draw(in: toggleRect.insetBy(dx: 3, dy: 3))
+            }
         }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if let importToggleRect, importToggleRect.contains(convert(event.locationInWindow, from: nil)) {
+            importFolding?.toggle()
+            needsDisplay = true
+            return
+        }
+        super.mouseDown(with: event)
     }
 
     private func drawGitBlame(_ blame: NativeGitBlameAnnotation?, y: CGFloat) {
@@ -441,6 +464,8 @@ struct NativeCodeEditor: NSViewRepresentable {
     var onNavigationBack: (() -> Void)? = nil
     var onNavigationForward: (() -> Void)? = nil
     var shortcuts: [AppShortcutID: ShortcutBinding] = ShortcutBinding.defaults()
+    var foldsJavaImports = false
+    var importsExpanded: Binding<Bool>? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -529,6 +554,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             to: textView
         )
         context.coordinator.lastAppliedSemanticTokens = semanticTokens
+        context.coordinator.configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
         context.coordinator.refreshLineNumbers()
         context.coordinator.scrollIfNeeded(to: scrollToLine)
         context.coordinator.navigateIfNeeded(to: navigationRequest)
@@ -586,6 +612,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             context.coordinator.lastAppliedSemanticTokens = semanticTokens
             context.coordinator.invalidateContentSearch()
             context.coordinator.resetExternalNavigation()
+            context.coordinator.configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
             context.coordinator.refreshLineNumbers()
             textView.setSelectedRange(
                 NSRange(
@@ -600,6 +627,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             }
             context.coordinator.endScrollAdjustment()
         }
+        context.coordinator.configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: false)
         context.coordinator.scrollIfNeeded(to: scrollToLine)
         context.coordinator.navigateIfNeeded(to: navigationRequest)
         context.coordinator.scrollToTailIfFollowing()
@@ -627,6 +655,9 @@ struct NativeCodeEditor: NSViewRepresentable {
         private weak var scrollView: NSScrollView?
         private var lineNumberRuler: NativeLineNumberRulerView?
         private var lineIndex = SourceLineIndex(text: "")
+        private(set) var importFolding: NativeJavaImportFolding?
+        private var foldsJavaImports = false
+        private var importsExpanded: Binding<Bool>?
         private var isApplyingStyle = false
         private var isAdjustingScroll = false
         private var lastScrolledLine: Int?
@@ -724,11 +755,51 @@ struct NativeCodeEditor: NSViewRepresentable {
             lineNumberRuler?.refresh(text: textView.string)
         }
 
+        func configureImportFolding(enabled: Bool, expanded: Binding<Bool>?, sourceChanged: Bool) {
+            guard let textView else { return }
+            foldsJavaImports = enabled
+            importsExpanded = expanded
+            if importFolding == nil, enabled {
+                importFolding = NativeJavaImportFolding(textView: textView)
+                importFolding?.onLayoutChange = { [weak self] in
+                    self?.lineNumberRuler?.needsDisplay = true
+                }
+            }
+            importFolding?.onExpansionChange = { value in
+                // Navigation can reveal imports during a SwiftUI view update.
+                DispatchQueue.main.async { expanded?.wrappedValue = value }
+            }
+            importFolding?.configure(
+                enabled: enabled, expanded: expanded?.wrappedValue ?? importFolding?.isExpanded ?? false,
+                sourceChanged: sourceChanged
+            )
+            lineNumberRuler?.importFolding = importFolding
+            lineNumberRuler?.needsDisplay = true
+        }
+
         func requestGoToLine() {
             guard let textView, let onRequestGoToLine else { return }
             let index = SourceLineIndex(text: textView.string)
             let currentLine = index.lineNumber(containingUTF16Offset: textView.selectedRange().location)
             onRequestGoToLine(currentLine, index.lineCount)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard !isApplyingStyle, !isAdjustingScroll,
+                  let textView = notification.object as? NSTextView,
+                  textView.selectedRange().length == 0 else { return }
+            importFolding?.reveal(textView.selectedRange())
+        }
+
+        func textView(
+            _ textView: NSTextView,
+            shouldChangeTextIn affectedCharRange: NSRange,
+            replacementString: String?
+        ) -> Bool {
+            let wasCollapsed = importFolding?.region != nil && importFolding?.isExpanded == false
+            importFolding?.reveal(affectedCharRange)
+            // Reveal before a keystroke can remove or replace invisible source.
+            return !(wasCollapsed && importFolding?.isExpanded == true)
         }
 
         func textDidChange(_ notification: Notification) {
@@ -747,6 +818,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             lastAppliedSemanticTokens = semanticTokens
             textView.setSelectedRange(selection)
             isApplyingStyle = false
+            configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
             refreshLineNumbers()
             invalidateContentSearch()
             applyContentSearch(contentSearch)
@@ -787,6 +859,7 @@ struct NativeCodeEditor: NSViewRepresentable {
                 return
             }
             lastContentSearchNavigationRequestID = presentation.navigationRequestID
+            importFolding?.reveal(activeRange)
             textView.setSelectedRange(activeRange)
             textView.showFindIndicator(for: activeRange)
             center(activeRange, in: textView)
@@ -842,6 +915,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             let index = SourceLineIndex(text: textView.string)
             let line = min(max(1, line), index.lineCount)
             guard let range = index.contentRange(forLine: line, in: textView.string) else { return }
+            importFolding?.reveal(range)
             textView.setSelectedRange(NSRange(location: range.location, length: 0))
             if range.length > 0 {
                 textView.showFindIndicator(for: range)
@@ -857,6 +931,7 @@ struct NativeCodeEditor: NSViewRepresentable {
                 navigate(to: sourceRange.start.line + 1)
                 return
             }
+            importFolding?.reveal(range)
             textView.setSelectedRange(range)
             if range.length > 0 {
                 textView.showFindIndicator(for: range)
@@ -978,7 +1053,15 @@ struct NativeCodeEditor: NSViewRepresentable {
             let firstLine = lineIndex.lineNumber(containingUTF16Offset: characterRange.location)
             let lastOffset = max(characterRange.location, NSMaxRange(characterRange) - 1)
             let lastLine = lineIndex.lineNumber(containingUTF16Offset: lastOffset)
-            let line = firstLine + (lastLine - firstLine) / 2
+            let line: Int
+            if let folding = importFolding, folding.region != nil, !folding.isExpanded {
+                let visibleLines = (firstLine...max(firstLine, lastLine)).filter {
+                    !folding.isHidden(lineStart: lineIndex.lineStartOffsets[$0 - 1])
+                }
+                line = visibleLines.isEmpty ? firstLine : visibleLines[visibleLines.count / 2]
+            } else {
+                line = firstLine + (lastLine - firstLine) / 2
+            }
             guard line != lastReportedVisibleLine else { return nil }
             lastReportedVisibleLine = line
             return line
