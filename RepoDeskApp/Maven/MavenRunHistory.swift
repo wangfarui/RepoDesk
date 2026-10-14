@@ -50,6 +50,11 @@ struct MavenRunHistoryPolicy: Codable, Equatable, Sendable {
     static let `default` = MavenRunHistoryPolicy()
 }
 
+enum MavenRunActivity: String, Codable, Sendable {
+    case queued
+    case running
+}
+
 struct MavenRunRecord: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let repositoryPath: String
@@ -64,6 +69,8 @@ struct MavenRunRecord: Codable, Equatable, Identifiable, Sendable {
     let startedAt: Date
     let finishedAt: Date
     var log: String?
+    var activity: MavenRunActivity?
+    var queuePosition: Int?
 
     init(
         id: UUID = UUID(),
@@ -74,7 +81,9 @@ struct MavenRunRecord: Codable, Equatable, Identifiable, Sendable {
         terminationStatus: Int32?,
         startedAt: Date,
         finishedAt: Date,
-        log: String? = nil
+        log: String? = nil,
+        activity: MavenRunActivity? = nil,
+        queuePosition: Int? = nil
     ) {
         self.id = id
         repositoryPath = repositoryURL.standardizedFileURL.path
@@ -89,6 +98,8 @@ struct MavenRunRecord: Codable, Equatable, Identifiable, Sendable {
         self.startedAt = startedAt
         self.finishedAt = finishedAt
         self.log = log
+        self.activity = activity
+        self.queuePosition = queuePosition
     }
 
     var duration: TimeInterval {

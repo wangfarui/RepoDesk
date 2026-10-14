@@ -533,6 +533,8 @@ struct RootView: View {
                         removeRun: { appState.removeMavenRun($0) },
                         clearPersistedLogs: { appState.clearPersistedMavenLogs() },
                         clearHistory: { appState.clearMavenRunHistory() },
+                        queueMessage: appState.mavenQueueMessage,
+                        duplicateMessage: { appState.mavenQueue.duplicateMessage(for: $0, repositoryURL: $1) },
                         persistedSelection: selectedMavenRepositoryID.flatMap {
                             appState.mavenSelection(for: $0)
                         },

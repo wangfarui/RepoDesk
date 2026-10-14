@@ -16,6 +16,8 @@ struct MavenView: View {
     let removeRun: (MavenRunRecord.ID) -> Void
     let clearPersistedLogs: () -> Void
     let clearHistory: () -> Void
+    var queueMessage: String? = nil
+    var duplicateMessage: (MavenRunRequest, URL) -> String? = { _, _ in nil }
     var persistedSelection: MavenWindowSelection? = nil
     var updatePersistedSelection: (MavenWindowSelection?) -> Void = { _ in }
 
@@ -23,7 +25,6 @@ struct MavenView: View {
     @State private var scanErrorMessage: String?
     @State private var isScanning = false
     @State private var expandedModuleIDs: Set<MavenModule.ID> = []
-    @State private var expandedLifecycleModuleIDs: Set<MavenModule.ID> = []
     @State private var selectedTarget: MavenRunTarget?
     @State private var selectedRunID: MavenRunRecord.ID?
     @State private var activePreviewRequest: MavenRunRequest?
@@ -53,15 +54,14 @@ struct MavenView: View {
                     if execution.runningRequestID != nil {
                         Button("停止", systemImage: "stop.fill", role: .destructive, action: stop)
                             .labelStyle(.iconOnly)
-                            .help("停止")
-                    } else {
-                        Button("运行", systemImage: "play.fill") {
-                            runSelectedTarget()
-                        }
-                        .labelStyle(.iconOnly)
-                        .help("运行选中的 Lifecycle")
-                        .disabled(selectedTarget?.module.hasPOM != true)
+                            .help("停止当前命令并清空本仓库队列")
                     }
+                    Button("运行", systemImage: "play.fill") {
+                        runSelectedTarget()
+                    }
+                    .labelStyle(.iconOnly)
+                    .help(execution.runningRequestID == nil ? "运行选中的 Maven 命令" : "加入执行队列")
+                    .disabled(selectedTarget?.module.hasPOM != true)
                 }
             }
         }
@@ -120,6 +120,22 @@ struct MavenView: View {
             runValidationMessage = nil
             followsLatestOutput = true
             restorePersistedSelectionIfPossible()
+        }
+        .onChange(of: recentRuns.map(\.id)) {
+            if let selectedRunID, !recentRuns.contains(where: { $0.id == selectedRunID }) {
+                recoverRunSelection(excluding: selectedRunID)
+                return
+            }
+            guard selectedRunID == nil, let request = activePreviewRequest,
+                  let repositoryURL,
+                  let record = repositoryRuns(repositoryURL).first(where: {
+                      $0.activity != nil && $0.modulePath == request.module.modulePath
+                          && $0.goal == request.goal && $0.arguments == request.command.arguments
+                          && $0.executablePath == request.command.executableURL.standardizedFileURL.path
+                          && $0.environment["JAVA_HOME"] == request.command.environment["JAVA_HOME"]
+                  }) else { return }
+            selectedRunID = record.id
+            updatePersistedSelection(.recentRun(record.id))
         }
         .onChange(of: selectedRunID) {
             if selectedRunID == nil {
@@ -457,18 +473,25 @@ struct MavenView: View {
                     selectedRunRecord == nil
                         || selectedRecordModule == nil
                         || isScanning
-                        || execution.runningRequestID != nil
                 )
 
-                Button("删除记录", systemImage: "trash", role: .destructive) {
+                Button(selectedRunRecord?.activity == .queued ? "移除排队命令" : "删除记录", systemImage: "trash", role: .destructive) {
                     removeSelectedRun()
                 }
                 .labelStyle(.iconOnly)
-                .help("删除记录")
-                .disabled(selectedRunRecord == nil)
+                .help(selectedRunRecord?.activity == .queued ? "移除排队命令" : "删除记录")
+                .disabled(selectedRunRecord == nil || selectedRunRecord?.activity == .running)
             }
             .padding(.horizontal, 8)
             .frame(height: 30)
+
+            if let queueMessage {
+                Label(queueMessage, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             Divider()
 
@@ -493,10 +516,17 @@ struct MavenView: View {
     private func recentRunRow(_ record: MavenRunRecord, repositoryURL: URL) -> some View {
         let module = module(for: record)
         return HStack(spacing: 7) {
-            Image(systemName: runStatusSymbol(record))
-                .foregroundStyle(runStatusColor(record))
-                .frame(width: 14)
-                .accessibilityLabel(runStatusTitle(record))
+            if record.activity == .running {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 14)
+                    .accessibilityLabel("正在执行中")
+            } else {
+                Image(systemName: runStatusSymbol(record))
+                    .foregroundStyle(runStatusColor(record))
+                    .frame(width: 14)
+                    .accessibilityLabel(runStatusTitle(record))
+            }
 
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
@@ -509,8 +539,10 @@ struct MavenView: View {
                 HStack(spacing: 7) {
                     Text(runStatusTitle(record))
                         .foregroundStyle(runStatusColor(record))
-                    Text(record.finishedAt.formatted(date: .abbreviated, time: .shortened))
-                    Text("\(record.duration.formatted(.number.precision(.fractionLength(2))))s")
+                    if record.activity == nil {
+                        Text(record.finishedAt.formatted(date: .abbreviated, time: .shortened))
+                        Text("\(record.duration.formatted(.number.precision(.fractionLength(2))))s")
+                    }
                     if module == nil, !isScanning {
                         Label("模块已不存在", systemImage: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
@@ -520,6 +552,15 @@ struct MavenView: View {
                 .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            if record.activity == .queued {
+                Button("移除排队命令", systemImage: "xmark.circle") {
+                    removeRun(record.id)
+                    if selectedRunID == record.id { recoverRunSelection(excluding: record.id) }
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .help("移除排队命令")
+            }
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
@@ -536,15 +577,13 @@ struct MavenView: View {
                 selectRecentRun(record.id)
                 rerunRecord(record, repositoryURL: repositoryURL)
             }
-            .disabled(module == nil || isScanning || execution.runningRequestID != nil)
+            .disabled(module == nil || isScanning)
 
-            Button("删除记录", systemImage: "trash", role: .destructive) {
+            Button(record.activity == .queued ? "移除排队命令" : "删除记录", systemImage: "trash", role: .destructive) {
                 removeRun(record.id)
-                if selectedRunID == record.id {
-                    selectedRunID = nil
-                    updatePersistedSelection(nil)
-                }
+                if selectedRunID == record.id { recoverRunSelection(excluding: record.id) }
             }
+            .disabled(record.activity == .running)
         }
     }
 
@@ -603,28 +642,10 @@ struct MavenView: View {
             )
         ) {
             VStack(alignment: .leading, spacing: 2) {
-                DisclosureGroup(
-                    isExpanded: Binding(
-                        get: { expandedLifecycleModuleIDs.contains(module.id) },
-                        set: { isExpanded in
-                            if isExpanded { expandedLifecycleModuleIDs.insert(module.id) }
-                            else { expandedLifecycleModuleIDs.remove(module.id) }
-                        }
-                    )
-                ) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        ForEach(MavenLifecycleGoal.allCases) { goal in
-                            lifecycleRow(goal, module: module, repositoryURL: repositoryURL)
-                        }
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(MavenLifecycleGoal.allCases) { goal in
+                        commandRow(goal, module: module, repositoryURL: repositoryURL)
                     }
-                    .padding(.leading, 8)
-                } label: {
-                    Label("Lifecycle", systemImage: "list.bullet.rectangle")
-                        .padding(.vertical, 3)
-                        .contentShape(.rect)
-                        .onTapGesture(count: 2) {
-                            toggleLifecycleExpansion(for: module.id)
-                        }
                 }
                 .padding(.leading, 8)
 
@@ -653,6 +674,7 @@ struct MavenView: View {
                         .help("模块目录中没有 pom.xml")
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 3)
             .contentShape(.rect)
             .onTapGesture(count: 2) {
@@ -673,25 +695,23 @@ struct MavenView: View {
         }
     }
 
-    private func toggleLifecycleExpansion(for moduleID: MavenModule.ID) {
-        if expandedLifecycleModuleIDs.contains(moduleID) {
-            expandedLifecycleModuleIDs.remove(moduleID)
-        } else {
-            expandedLifecycleModuleIDs.insert(moduleID)
-        }
-    }
-
-    private func lifecycleRow(
+    private func commandRow(
         _ goal: MavenLifecycleGoal,
         module: MavenModule,
         repositoryURL: URL
     ) -> some View {
         let target = MavenRunTarget(module: module, goal: goal)
         return HStack(spacing: 7) {
-            Image(systemName: execution.runningRequestID == target.id ? "progress.indicator" : "diamond.fill")
-                .font(.system(size: 7))
-                .foregroundStyle(goal == .deploy ? .orange : .secondary)
-                .frame(width: 12)
+            if execution.runningRequestID == target.id {
+                ProgressView()
+                    .controlSize(.mini)
+                    .frame(width: 12)
+            } else {
+                Image(systemName: "diamond.fill")
+                    .font(.system(size: 7))
+                    .foregroundStyle(goal == .deploy ? .orange : .secondary)
+                    .frame(width: 12)
+            }
             Text(goal.rawValue)
             Spacer(minLength: 0)
         }
@@ -714,7 +734,7 @@ struct MavenView: View {
                 selectTarget(target)
                 runTarget(target, repositoryURL: repositoryURL)
             }
-            .disabled(!module.hasPOM || execution.runningRequestID != nil)
+            .disabled(!module.hasPOM)
         }
         .opacity(module.hasPOM ? 1 : 0.5)
     }
@@ -730,7 +750,11 @@ struct MavenView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let status = displayedTerminationStatus {
+                if let activity = selectedRunRecord?.activity {
+                    Text(activity == .running ? "正在执行中" : "排队等待")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let status = displayedTerminationStatus {
                     Text(status == 0 ? "完成" : "失败（退出码 \(status)）")
                         .font(.caption)
                         .foregroundStyle(status == 0 ? .green : .red)
@@ -753,7 +777,10 @@ struct MavenView: View {
                 Button("清除当前输出", systemImage: "trash.slash", action: clearLog)
                     .labelStyle(.iconOnly)
                     .help("清除当前输出")
-                    .disabled(selectedRunRecord != nil || execution.log.isEmpty)
+                    .disabled(
+                        (selectedRunRecord != nil && selectedRunRecord?.activity != .running)
+                            || displayedLog.isEmpty
+                    )
 
                 Button("复制", systemImage: "doc.on.doc") { copy(displayedLog) }
                     .labelStyle(.iconOnly)
@@ -770,7 +797,7 @@ struct MavenView: View {
                 emptyMessageColor: execution.errorMessage == nil || selectedRunRecord != nil
                     ? .secondary
                     : .red,
-                enablesTailFollowing: selectedRunRecord == nil,
+                enablesTailFollowing: selectedRunRecord == nil || selectedRunRecord?.activity == .running,
                 contentIdentity: displayedLogIdentity,
                 followsTail: $followsLatestOutput
             )
@@ -821,7 +848,7 @@ struct MavenView: View {
                         .foregroundStyle(.red)
                 }
             } else {
-                Text("选择左侧 Lifecycle 后显示命令。")
+                Text("选择左侧 Maven 命令后显示最终命令。")
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
@@ -921,12 +948,16 @@ struct MavenView: View {
     }
 
     private func runTarget(_ target: MavenRunTarget, repositoryURL: URL) {
-        guard target.module.hasPOM, execution.runningRequestID == nil else { return }
+        guard target.module.hasPOM else { return }
         let request = makeRunRequest(target, repositoryURL: repositoryURL)
         submitRunRequest(request)
     }
 
     private func submitRunRequest(_ request: MavenRunRequest) {
+        if let repositoryURL, duplicateMessage(request, repositoryURL) != nil {
+            run(request)
+            return
+        }
         runValidationMessage = validationError(for: request)
         activePreviewRequest = request
         guard runValidationMessage == nil else { return }
@@ -995,23 +1026,29 @@ struct MavenView: View {
     }
 
     private var displayedFinishedAt: Date? {
-        selectedRunRecord?.finishedAt ?? (selectedRunRecord == nil ? execution.finishedAt : nil)
+        guard selectedRunRecord?.activity == nil else { return nil }
+        return selectedRunRecord?.finishedAt ?? (selectedRunRecord == nil ? execution.finishedAt : nil)
     }
 
     private var displayedDuration: TimeInterval? {
-        selectedRunRecord?.duration ?? (selectedRunRecord == nil ? execution.duration : nil)
+        guard selectedRunRecord?.activity == nil else { return nil }
+        return selectedRunRecord?.duration ?? (selectedRunRecord == nil ? execution.duration : nil)
     }
 
     private var outputEmptyMessage: String {
         if let record = selectedRunRecord {
+            if record.activity == .queued { return "排队等待，前一条命令成功后将自动执行。" }
+            if record.activity == .running { return "命令正在执行，等待输出…" }
             return record.log == nil ? "该运行记录未保存日志。" : "该次运行没有输出。"
         }
-        return execution.errorMessage ?? "双击 Lifecycle，或选中后点击工具栏运行。"
+        return execution.errorMessage ?? "双击 Maven 命令，或选中后点击工具栏运行。"
     }
 
     private func repositoryRuns(_ repositoryURL: URL) -> [MavenRunRecord] {
-        let repositoryPath = repositoryURL.standardizedFileURL.path
-        return recentRuns.filter { $0.repositoryPath == repositoryPath }
+        let repositoryPath = repositoryURL.standardizedFileURL.resolvingSymlinksInPath().path
+        return recentRuns.filter {
+            URL(fileURLWithPath: $0.repositoryPath).standardizedFileURL.resolvingSymlinksInPath().path == repositoryPath
+        }
     }
 
     private func module(for record: MavenRunRecord) -> MavenModule? {
@@ -1033,7 +1070,7 @@ struct MavenView: View {
     }
 
     private func rerunRecord(_ record: MavenRunRecord, repositoryURL: URL) {
-        guard execution.runningRequestID == nil, let module = module(for: record) else { return }
+        guard let module = module(for: record) else { return }
         guard let request = record.makeRunRequest(module: module) else { return }
         selectedTarget = nil
         submitRunRequest(request)
@@ -1042,8 +1079,18 @@ struct MavenView: View {
     private func removeSelectedRun() {
         guard let id = selectedRunRecord?.id else { return }
         removeRun(id)
-        selectedRunID = nil
-        updatePersistedSelection(nil)
+        recoverRunSelection(excluding: id)
+    }
+
+    private func recoverRunSelection(excluding id: UUID) {
+        selectedTarget = nil
+        activePreviewRequest = nil
+        runValidationMessage = nil
+        selectedRunID = repositoryURL.flatMap {
+            repositoryRuns($0).first(where: { $0.id != id })?.id
+        }
+        followsLatestOutput = true
+        updatePersistedSelection(selectedRunID.map(MavenWindowSelection.recentRun))
     }
 
     private func selectTarget(_ target: MavenRunTarget) {
@@ -1094,7 +1141,8 @@ struct MavenView: View {
     }
 
     private func runStatusSymbol(_ record: MavenRunRecord) -> String {
-        switch record.terminationStatus {
+        if record.activity == .queued { return "clock" }
+        return switch record.terminationStatus {
         case 0: "checkmark.circle.fill"
         case .some: "xmark.circle.fill"
         case nil: "exclamationmark.circle.fill"
@@ -1102,7 +1150,8 @@ struct MavenView: View {
     }
 
     private func runStatusColor(_ record: MavenRunRecord) -> Color {
-        switch record.terminationStatus {
+        if record.activity != nil { return .secondary }
+        return switch record.terminationStatus {
         case 0: .green
         case .some: .red
         case nil: .orange
@@ -1110,7 +1159,9 @@ struct MavenView: View {
     }
 
     private func runStatusTitle(_ record: MavenRunRecord) -> String {
-        switch record.terminationStatus {
+        if record.activity == .running { return "正在执行中" }
+        if record.activity == .queued { return "排队中 · 第 \(record.queuePosition ?? 1) 位" }
+        return switch record.terminationStatus {
         case 0: "成功"
         case .some(let status): "失败 \(status)"
         case nil: "异常"
@@ -1373,6 +1424,8 @@ struct TasksView: View {
                 removeRun: { appState.removeMavenRun($0) },
                 clearPersistedLogs: { appState.clearPersistedMavenLogs() },
                 clearHistory: { appState.clearMavenRunHistory() },
+                queueMessage: appState.mavenQueueMessage,
+                duplicateMessage: { appState.mavenQueue.duplicateMessage(for: $0, repositoryURL: $1) },
                 persistedSelection: selectedRepositoryID.flatMap {
                     appState.mavenSelection(for: $0)
                 },

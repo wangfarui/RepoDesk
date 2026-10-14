@@ -214,8 +214,18 @@ final class AppState {
     var recentTaskRuns: [TaskRunRecord] = []
     var mavenSettings = MavenSettings.empty
     let mavenEnvironmentValidationStore = MavenEnvironmentValidationStore()
-    var mavenExecution = MavenExecutionPresentation.idle
-    var recentMavenRuns: [MavenRunRecord] = []
+    let mavenQueue: MavenRunQueue
+    var mavenExecution: MavenExecutionPresentation {
+        mavenQueue.execution(for: activeRepositoryURL)
+    }
+    var mavenQueueMessage: String? {
+        mavenQueue.message(for: activeRepositoryURL)
+    }
+    var recentMavenRuns: [MavenRunRecord] {
+        mavenQueue.activeRecords + persistedMavenRuns.map { sessionMavenRuns[$0.id] ?? $0 }
+    }
+    private var persistedMavenRuns: [MavenRunRecord] = []
+    private var sessionMavenRuns: [UUID: MavenRunRecord] = [:]
     var mavenSettingsErrorMessage: String?
     var mavenProjectRevisions: [String: Int] = [:]
     var fileSearchResults: [WorkspaceFileEntry] = []
@@ -264,7 +274,6 @@ final class AppState {
     private var textSearchRequestID: UUID?
     private var javaSymbolSearchRequestID: UUID?
     private var javaNavigationRequestID: UUID?
-    private var mavenRunID: UUID?
     private var repositoryRefreshContextID = UUID()
     private let repositoryRefreshLimiter = RepositoryRefreshLimiter(limit: 4)
     private let repositorySnapshotRetryDelays: [Duration]
@@ -315,6 +324,7 @@ final class AppState {
         documentSaver: (any DocumentSaving)? = nil,
         taskStore: RepoTaskStoring? = nil,
         taskRunner: (any RepoTaskRunning)? = nil,
+        mavenRunnerFactory: @escaping () -> any RepoTaskRunning = { SystemRepoTaskRunner() },
         mavenSettingsStore: MavenSettingsStoring? = nil,
         mavenRunHistoryStore: MavenRunHistoryStoring? = nil,
         workspaceFileSearch: (any WorkspaceFileSearching)? = nil,
@@ -346,6 +356,7 @@ final class AppState {
         self.documentSaver = documentSaver ?? FileSystemDocumentStore()
         self.taskStore = taskStore ?? ApplicationSupportRepoTaskStore()
         self.taskRunner = taskRunner ?? SystemRepoTaskRunner()
+        self.mavenQueue = MavenRunQueue(runnerFactory: mavenRunnerFactory)
         self.mavenSettingsStore = mavenSettingsStore ?? UserDefaultsMavenSettingsStore()
         self.mavenRunHistoryStore = mavenRunHistoryStore ?? UserDefaultsMavenRunHistoryStore()
         self.workspaceFileSearch = workspaceFileSearch ?? FileSystemWorkspaceSearch()
@@ -380,7 +391,6 @@ final class AppState {
         commitDiffRequestID = nil
         fileSearchRequestID = nil
         textSearchRequestID = nil
-        mavenRunID = nil
         recentWorkspaces = workspaceStore.recentWorkspaces()
 
         if workspace == nil, restoresWorkspaceOnLaunch,
@@ -392,7 +402,7 @@ final class AppState {
         }
         if let workspaceURL {
             mavenSettings = self.mavenSettingsStore.settings(for: workspaceURL)
-            recentMavenRuns = self.mavenRunHistoryStore.recentRuns(for: workspaceURL)
+            persistedMavenRuns = self.mavenRunHistoryStore.recentRuns(for: workspaceURL)
         }
         observeJavaLanguageEvents()
         reloadJavaWorkspaceConfiguration()
@@ -659,10 +669,8 @@ final class AppState {
         guard !isGitWriteOperationRunning else { return }
         persistWindowState()
         discardLastDeletedFileSession()
-        if mavenExecution.runningRequestID != nil {
-            stopMaven()
-        }
-        mavenRunID = nil
+        mavenQueue.reset()
+        sessionMavenRuns.removeAll()
         repositoryRefreshContextID = UUID()
         workspaceStore.rememberWorkspace(url)
         recentWorkspaces = workspaceStore.recentWorkspaces()
@@ -707,8 +715,7 @@ final class AppState {
         taskCatalog = TaskCatalog(global: [], workspace: [], repository: [])
         selectedTaskID = nil
         resolvedSelectedTask = nil
-        mavenExecution = .idle
-        recentMavenRuns = []
+        persistedMavenRuns = []
         mavenSettingsErrorMessage = nil
         mavenProjectRevisions = [:]
         historyVerticalSplitFraction = HistorySplitLayout.defaultVerticalFraction
@@ -807,10 +814,8 @@ final class AppState {
         if runningTaskID != nil {
             stopRunningTask()
         }
-        if mavenExecution.runningRequestID != nil {
-            stopMaven()
-        }
-        mavenRunID = nil
+        mavenQueue.reset()
+        sessionMavenRuns.removeAll()
         repositoryRefreshContextID = UUID()
         workspace = nil
         repositories = []
@@ -849,8 +854,7 @@ final class AppState {
         mergeCommitFileDiff = nil
         taskCatalog = TaskCatalog(global: [], workspace: [], repository: [])
         mavenSettings = .empty
-        mavenExecution = .idle
-        recentMavenRuns = []
+        persistedMavenRuns = []
         mavenSettingsErrorMessage = nil
         mavenProjectRevisions = [:]
         historyGrouping = .directory
@@ -4636,7 +4640,7 @@ final class AppState {
     }
 
     func runSelectedTask() {
-        guard runningTaskID == nil, mavenExecution.runningRequestID == nil else { return }
+        guard runningTaskID == nil, !mavenQueue.hasRunningCommands else { return }
         resolveSelectedTask()
         guard let task = resolvedSelectedTask else { return }
         runningTaskID = task.definitionID
@@ -4705,7 +4709,7 @@ final class AppState {
         }
         if previousPolicy != settings.runHistoryPolicy {
             mavenRunHistoryStore.applyPolicy(settings.runHistoryPolicy, for: workspaceURL)
-            recentMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
+            persistedMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
         }
     }
 
@@ -4732,136 +4736,56 @@ final class AppState {
     }
 
     func runMaven(_ request: MavenRunRequest) {
-        guard runningTaskID == nil,
-              mavenExecution.runningRequestID == nil,
-              let workspaceURL else { return }
-        let runID = UUID()
+        guard runningTaskID == nil, let workspaceURL else { return }
         let repositoryURL = request.command.workingDirectoryURL.standardizedFileURL
-        let startedAt = Date()
-        mavenRunID = runID
-        let resolvedTask = ResolvedRepoTask(
-            definitionID: request.id,
-            name: "Maven \(request.goal.rawValue)",
-            executableURL: request.command.executableURL,
-            arguments: request.command.arguments,
-            workingDirectoryURL: request.command.workingDirectoryURL,
-            environment: request.command.environment,
-            confirmation: request.requiresConfirmation ? .required : .none
-        )
-        mavenExecution = MavenExecutionPresentation(
-            runningRequestID: request.id,
-            log: "$ \(request.command.displayComponents.joined(separator: " "))\n\n",
-            terminationStatus: nil,
-            duration: nil,
-            finishedAt: nil,
-            errorMessage: nil
-        )
-        let outputBuffer = StreamingTaskOutputBuffer()
-
-        Task { [weak self] in
+        mavenQueue.onFinish = { [weak self] record, workspaceURL in
             guard let self else { return }
-            do {
-                let result = try await taskRunner.run(resolvedTask) { chunk in
-                    guard outputBuffer.append(chunk.text) else { return }
-                    Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: .milliseconds(32))
-                        guard self?.mavenRunID == runID else {
-                            _ = outputBuffer.take()
-                            return
-                        }
-                        let pending = outputBuffer.take()
-                        if !pending.isEmpty {
-                            self?.mavenExecution.log.append(pending)
-                        }
-                    }
-                }
-                guard mavenRunID == runID else { return }
-                mavenExecution.log.append(outputBuffer.take())
-                mavenRunID = nil
-                mavenExecution.runningRequestID = nil
-                mavenExecution.terminationStatus = result.terminationStatus
-                mavenExecution.duration = result.duration
-                mavenExecution.finishedAt = result.finishedAt
-                recordMavenRun(
-                    request,
-                    repositoryURL: repositoryURL,
-                    workspaceURL: workspaceURL,
-                    terminationStatus: result.terminationStatus,
-                    startedAt: result.startedAt,
-                    finishedAt: result.finishedAt
-                )
-            } catch {
-                guard mavenRunID == runID else { return }
-                mavenExecution.log.append(outputBuffer.take())
-                mavenRunID = nil
-                mavenExecution.runningRequestID = nil
-                mavenExecution.errorMessage = error.localizedDescription
-                mavenExecution.log.append("\nMaven 执行失败：\(error.localizedDescription)\n")
-                let finishedAt = Date()
-                mavenExecution.duration = finishedAt.timeIntervalSince(startedAt)
-                mavenExecution.finishedAt = finishedAt
-                recordMavenRun(
-                    request,
-                    repositoryURL: repositoryURL,
-                    workspaceURL: workspaceURL,
-                    terminationStatus: nil,
-                    startedAt: startedAt,
-                    finishedAt: finishedAt
-                )
-            }
+            mavenRunHistoryStore.record(
+                record,
+                for: workspaceURL,
+                policy: mavenSettings.runHistoryPolicy
+            )
+            persistedMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
+            sessionMavenRuns[record.id] = record
+            let retainedIDs = Set(persistedMavenRuns.map(\.id))
+            sessionMavenRuns = sessionMavenRuns.filter { retainedIDs.contains($0.key) }
         }
+        mavenQueue.submit(request, repositoryURL: repositoryURL, workspaceURL: workspaceURL)
     }
 
     func stopMaven() {
-        Task { await taskRunner.stop() }
+        guard let repositoryURL = activeRepositoryURL else { return }
+        mavenQueue.stop(repositoryURL: repositoryURL)
     }
 
     func clearMavenLog() {
-        mavenExecution.log = ""
+        guard let repositoryURL = activeRepositoryURL else { return }
+        mavenQueue.clearLog(repositoryURL: repositoryURL)
     }
 
     func removeMavenRun(_ id: MavenRunRecord.ID) {
+        if mavenQueue.activeRecords.contains(where: { $0.id == id }) {
+            mavenQueue.remove(id)
+            return
+        }
         guard let workspaceURL else { return }
+        sessionMavenRuns[id] = nil
         mavenRunHistoryStore.remove(runID: id, for: workspaceURL)
-        recentMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
+        persistedMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
     }
 
     func clearPersistedMavenLogs() {
         guard let workspaceURL else { return }
+        sessionMavenRuns.removeAll()
         mavenRunHistoryStore.clearPersistedLogs(for: workspaceURL)
-        recentMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
+        persistedMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
     }
 
     func clearMavenRunHistory() {
         guard let workspaceURL else { return }
+        sessionMavenRuns.removeAll()
         mavenRunHistoryStore.clearHistory(for: workspaceURL)
-        recentMavenRuns = []
-    }
-
-    private func recordMavenRun(
-        _ request: MavenRunRequest,
-        repositoryURL: URL,
-        workspaceURL: URL,
-        terminationStatus: Int32?,
-        startedAt: Date,
-        finishedAt: Date
-    ) {
-        let record = MavenRunRecord(
-            repositoryURL: repositoryURL,
-            module: request.module,
-            goal: request.goal,
-            command: request.command,
-            terminationStatus: terminationStatus,
-            startedAt: startedAt,
-            finishedAt: finishedAt,
-            log: mavenExecution.log
-        )
-        mavenRunHistoryStore.record(
-            record,
-            for: workspaceURL,
-            policy: mavenSettings.runHistoryPolicy
-        )
-        recentMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
+        persistedMavenRuns = []
     }
 
     private func resolveSelectedTask() {
@@ -4890,7 +4814,7 @@ final class AppState {
 
     private func loadMavenSettings(for workspaceURL: URL) {
         mavenSettings = mavenSettingsStore.settings(for: workspaceURL)
-        recentMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
+        persistedMavenRuns = mavenRunHistoryStore.recentRuns(for: workspaceURL)
     }
 
     private func persistAppPreferences() {

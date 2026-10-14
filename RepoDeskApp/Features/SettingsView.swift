@@ -663,7 +663,9 @@ struct RepoDeskSettingsView: View {
                     clearLog: { appState.clearMavenLog() },
                     removeRun: { appState.removeMavenRun($0) },
                     clearPersistedLogs: { appState.clearPersistedMavenLogs() },
-                    clearHistory: { appState.clearMavenRunHistory() }
+                    clearHistory: { appState.clearMavenRunHistory() },
+                    queueMessage: appState.mavenQueueMessage,
+                    duplicateMessage: { appState.mavenQueue.duplicateMessage(for: $0, repositoryURL: $1) }
                 )
             } else {
                 ContentUnavailableView(

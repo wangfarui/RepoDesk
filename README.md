@@ -4,6 +4,8 @@ RepoDesk is a native macOS workspace desk for reviewing Agent-produced repositor
 
 RepoDesk v0.1 connects workspace and nested-repository management, automatic multi-repository Git status, structured diff/history review with per-side Blame, selectable Commit and Commit And Push, repository Fetch/Pull/Push, Branch operations and merge-conflict resolution, editable workspace files, and an IDEA-style Maven module/lifecycle view with environment validation, final-command preview, process-group stopping, POM synchronization, streamed output, and recent-run replay. Workspace and Repository contexts expose different top-level modules. The staged implementation, replacement verification, and final user acceptance are complete.
 
+Maven commands share a FIFO queue within each Git repository; different repositories can run concurrently. Triggering a command while another runs adds it to the queue, using the parameters captured when submitted. Duplicate running or queued commands show their status instead of creating another entry. Recent runs show a spinner for the active command, queue positions and individual remove buttons for waiting commands, and results and logs after completion. Failure or Stop clears that repository's waiting commands. Queues are session-only and are stopped when the workspace closes or changes; completed history follows the configured retention and log persistence settings.
+
 ## Requirements
 
 - macOS 14+

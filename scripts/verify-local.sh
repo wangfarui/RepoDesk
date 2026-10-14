@@ -808,6 +808,20 @@ swiftc \
 
 "${project_dir}/build/verify-maven"
 
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-maven-queue.swift" \
+  -o "${project_dir}/build/verify-maven-queue"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-maven-queue"
+
 "${script_dir}/build-local.sh"
 
 app_bundle="${project_dir}/build/RepoDesk.app"
