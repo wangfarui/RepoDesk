@@ -1,10 +1,39 @@
 import Foundation
 
 enum ChangesAutoExpansionPolicy {
-    static let maximumFileCount = 10
+    static func shouldExpandAll(
+        fileCount: Int,
+        settings: ChangesAutoExpansionSettings = .default
+    ) -> Bool {
+        guard fileCount > 0 else { return false }
+        switch settings.mode {
+        case .byCount: return fileCount <= settings.maximumFileCount
+        case .always: return true
+        case .never: return false
+        }
+    }
+}
 
-    static func shouldExpandAll(fileCount: Int) -> Bool {
-        fileCount > 0 && fileCount <= maximumFileCount
+/// Capture defaults on entering a scope, and preserve manual choices across refreshes.
+struct ChangesAutoExpansionSession {
+    private(set) var contextID: String?
+    private(set) var settings = ChangesAutoExpansionSettings.default
+    private var hasManualInteraction = false
+
+    mutating func beginIfNeeded(contextID: String, settings: ChangesAutoExpansionSettings) {
+        guard self.contextID != contextID else { return }
+        self.contextID = contextID
+        self.settings = settings
+        hasManualInteraction = false
+    }
+
+    mutating func recordManualInteraction() {
+        hasManualInteraction = true
+    }
+
+    func shouldExpandAll(fileCount: Int) -> Bool {
+        !hasManualInteraction
+            && ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: fileCount, settings: settings)
     }
 }
 

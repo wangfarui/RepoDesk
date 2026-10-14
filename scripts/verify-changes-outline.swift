@@ -13,6 +13,7 @@ enum ChangesOutlineVerificationError: Error, CustomStringConvertible {
 @main
 enum ChangesOutlineVerification {
     static func main() throws {
+        try verifyAutomaticExpansion()
         try verifySingleDirectoryChainCompaction()
         try verifyCompactionStopsAtBranch()
         try verifyDirectFilesRemainVisibleBesideChildDirectories()
@@ -22,6 +23,42 @@ enum ChangesOutlineVerification {
         try verifyCommitCheckboxAggregation()
         try verifyGroupingPersistenceCompatibility()
         print("Changes outline verification passed")
+    }
+
+    private static func verifyAutomaticExpansion() throws {
+        try expect(!ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 0), "Empty scope expanded")
+        try expect(ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 10), "Default threshold excluded 10")
+        try expect(!ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 11), "Default threshold included 11")
+        let custom = ChangesAutoExpansionSettings(maximumFileCount: 25)
+        try expect(
+            ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 25, settings: custom)
+                && !ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 26, settings: custom),
+            "Custom Changes threshold did not control expansion"
+        )
+        let always = ChangesAutoExpansionSettings(mode: .always)
+        let never = ChangesAutoExpansionSettings(mode: .never)
+        try expect(
+            ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 20_000, settings: always),
+            "Always mode used the numeric threshold"
+        )
+        try expect(
+            !ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 1, settings: never),
+            "Never mode expanded changes"
+        )
+        var session = ChangesAutoExpansionSession()
+        session.beginIfNeeded(contextID: "repo-a", settings: custom)
+        session.beginIfNeeded(contextID: "repo-a", settings: never)
+        try expect(session.shouldExpandAll(fileCount: 20), "Settings changed the active scope immediately")
+        session.recordManualInteraction()
+        session.beginIfNeeded(contextID: "repo-a", settings: always)
+        try expect(!session.shouldExpandAll(fileCount: 2), "Refresh overrode manual expansion choices")
+        session.beginIfNeeded(contextID: "repo-b", settings: always)
+        try expect(session.shouldExpandAll(fileCount: 100), "New scope did not adopt new defaults")
+        session.beginIfNeeded(contextID: "repo-a", settings: never)
+        try expect(!session.shouldExpandAll(fileCount: 1), "Returning to a scope ignored new defaults")
+        session = ChangesAutoExpansionSession()
+        session.beginIfNeeded(contextID: "repo-a", settings: custom)
+        try expect(session.shouldExpandAll(fileCount: 20), "Re-entering Changes did not adopt new defaults")
     }
 
     private static func verifySingleDirectoryChainCompaction() throws {

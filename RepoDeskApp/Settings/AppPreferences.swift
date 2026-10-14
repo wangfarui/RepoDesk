@@ -8,6 +8,7 @@ struct AppPreferences: Codable, Equatable, Sendable {
     var opensMarkdownInPreview: Bool
     var diffPresentation: GitDiffPresentation
     var ignoresWhitespaceInDiff: Bool
+    var changesAutoExpansion: ChangesAutoExpansionSettings
     var sidebarFontSize: Double
     var interfaceFontSize: Double
     var fileContentFontSize: Double
@@ -23,6 +24,7 @@ struct AppPreferences: Codable, Equatable, Sendable {
         opensMarkdownInPreview: Bool = false,
         diffPresentation: GitDiffPresentation = .unified,
         ignoresWhitespaceInDiff: Bool = false,
+        changesAutoExpansion: ChangesAutoExpansionSettings = .default,
         sidebarFontSize: Double = RepoDeskFontSize.default,
         interfaceFontSize: Double = RepoDeskFontSize.default,
         fileContentFontSize: Double = RepoDeskFontSize.default,
@@ -37,6 +39,7 @@ struct AppPreferences: Codable, Equatable, Sendable {
         self.opensMarkdownInPreview = opensMarkdownInPreview
         self.diffPresentation = diffPresentation
         self.ignoresWhitespaceInDiff = ignoresWhitespaceInDiff
+        self.changesAutoExpansion = changesAutoExpansion
         self.sidebarFontSize = RepoDeskFontSize.normalized(sidebarFontSize)
         self.interfaceFontSize = RepoDeskFontSize.normalized(interfaceFontSize)
         self.fileContentFontSize = RepoDeskFontSize.normalized(fileContentFontSize)
@@ -72,6 +75,10 @@ struct AppPreferences: Codable, Equatable, Sendable {
             Bool.self,
             forKey: .ignoresWhitespaceInDiff
         ) ?? false
+        changesAutoExpansion = try container.decodeIfPresent(
+            ChangesAutoExpansionSettings.self,
+            forKey: .changesAutoExpansion
+        ) ?? .default
         sidebarFontSize = RepoDeskFontSize.normalized(
             try container.decodeIfPresent(Double.self, forKey: .sidebarFontSize)
                 ?? RepoDeskFontSize.default

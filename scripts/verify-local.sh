@@ -486,6 +486,7 @@ swiftc \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ChangesOutline.swift" \
+  "${project_dir}/RepoDeskApp/Settings/ChangesAutoExpansionSettings.swift" \
   "${project_dir}/scripts/verify-changes-outline.swift" \
   -o "${project_dir}/build/verify-changes-outline"
 

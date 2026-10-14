@@ -18,6 +18,7 @@ struct AppPreferencesTests {
             opensMarkdownInPreview: true,
             diffPresentation: .sideBySide,
             ignoresWhitespaceInDiff: true,
+            changesAutoExpansion: ChangesAutoExpansionSettings(mode: .always, maximumFileCount: 42),
             sidebarFontSize: 10,
             interfaceFontSize: 15,
             fileContentFontSize: 16,
@@ -71,6 +72,7 @@ struct AppPreferencesTests {
         #expect(!preferences.opensMarkdownInPreview)
         #expect(preferences.diffPresentation == .unified)
         #expect(!preferences.ignoresWhitespaceInDiff)
+        #expect(preferences.changesAutoExpansion == .default)
         #expect(preferences.sidebarFontSize == RepoDeskFontSize.default)
         #expect(preferences.interfaceFontSize == RepoDeskFontSize.default)
         #expect(preferences.fileContentFontSize == RepoDeskFontSize.default)
@@ -97,6 +99,8 @@ struct AppPreferencesTests {
         state.setOpensMarkdownInPreview(true)
         state.setDiffPresentation(.sideBySide)
         state.setIgnoresWhitespaceInDiff(true)
+        state.setChangesAutoExpansionMaximumFileCount(42)
+        state.setChangesAutoExpansionMode(.always)
         state.setSidebarFontSize(10)
         state.setInterfaceFontSize(15)
         state.setFileContentFontSize(16)
@@ -126,6 +130,7 @@ struct AppPreferencesTests {
         #expect(restored.opensMarkdownInPreview)
         #expect(restored.diffPresentation == .sideBySide)
         #expect(restored.ignoresWhitespaceInDiff)
+        #expect(restored.changesAutoExpansion == ChangesAutoExpansionSettings(mode: .always, maximumFileCount: 42))
         #expect(restored.sidebarFontSize == 10)
         #expect(restored.interfaceFontSize == 15)
         #expect(restored.fileContentFontSize == 16)

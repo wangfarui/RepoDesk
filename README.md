@@ -67,7 +67,7 @@ JDT LS continues to use metadata that already exists in the source repository; t
 - `RepoDeskApp/Git` owns Git queries, parsing, and the bounded set of explicit v0.1 write operations.
 - `RepoDeskApp/Files` owns lazy workspace browsing, optional compact single-child folder presentation, recursive debounced file-system monitoring, incremental tree refresh planning, filename search, block-level Markdown parsing, encoding-preserving document loading/saving, and external-write conflict detection.
 - `RepoDeskApp/Maven` owns Workspace Maven/JDK settings and validation, multi-module POM scanning and refresh planning, lifecycle command construction, recent runs, log retention, and Maven presentation models.
-- `RepoDeskApp/Settings` owns application-wide refresh, Files, and Diff preferences plus compatibility migration from legacy preference keys.
+- `RepoDeskApp/Settings` owns application-wide refresh, Files, and Git preferences plus compatibility migration from legacy preference keys. Git settings include Changes automatic expansion (by count, always, or never; default threshold 10) and Diff display preferences. Changes defaults apply when entering the view, switching repository scope, or changing grouping; manual expansion choices survive refreshes in the current scope.
 - `RepoDeskApp/Tasks` retains the reusable local task/process foundation and stops complete process groups; the v0.1 user-facing module is Maven rather than a generic Tasks editor.
 - `RepoDeskApp/Process` and `RepoDeskApp/Diagnostics` own bounded command execution, cancellation, timeout handling, and rotating local diagnostics.
 - `RepoDeskTests` tests domain and state behavior with Swift Testing.

@@ -21,6 +21,7 @@ struct ChangesView: View {
     @Bindable var appState: AppState
     @State private var collapsedRepositoryIDs: Set<String> = []
     @State private var expandedNodeIDs: Set<String> = []
+    @State private var automaticExpansionSession = ChangesAutoExpansionSession()
     @State private var contextMenuOutlineRowID: String?
     @State private var diffComparisonWindow = GitDiffWindowController(
         frameAutosaveName: "RepoDesk.GitDiffComparison"
@@ -55,6 +56,9 @@ struct ChangesView: View {
         }
         .task(id: automaticExpansionTaskID) {
             applyAutomaticExpansionIfNeeded()
+        }
+        .onDisappear {
+            automaticExpansionSession = ChangesAutoExpansionSession()
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
@@ -151,6 +155,7 @@ struct ChangesView: View {
                 .help("Group By")
 
                 Button("展开全部", systemImage: "arrow.up.left.and.arrow.down.right") {
+                    automaticExpansionSession.recordManualInteraction()
                     expandAllChanges()
                 }
                 .buttonStyle(.borderless)
@@ -161,6 +166,7 @@ struct ChangesView: View {
                 .help("Expand All")
 
                 Button("折叠全部", systemImage: "arrow.down.right.and.arrow.up.left") {
+                    automaticExpansionSession.recordManualInteraction()
                     collapseAllChanges()
                 }
                 .buttonStyle(.borderless)
@@ -912,11 +918,18 @@ struct ChangesView: View {
         visibleRepositories.reduce(0) { $0 + selectionCount(for: $1) }
     }
 
+    private var automaticExpansionContextID: String {
+        "\(appState.workspace?.path ?? "")|\(changesListIdentity)|\(appState.changesGrouping.rawValue)"
+    }
+
     private var automaticExpansionTaskID: String {
-        let context = appState.isWorkspaceContext ? "workspace" : "repository"
-        let scope = effectiveRepositoryScopeID ?? "all"
-        let prefix = "\(context)|\(scope)|\(appState.changesGrouping.rawValue)|\(visibleChangeCount)"
-        guard ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: visibleChangeCount) else {
+        let prefix = "\(automaticExpansionContextID)|\(visibleChangeCount)"
+        let settings = automaticExpansionSession.contextID == automaticExpansionContextID
+            ? automaticExpansionSession.settings : appState.changesAutoExpansion
+        guard ChangesAutoExpansionPolicy.shouldExpandAll(
+            fileCount: visibleChangeCount,
+            settings: settings
+        ) else {
             return prefix
         }
         let selections = visibleRepositories.flatMap { repository in
@@ -928,17 +941,23 @@ struct ChangesView: View {
     }
 
     private func applyAutomaticExpansionIfNeeded() {
-        guard ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: visibleChangeCount) else { return }
+        automaticExpansionSession.beginIfNeeded(
+            contextID: automaticExpansionContextID,
+            settings: appState.changesAutoExpansion
+        )
+        guard automaticExpansionSession.shouldExpandAll(fileCount: visibleChangeCount) else { return }
         expandAllChanges()
     }
 
     private func toggleRepositoryExpansion(_ id: String) {
+        automaticExpansionSession.recordManualInteraction()
         if collapsedRepositoryIDs.remove(id) == nil {
             collapsedRepositoryIDs.insert(id)
         }
     }
 
     private func toggleNodeExpansion(_ id: String) {
+        automaticExpansionSession.recordManualInteraction()
         if expandedNodeIDs.remove(id) == nil {
             expandedNodeIDs.insert(id)
         }

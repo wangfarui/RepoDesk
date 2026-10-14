@@ -10,6 +10,11 @@ private struct SettingsRenderingError: Error {
 @MainActor
 enum VerifySettingsRendering {
     static func main() throws {
+        let suiteName = "RepoDeskSettingsRendering.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            throw SettingsRenderingError(message: "Could not create isolated UserDefaults")
+        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let workspaceURL = URL(
             fileURLWithPath: FileManager.default.currentDirectoryPath,
             isDirectory: true
@@ -19,6 +24,7 @@ enum VerifySettingsRendering {
         )
         let state = AppState(
             workspace: WorkspaceSummary(url: workspaceURL),
+            appPreferencesStore: UserDefaultsAppPreferencesStore(defaults: defaults),
             restoresWorkspaceOnLaunch: false
         )
         state.setShowsHiddenFiles(true)
@@ -29,7 +35,18 @@ enum VerifySettingsRendering {
         try render(tab: .general, state: state, name: "settings-general.png")
         try render(tab: .appearance, state: state, name: "settings-appearance.png")
         try render(tab: .files, state: state, name: "settings-files.png")
-        try render(tab: .diff, state: state, name: "settings-diff.png")
+        try render(tab: .git, state: state, name: "settings-git.png")
+        try render(
+            tab: .git,
+            state: state,
+            name: "settings-git-compact.png",
+            size: NSSize(width: 760, height: 600)
+        )
+        state.setChangesAutoExpansionMode(.always)
+        try render(tab: .git, state: state, name: "settings-git-always.png")
+        state.setChangesAutoExpansionMode(.never)
+        try render(tab: .git, state: state, name: "settings-git-never.png")
+        state.resetChangesAutoExpansion()
         try render(tab: .java, state: state, name: "settings-java.png")
         try render(tab: .maven, state: state, name: "settings-maven.png")
         try render(

@@ -5,7 +5,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
     case appearance
     case files
     case shortcuts
-    case diff
+    case git
     case java
     case maven
 
@@ -17,7 +17,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .appearance: "外观"
         case .files: "Files"
         case .shortcuts: "快捷键"
-        case .diff: "Diff"
+        case .git: "Git"
         case .java: "Java"
         case .maven: "Maven"
         }
@@ -29,7 +29,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .appearance: "分区域字体大小"
         case .files: "文件树与编辑器"
         case .shortcuts: "查看与修改应用快捷键"
-        case .diff: "差异显示偏好"
+        case .git: "Changes 列表与 Diff 显示"
         case .java: "索引资源与缓存"
         case .maven: "运行环境与记录"
         }
@@ -41,7 +41,7 @@ enum RepoDeskSettingsTab: String, CaseIterable, Hashable, Identifiable {
         case .appearance: "textformat.size"
         case .files: "folder"
         case .shortcuts: "command"
-        case .diff: "rectangle.split.2x1"
+        case .git: "point.3.connected.trianglepath.dotted"
         case .java: "cup.and.heat.waves"
         case .maven: "shippingbox"
         }
@@ -415,12 +415,71 @@ struct RepoDeskSettingsView: View {
         case .shortcuts:
             shortcutSettingsPage
 
-        case .diff:
+        case .git:
             settingsPage(
-                title: "Diff",
-                description: "这些偏好会应用到之后打开或刷新的 Changes Diff。"
+                title: "Git",
+                description: "配置 Repository 和 Workspace 的 Changes 列表，以及 Diff 显示偏好。"
             ) {
-                SettingsSection(title: "显示", systemImage: "rectangle.split.2x1") {
+                SettingsSection(title: "Changes 列表", systemImage: "list.bullet.indent") {
+                    SettingsRow(
+                        title: "自动展开改动列表",
+                        description: "重新进入 Changes、切换仓库或更换分组时应用；手动展开、折叠后，刷新会保留当前状态。"
+                    ) {
+                        Picker(
+                            "自动展开改动列表",
+                            selection: Binding(
+                                get: { appState.changesAutoExpansion.mode },
+                                set: { appState.setChangesAutoExpansionMode($0) }
+                            )
+                        ) {
+                            ForEach(ChangesAutoExpansionSettings.Mode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 170)
+                        .accessibilityIdentifier("RepoDesk.Settings.ChangesAutoExpansionMode")
+                    }
+
+                    if appState.changesAutoExpansion.mode == .byCount {
+                        SettingsRow(
+                            title: "自动展开阈值",
+                            description: "当前 Changes 范围内的改动数量不超过此值时，自动展开所有分组，显示文件列表。"
+                        ) {
+                            HStack(spacing: 6) {
+                                TextField(
+                                    "自动展开阈值",
+                                    value: changesAutoExpansionMaximumFileCountBinding,
+                                    format: .number.grouping(.never)
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 64)
+                                .accessibilityIdentifier("RepoDesk.Settings.ChangesAutoExpansionThreshold")
+                                Text("个")
+                                Stepper(
+                                    "自动展开阈值",
+                                    value: changesAutoExpansionMaximumFileCountBinding,
+                                    in: ChangesAutoExpansionSettings.fileCountRange
+                                )
+                                .labelsHidden()
+                                .fixedSize()
+                            }
+                            .help("可输入 1–10,000；默认 10")
+                        }
+                    }
+
+                    SettingsRow(
+                        title: "Changes 默认值",
+                        description: "恢复按改动数量自动展开，阈值为 10。"
+                    ) {
+                        Button("恢复", systemImage: "arrow.counterclockwise") {
+                            appState.resetChangesAutoExpansion()
+                        }
+                    }
+                }
+
+                SettingsSection(title: "Diff 显示", systemImage: "rectangle.split.2x1") {
                     SettingsRow(
                         title: "默认 Diff 模式",
                         description: "Unified 适合快速浏览，Side-by-side 适合逐行比较。"
@@ -615,6 +674,13 @@ struct RepoDeskSettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+
+    private var changesAutoExpansionMaximumFileCountBinding: Binding<Int> {
+        Binding(
+            get: { appState.changesAutoExpansion.maximumFileCount },
+            set: { appState.setChangesAutoExpansionMaximumFileCount($0) }
+        )
     }
 
     private func settingsPage<Content: View>(

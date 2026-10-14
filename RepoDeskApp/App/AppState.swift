@@ -110,6 +110,7 @@ final class AppState {
     var isLoadingDiff = false
     var ignoresWhitespaceInDiff = false
     var diffPresentation: GitDiffPresentation = .unified
+    var changesAutoExpansion = ChangesAutoExpansionSettings.default
     var changesRepositoryScopeID: RegisteredRepository.ID?
     var changesGrouping: GitChangesGrouping = .directory
     var commitMessageDrafts: [RegisteredRepository.ID: String] = [:]
@@ -362,6 +363,7 @@ final class AppState {
         opensMarkdownInPreview = appPreferences.opensMarkdownInPreview
         diffPresentation = appPreferences.diffPresentation
         ignoresWhitespaceInDiff = appPreferences.ignoresWhitespaceInDiff
+        changesAutoExpansion = appPreferences.changesAutoExpansion
         sidebarFontSize = appPreferences.sidebarFontSize
         interfaceFontSize = appPreferences.interfaceFontSize
         fileContentFontSize = appPreferences.fileContentFontSize
@@ -2325,6 +2327,27 @@ final class AppState {
     func setDiffPresentation(_ presentation: GitDiffPresentation) {
         guard diffPresentation != presentation else { return }
         diffPresentation = presentation
+        persistAppPreferences()
+    }
+
+    func setChangesAutoExpansionMode(_ mode: ChangesAutoExpansionSettings.Mode) {
+        guard changesAutoExpansion.mode != mode else { return }
+        changesAutoExpansion.mode = mode
+        persistAppPreferences()
+    }
+
+    func setChangesAutoExpansionMaximumFileCount(_ count: Int) {
+        let settings = ChangesAutoExpansionSettings(
+            mode: changesAutoExpansion.mode,
+            maximumFileCount: count
+        )
+        guard changesAutoExpansion != settings else { return }
+        changesAutoExpansion = settings
+        persistAppPreferences()
+    }
+
+    func resetChangesAutoExpansion() {
+        changesAutoExpansion = .default
         persistAppPreferences()
     }
 
@@ -4880,6 +4903,7 @@ final class AppState {
                 opensMarkdownInPreview: opensMarkdownInPreview,
                 diffPresentation: diffPresentation,
                 ignoresWhitespaceInDiff: ignoresWhitespaceInDiff,
+                changesAutoExpansion: changesAutoExpansion,
                 sidebarFontSize: sidebarFontSize,
                 interfaceFontSize: interfaceFontSize,
                 fileContentFontSize: fileContentFontSize,
