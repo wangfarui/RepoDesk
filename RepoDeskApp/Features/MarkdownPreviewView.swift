@@ -430,14 +430,13 @@ struct MarkdownPreviewAttributedDocument {
         font: NSFont,
         color: NSColor = .textColor
     ) -> NSMutableAttributedString {
-        guard let parsed = try? AttributedString(markdown: source) else {
+        guard let parsedText = MarkdownPreviewInlineParser.parse(source) else {
             return NSMutableAttributedString(
                 string: source,
                 attributes: [.font: font, .foregroundColor: color]
             )
         }
 
-        let parsedText = NSAttributedString(parsed)
         let result = NSMutableAttributedString(
             string: parsedText.string,
             attributes: [.font: font, .foregroundColor: color]
@@ -611,9 +610,9 @@ struct MarkdownPreviewHTMLDocument {
             text += rendered.text + "\n"
 
         case .codeBlock(let language, let code):
-            let label = language.map { escapeHTML($0.uppercased()) } ?? ""
+            let label = language?.uppercased() ?? ""
             let labelHTML = language.map {
-                "<div class=\"markdown-code-language\">\(escapeHTML($0.uppercased()))</div>"
+                "<div class=\"markdown-code-language\">\(escapeHTML($0.uppercased()))</div>\(blockBreak)"
             } ?? ""
             body += "<div class=\"markdown-code-block\" \(sourceAttributes)>\(labelHTML)"
                 + "<pre><code>\(escapeHTML(code))</code></pre></div>\(blockBreak)"
@@ -652,7 +651,9 @@ struct MarkdownPreviewHTMLDocument {
                 }
                 body += "</tr>"
             }
-            body += "</tbody></table>\(blockBreak)"
+            // The last cell already emits the row's newline. An extra block break
+            // would shift every subsequent search range in the DOM text nodes.
+            body += "</tbody></table>"
         }
     }
 
@@ -672,10 +673,9 @@ struct MarkdownPreviewHTMLDocument {
     }
 
     private static func inlineHTML(_ source: String) -> (html: String, text: String) {
-        guard let parsed = try? AttributedString(markdown: source) else {
+        guard let parsedText = MarkdownPreviewInlineParser.parse(source) else {
             return (escapeHTML(source), source)
         }
-        let parsedText = NSAttributedString(parsed)
         var html = ""
         var text = ""
         parsedText.enumerateAttributes(
@@ -850,6 +850,127 @@ struct MarkdownPreviewHTMLDocument {
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\"", with: "&quot;")
             .replacingOccurrences(of: "'", with: "&#39;")
+    }
+}
+
+// Foundation follows CommonMark's punctuation flanking rule, which leaves labels
+// such as **锁定范围：**正文 literal. Add a temporary word character inside those
+// closing delimiters, then remove it from the attributed result before rendering.
+// Both preview surfaces therefore share the same styles and visible text offsets.
+private enum MarkdownPreviewInlineParser {
+    static func parse(_ source: String) -> NSAttributedString? {
+        var marker = "RepoDeskStrongBoundary" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        while source.contains(marker) { marker += "X" }
+        let normalized = normalizeBoldLabels(source, marker: marker)
+        guard let parsed = try? AttributedString(markdown: normalized) else { return nil }
+        let result = NSMutableAttributedString(attributedString: NSAttributedString(parsed))
+        if normalized != source {
+            while true {
+                let range = (result.string as NSString).range(of: marker)
+                guard range.location != NSNotFound else { break }
+                result.deleteCharacters(in: range)
+            }
+        }
+        return result
+    }
+
+    private static func normalizeBoldLabels(_ source: String, marker: String) -> String {
+        var result = ""
+        var cursor = source.startIndex
+        while cursor < source.endIndex {
+            if let end = literalEnd(in: source, at: cursor) {
+                result += source[cursor..<end]
+                cursor = end
+                continue
+            }
+            guard source[cursor...].hasPrefix("**"),
+                  !source[cursor...].hasPrefix("***") else {
+                result.append(source[cursor])
+                cursor = source.index(after: cursor)
+                continue
+            }
+            let contentStart = source.index(cursor, offsetBy: 2)
+            var closing = contentStart
+            while closing < source.endIndex {
+                if let end = literalEnd(in: source, at: closing) {
+                    closing = end
+                } else if source[closing...].hasPrefix("**") {
+                    break
+                } else {
+                    closing = source.index(after: closing)
+                }
+            }
+            guard closing < source.endIndex else {
+                result += source[cursor...]
+                break
+            }
+            let end = source.index(closing, offsetBy: 2)
+            let content = source[contentStart..<closing]
+            if let first = content.first, !first.isWhitespace,
+               let last = content.last, last.unicodeScalars.allSatisfy(CharacterSet.punctuationCharacters.contains),
+               end < source.endIndex,
+               source[end].unicodeScalars.allSatisfy(CharacterSet.alphanumerics.contains) {
+                result += source[cursor..<closing] + marker + "**"
+            } else {
+                result += source[cursor..<end]
+            }
+            cursor = end
+        }
+        return result
+    }
+
+    // Skip escapes, code spans (including multi-backtick spans), and balanced
+    // inline link destinations/autolinks so Markdown-looking URLs stay literal.
+    private static func literalEnd(in source: String, at start: String.Index) -> String.Index? {
+        if source[start] == "\\" {
+            let next = source.index(after: start)
+            return next < source.endIndex ? source.index(after: next) : next
+        }
+        if source[start] == "<",
+           let end = source[start...].firstIndex(of: ">") {
+            let content = source[source.index(after: start)..<end]
+            if !content.contains(where: { $0.isWhitespace }),
+               content.contains(":") || content.contains("@") {
+                return source.index(after: end)
+            }
+        }
+        if source[start] == "`" {
+            var openingEnd = start
+            while openingEnd < source.endIndex, source[openingEnd] == "`" {
+                openingEnd = source.index(after: openingEnd)
+            }
+            let count = source.distance(from: start, to: openingEnd)
+            var cursor = openingEnd
+            while cursor < source.endIndex {
+                let runStart = cursor
+                if source[cursor] == "`" {
+                    while cursor < source.endIndex, source[cursor] == "`" {
+                        cursor = source.index(after: cursor)
+                    }
+                    if source.distance(from: runStart, to: cursor) == count { return cursor }
+                } else {
+                    cursor = source.index(after: cursor)
+                }
+            }
+            return source.endIndex
+        }
+        if source[start] == "(", start > source.startIndex,
+           source[source.index(before: start)] == "]" {
+            var depth = 1
+            var cursor = source.index(after: start)
+            while cursor < source.endIndex {
+                if source[cursor] == "\\" {
+                    cursor = source.index(after: cursor)
+                    if cursor < source.endIndex { cursor = source.index(after: cursor) }
+                    continue
+                }
+                if source[cursor] == "(" { depth += 1 }
+                if source[cursor] == ")" { depth -= 1 }
+                cursor = source.index(after: cursor)
+                if depth == 0 { return cursor }
+            }
+        }
+        return nil
     }
 }
 
