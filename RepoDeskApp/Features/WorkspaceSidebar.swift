@@ -1,11 +1,40 @@
+import AppKit
 import SwiftUI
 
 @MainActor
 struct WorkspaceSidebar: View {
     @Bindable var appState: AppState
     @State private var repositoryToRename: RegisteredRepository?
+    @AppStorage("sidebar.workspaceSectionHeight") private var storedWorkspaceHeight = 180.0
+    @State private var dragStartHeight: CGFloat?
+    @State private var draggedWorkspaceHeight: CGFloat?
 
     var body: some View {
+        GeometryReader { geometry in
+            let height = constrainedWorkspaceHeight(
+                draggedWorkspaceHeight ?? storedWorkspaceHeight,
+                availableHeight: geometry.size.height
+            )
+
+            VStack(spacing: 0) {
+                repositorySection
+                    .frame(maxHeight: .infinity)
+
+                workspaceDivider(height: height, availableHeight: geometry.size.height)
+
+                workspaceSection
+                    .frame(height: height)
+            }
+            .coordinateSpace(name: "workspaceSidebarResize")
+        }
+        .sheet(item: $repositoryToRename) { repository in
+            RenameRepositorySheet(repository: repository) { name in
+                appState.renameRepository(repository.id, displayName: name)
+            }
+        }
+    }
+
+    private var repositorySection: some View {
         VStack(spacing: 0) {
             SidebarSectionTitle("Git仓库", fontSize: appState.sidebarFontSize)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -21,8 +50,11 @@ struct WorkspaceSidebar: View {
                 .padding(.bottom, 8)
             }
 
-            Divider()
+        }
+    }
 
+    private var workspaceSection: some View {
+        VStack(spacing: 0) {
             HStack {
                 SidebarSectionTitle("工作区", fontSize: appState.sidebarFontSize)
                 Spacer()
@@ -45,12 +77,68 @@ struct WorkspaceSidebar: View {
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
             }
-            .frame(minHeight: 56, idealHeight: 112, maxHeight: 180)
         }
-        .sheet(item: $repositoryToRename) { repository in
-            RenameRepositorySheet(repository: repository) { name in
-                appState.renameRepository(repository.id, displayName: name)
-            }
+    }
+
+    // Include the header, both text lines, row padding and the list's bottom padding.
+    // Deriving this from the sidebar font keeps a full row visible at every supported size.
+    private var minimumWorkspaceHeight: CGFloat {
+        let fontSize = appState.sidebarFontSize
+        let titleHeight = lineHeight(fontSize: max(9, fontSize - 2))
+        let headerHeight = max(20, titleHeight) + 12
+        let rowHeight = lineHeight(fontSize: fontSize)
+            + lineHeight(fontSize: max(8, fontSize - 3)) + 1 + 12
+        return headerHeight + rowHeight + 8
+    }
+
+    private func lineHeight(fontSize: Double) -> CGFloat {
+        ceil(NSLayoutManager().defaultLineHeight(for: .systemFont(ofSize: fontSize)))
+    }
+
+    private func constrainedWorkspaceHeight(_ proposed: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        let minimum = minimumWorkspaceHeight
+        // Keep the Git heading and at least one repository row usable above the divider.
+        let maximum = max(minimum, availableHeight - 100 - 8)
+        return min(max(proposed.isFinite ? proposed : 180, minimum), maximum)
+    }
+
+    private func workspaceDivider(height: CGFloat, availableHeight: CGFloat) -> some View {
+        ZStack {
+            Rectangle().fill(Color.clear)
+            Divider()
+        }
+        .frame(height: 8)
+        .contentShape(.rect)
+        .background(WorkspaceSidebarResizeCursor())
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .named("workspaceSidebarResize"))
+                .onChanged { value in
+                    if dragStartHeight == nil {
+                        dragStartHeight = height
+                    }
+                    draggedWorkspaceHeight = constrainedWorkspaceHeight(
+                        (dragStartHeight ?? height) - value.translation.height,
+                        availableHeight: availableHeight
+                    )
+                }
+                .onEnded { value in
+                    storedWorkspaceHeight = constrainedWorkspaceHeight(
+                        (dragStartHeight ?? height) - value.translation.height,
+                        availableHeight: availableHeight
+                    )
+                    dragStartHeight = nil
+                    draggedWorkspaceHeight = nil
+                }
+        )
+        .help("上下拖动以调整工作区区域高度")
+        .accessibilityLabel("工作区区域高度")
+        .accessibilityValue("\(Int(height)) 点")
+        .accessibilityAdjustableAction { direction in
+            let delta: CGFloat = direction == .increment ? 24 : -24
+            storedWorkspaceHeight = constrainedWorkspaceHeight(
+                height + delta,
+                availableHeight: availableHeight
+            )
         }
     }
 
@@ -206,6 +294,23 @@ struct WorkspaceSidebar: View {
     private func workspaceIcon(for workspace: RecentWorkspace) -> String {
         guard appState.workspace?.path == workspace.path else { return "folder" }
         return appState.workspace?.isAvailable == true ? "folder.fill" : "folder.badge.questionmark"
+    }
+}
+
+private struct WorkspaceSidebarResizeCursor: NSViewRepresentable {
+    func makeNSView(context: Context) -> ResizeCursorView {
+        ResizeCursorView()
+    }
+
+    func updateNSView(_ nsView: ResizeCursorView, context: Context) {}
+
+    final class ResizeCursorView: NSView {
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            addCursorRect(bounds, cursor: .resizeUpDown)
+        }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }
 
