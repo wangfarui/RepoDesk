@@ -372,6 +372,35 @@ DYLD_LIBRARY_PATH="${repodesk_library_path}" \
   "${project_dir}/build/verify-java-navigation-first-click"
 
 "${script_dir}/bootstrap-java-language-runtime.sh"
+"${script_dir}/bootstrap-jar-decompiler.sh"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-history-jar.swift" \
+  -o "${project_dir}/build/verify-history-jar"
+
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-history-jar"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-history-jar-rendering.swift" \
+  -o "${project_dir}/build/verify-history-jar-rendering"
+
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-history-jar-rendering"
 
 swiftc \
   -parse-as-library \

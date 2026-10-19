@@ -33,6 +33,14 @@ The verification script runs strict-concurrency type checking, parses the test s
 
 The final local artifact is `build/RepoDesk.app`. Release contents, accepted replacement coverage, known limitations, and the App icon generation record are in `docs/release-v0.1.md`.
 
+### JAR changes in History
+
+Select a changed `.jar` in History to compare its internal files. The upper list shows added, deleted and modified entries; enable “显示未改动文件” to browse everything. Select a `.class` to compare Java decompiled with the bundled CFR runtime, or select a text resource for a direct side-by-side diff. The lower pane supports search, selection, copying and ignoring whitespace. For merge commits, choose which parent to compare against.
+
+Both sides come from Git objects, including renamed and deleted JARs; the working tree is never used as historical content. Archive timestamps and compression changes alone do not count as file changes. Bytecode changes with identical decompiled Java are identified explicitly. Decompiled code does not reproduce original comments or formatting.
+
+The build prepares CFR 0.152 with a fixed SHA-256 and embeds its MIT license; preview works offline. Previews support ordinary ZIP/JAR entries stored or deflated, UTF-8 and BOM-marked UTF-16 text, JARs up to 256 MB and individual entries up to 16 MB. Unsupported ZIP64, encrypted/corrupt archives and unreadable entries show an explanatory error. `scripts/verify-history-jar.swift` verifies real Git snapshots, archive changes and Java decompilation.
+
 ### Java navigation UI acceptance
 
 Run `./scripts/verify-local.sh` to prepare the managed Java runtime and verify the local app, then generate/open `RepoDesk.xcodeproj`. In Xcode, select the `RepoDeskUIAcceptance` scheme with `My Mac` as the destination and choose Product → Test (`Command+U`). Run this in the logged-in macOS desktop session with Xcode automation access available; avoid interacting with the tested app while the suite runs.

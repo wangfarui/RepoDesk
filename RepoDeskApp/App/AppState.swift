@@ -4479,6 +4479,13 @@ final class AppState {
         commitDiffRequestID = requestID
         isLoadingCommitDiff = true
         commitDiffErrorMessage = nil
+        if (file.path as NSString).pathExtension.lowercased() == "jar" {
+            commitFileDiff = nil
+            mergeCommitFileDiff = nil
+            historyBlame.reset()
+            isLoadingCommitDiff = false
+            return
+        }
         do {
             if detail.isTwoParentMerge {
                 let diff = try await gitRepositoryReader.mergeFileDiff(
@@ -5263,7 +5270,7 @@ final class AppState {
         waiters.forEach { $0.resume() }
     }
 
-    private func repositoryURL(for repository: RegisteredRepository) -> URL? {
+    func repositoryURL(for repository: RegisteredRepository) -> URL? {
         guard let workspaceURL else { return nil }
         return repository.relativePath == "."
             ? workspaceURL

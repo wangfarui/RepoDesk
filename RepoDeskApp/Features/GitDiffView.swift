@@ -454,6 +454,7 @@ struct GitDiffView: View {
     let presentation: GitDiffPresentation
     let setPresentation: (GitDiffPresentation) -> Void
     let jumpToSource: (Int?) -> Void
+    let canJumpToSource: Bool
     let lockedPresentation: GitDiffPresentation?
     let openComparison: ((GitDiffRenderModel) -> Void)?
     let oldBlame: [Int: GitBlameLine]?
@@ -483,6 +484,7 @@ struct GitDiffView: View {
         presentation: GitDiffPresentation = .unified,
         setPresentation: @escaping (GitDiffPresentation) -> Void = { _ in },
         jumpToSource: @escaping (Int?) -> Void,
+        canJumpToSource: Bool = true,
         lockedPresentation: GitDiffPresentation? = nil,
         openComparison: ((GitDiffRenderModel) -> Void)? = nil,
         oldBlame: [Int: GitBlameLine]? = nil,
@@ -499,6 +501,7 @@ struct GitDiffView: View {
         self.presentation = presentation
         self.setPresentation = setPresentation
         self.jumpToSource = jumpToSource
+        self.canJumpToSource = canJumpToSource
         self.lockedPresentation = lockedPresentation
         self.openComparison = openComparison
         self.oldBlame = oldBlame
@@ -679,11 +682,13 @@ struct GitDiffView: View {
             }
             .labelStyle(.iconOnly)
             .help(ignoresWhitespace ? "当前忽略空白变化" : "忽略空白变化")
-            Button("跳转到源文件", systemImage: "arrow.turn.down.right") {
-                jumpToSource(selectedNewLine ?? firstNewLine)
+            if canJumpToSource {
+                Button("跳转到源文件", systemImage: "arrow.turn.down.right") {
+                    jumpToSource(selectedNewLine ?? firstNewLine)
+                }
+                .labelStyle(.iconOnly)
+                .help("Jump To Source")
             }
-            .labelStyle(.iconOnly)
-            .help("Jump To Source")
         }
         .padding(.horizontal, 12)
         .frame(height: 46)

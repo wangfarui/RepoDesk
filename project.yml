@@ -21,6 +21,7 @@ targets:
       - name: Prepare Java language runtime
         script: |
           "${SRCROOT}/scripts/bootstrap-java-language-runtime.sh"
+          "${SRCROOT}/scripts/bootstrap-jar-decompiler.sh"
         basedOnDependencyAnalysis: false
     postbuildScripts:
       - name: Embed Java language runtime
@@ -31,6 +32,9 @@ targets:
           test -d "${runtime_dir}"
           rm -rf "${destination_dir}"
           ditto "${runtime_dir}" "${destination_dir}"
+          decompiler_dir="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/JarDecompiler"
+          rm -rf "${decompiler_dir}"
+          ditto "${SRCROOT}/build/JarDecompilerRuntime" "${decompiler_dir}"
         basedOnDependencyAnalysis: false
     settings:
       base:

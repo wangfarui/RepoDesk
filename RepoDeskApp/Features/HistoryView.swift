@@ -618,7 +618,8 @@ struct HistoryView: View {
     }
 
     private func historyBlameMenuAction(for file: GitCommitFile) -> (() -> Void)? {
-        guard !appState.isLoadingCommit, !appState.isLoadingCommitDiff,
+        guard (file.path as NSString).pathExtension.lowercased() != "jar",
+              !appState.isLoadingCommit, !appState.isLoadingCommitDiff,
               appState.selectedCommitDetail?.summary.hash == appState.selectedCommitHash else { return nil }
         if appState.selectedCommitFile == file, appState.isHistoryBlameCurrent,
            appState.historyBlame.availableSides.isEmpty { return nil }
@@ -653,6 +654,22 @@ struct HistoryView: View {
         ZStack {
             Group {
                 if let repository = appState.selectedRepository,
+                   let repositoryURL = appState.repositoryURL(for: repository),
+                   let hash = appState.selectedCommitHash,
+                   let detail = appState.selectedCommitDetail,
+                   detail.summary.hash == hash,
+                   let file = appState.selectedCommitFile,
+                   (file.path as NSString).pathExtension.lowercased() == "jar" {
+                    HistoryJarDiffView(
+                        repositoryURL: repositoryURL,
+                        hash: hash,
+                        file: file,
+                        parentHashes: detail.parentHashes,
+                        ignoresWhitespace: appState.ignoresWhitespaceInDiff,
+                        fontSize: CGFloat(appState.fileContentFontSize)
+                    )
+                    .id("\(repository.id):\(hash):\(file.path)")
+                } else if let repository = appState.selectedRepository,
                    let file = appState.selectedCommitFile,
                    let diff = appState.mergeCommitFileDiff {
                     GitMergeDiffView(

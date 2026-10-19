@@ -12,6 +12,7 @@ swiftc() {
 }
 
 "${script_dir}/bootstrap-java-language-runtime.sh"
+"${script_dir}/bootstrap-jar-decompiler.sh"
 
 mkdir -p "${contents_dir}/MacOS" "${contents_dir}/Resources"
 mkdir -p "${project_dir}/build/ModuleCache"
@@ -31,6 +32,8 @@ cp "${project_dir}/Support/Info.plist" "${contents_dir}/Info.plist"
 cp "${project_dir}/Support/Resources/RepoDesk.icns" "${contents_dir}/Resources/RepoDesk.icns"
 rm -rf "${contents_dir}/Resources/JavaLanguage"
 ditto "${project_dir}/build/JavaLanguageRuntime" "${contents_dir}/Resources/JavaLanguage"
+rm -rf "${contents_dir}/Resources/JarDecompiler"
+ditto "${project_dir}/build/JarDecompilerRuntime" "${contents_dir}/Resources/JarDecompiler"
 codesign --force --deep --sign - "${app_dir}"
 touch "${contents_dir}" "${app_dir}"
 
