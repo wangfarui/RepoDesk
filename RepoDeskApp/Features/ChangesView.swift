@@ -28,6 +28,8 @@ struct ChangesView: View {
     )
     @State private var rollbackRequest: ChangesRollbackRequest?
     @State private var pendingDiffComparison: PendingDiffComparison?
+    @State private var pendingOutlineScrollID: String?
+    @State private var fileSearch = ChangesFileSearch()
 
     var body: some View {
         Group {
@@ -57,18 +59,21 @@ struct ChangesView: View {
         .task(id: automaticExpansionTaskID) {
             applyAutomaticExpansionIfNeeded()
         }
+        .onChange(of: automaticExpansionContextID) { _, _ in
+            fileSearch.resetExpansion()
+        }
         .onDisappear {
             automaticExpansionSession = ChangesAutoExpansionSession()
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("上一个改动", systemImage: "chevron.up") {
-                    appState.selectAdjacentChange(offset: -1)
+                    selectAdjacentChangeFromKeyboard(offset: -1)
                 }
                 .disabled(appState.selectedChange == nil)
                 .help("上一个改动")
                 Button("下一个改动", systemImage: "chevron.down") {
-                    appState.selectAdjacentChange(offset: 1)
+                    selectAdjacentChangeFromKeyboard(offset: 1)
                 }
                 .disabled(appState.selectedChange == nil)
                 .help("下一个改动")
@@ -155,7 +160,7 @@ struct ChangesView: View {
                 .help("Group By")
 
                 Button("展开全部", systemImage: "arrow.up.left.and.arrow.down.right") {
-                    automaticExpansionSession.recordManualInteraction()
+                    if !fileSearch.isActive { automaticExpansionSession.recordManualInteraction() }
                     expandAllChanges()
                 }
                 .buttonStyle(.borderless)
@@ -166,7 +171,7 @@ struct ChangesView: View {
                 .help("Expand All")
 
                 Button("折叠全部", systemImage: "arrow.down.right.and.arrow.up.left") {
-                    automaticExpansionSession.recordManualInteraction()
+                    if !fileSearch.isActive { automaticExpansionSession.recordManualInteraction() }
                     collapseAllChanges()
                 }
                 .buttonStyle(.borderless)
@@ -183,25 +188,35 @@ struct ChangesView: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(visibleRepositories) { repository in
-                        if showsRepositoryGroups {
-                            repositoryGroup(repository)
-                        } else {
-                            repositoryContents(repository, leadingInset: 0)
+            fileSearchField
+
+            Divider()
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(browserEntries) { entry in
+                            browserEntry(entry)
+                                .id(entry.id)
                         }
                     }
+                    .padding(8)
                 }
-                .padding(8)
+                .onChange(of: pendingOutlineScrollID) { _, scrollID in
+                    guard let scrollID else { return }
+                    proxy.scrollTo(scrollID)
+                    pendingOutlineScrollID = nil
+                }
             }
             .id(changesListIdentity)
             .overlay {
                 if visibleRepositories.isEmpty, appState.refreshingRepositoryIDs.isEmpty {
                     ContentUnavailableView(
-                        cleanScopeTitle,
-                        systemImage: "checkmark.circle",
-                        description: Text("当前范围内没有未提交改动。")
+                        fileSearch.isActive ? "没有匹配的改动文件" : cleanScopeTitle,
+                        systemImage: fileSearch.isActive ? "doc.text.magnifyingglass" : "checkmark.circle",
+                        description: Text(fileSearch.isActive
+                            ? "请尝试其他文件名，或清空搜索查看全部改动。"
+                            : "当前范围内没有未提交改动。")
                     )
                 }
             }
@@ -209,6 +224,36 @@ struct ChangesView: View {
             Divider()
             commitPanel
         }
+    }
+
+    private var fileSearchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("搜索改动文件名", text: $fileSearch.query)
+                .textFieldStyle(.plain)
+                .accessibilityIdentifier("changes.fileNameSearch")
+                .help("按文件名搜索，忽略大小写")
+            if !fileSearch.query.isEmpty {
+                Button {
+                    fileSearch.query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("清空文件名搜索")
+                .accessibilityLabel("清空文件名搜索")
+            }
+        }
+        .padding(7)
+        .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 5))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     private var commitPanel: some View {
@@ -314,19 +359,81 @@ struct ChangesView: View {
             : "Commit 信息"
     }
 
+    private var browserEntries: [ChangesBrowserEntry] {
+        visibleRepositories.flatMap { repository -> [ChangesBrowserEntry] in
+            var entries: [ChangesBrowserEntry] = []
+            let leadingInset: CGFloat = showsRepositoryGroups ? 14 : 0
+            if showsRepositoryGroups {
+                entries.append(.repository(repository))
+                if isRepositoryCollapsed(repository.id) {
+                    return entries
+                }
+            }
+            if let message = appState.repositoryUnavailableMessage(for: repository) {
+                entries.append(.unavailable(repository, message, leadingInset))
+                return entries
+            }
+            if appState.repositorySnapshots[repository.id] == nil,
+               let error = appState.repositorySnapshotErrors[repository.id] {
+                entries.append(.snapshotError(repository, error, leadingInset))
+                return entries
+            }
+            for section in statusSections(for: repository) {
+                entries.append(.status(section, repository, leadingInset))
+                let statusID = "repository:\(repository.id):group:\(section.kind.rawValue)"
+                entries.append(contentsOf: outlineRows(
+                    for: section,
+                    repository: repository,
+                    statusID: statusID
+                ).map { row in
+                    .outline(row, repository, section.kind, leadingInset)
+                })
+            }
+            return entries
+        }
+    }
+
+    @ViewBuilder
+    private func browserEntry(_ entry: ChangesBrowserEntry) -> some View {
+        switch entry {
+        case .repository(let repository):
+            repositoryGroup(repository)
+        case .unavailable(let repository, let message, let leadingInset):
+            VStack(alignment: .leading, spacing: 8) {
+                Label(message, systemImage: "externaldrive.badge.exclamationmark")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                Button("重新定位 Repository…", systemImage: "folder.badge.questionmark") {
+                    appState.relocateRepository(repository.id)
+                }
+                .buttonStyle(.bordered)
+            }
+            .padding(.leading, leadingInset + 4)
+            .padding(.vertical, 4)
+        case .snapshotError(_, let error, let leadingInset):
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .padding(.leading, leadingInset + 4)
+                .padding(.vertical, 4)
+        case .status(let section, let repository, let leadingInset):
+            statusGroup(section, repository: repository, leadingInset: leadingInset)
+        case .outline(let row, let repository, let kind, let leadingInset):
+            outlineRow(row, repository: repository, kind: kind)
+                .padding(.leading, leadingInset)
+        }
+    }
+
     @ViewBuilder
     private func repositoryGroup(_ repository: RegisteredRepository) -> some View {
-        let isExpanded = !collapsedRepositoryIDs.contains(repository.id)
-        let selections = GitChangeKind.allDisplayCases.flatMap {
-            appState.changes(for: $0, repositoryID: repository.id)
-        }
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 7) {
-                commitCheckbox(selections: selections, repository: repository)
-                Button {
-                    toggleRepositoryExpansion(repository.id)
-                } label: {
-                    HStack(spacing: 7) {
+        let isExpanded = !isRepositoryCollapsed(repository.id)
+        let selections = statusSections(for: repository).flatMap(\.selections)
+        HStack(spacing: 7) {
+            commitCheckbox(selections: selections, repository: repository)
+            Button {
+                toggleRepositoryExpansion(repository.id)
+            } label: {
+                HStack(spacing: 7) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
                         .frame(width: 10)
@@ -348,46 +455,14 @@ struct ChangesView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
+                .contentShape(.rect)
             }
-            .padding(.vertical, 3)
-            .help(isExpanded ? "折叠 \(repository.name)" : "展开 \(repository.name)")
-            .accessibilityValue(isExpanded ? "已展开" : "已折叠")
-
-            if isExpanded {
-                repositoryContents(repository, leadingInset: 14)
-            }
+            .buttonStyle(.plain)
+            .focusable(false)
         }
-    }
-
-    @ViewBuilder
-    private func repositoryContents(_ repository: RegisteredRepository, leadingInset: CGFloat) -> some View {
-        if let message = appState.repositoryUnavailableMessage(for: repository) {
-            VStack(alignment: .leading, spacing: 8) {
-                Label(message, systemImage: "externaldrive.badge.exclamationmark")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                Button("重新定位 Repository…", systemImage: "folder.badge.questionmark") {
-                    appState.relocateRepository(repository.id)
-                }
-                .buttonStyle(.bordered)
-            }
-            .padding(.leading, leadingInset + 4)
-            .padding(.vertical, 4)
-        } else if appState.repositorySnapshots[repository.id] == nil,
-                  let error = appState.repositorySnapshotErrors[repository.id] {
-            Label(error, systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.red)
-                .padding(.leading, leadingInset + 4)
-                .padding(.vertical, 4)
-        } else {
-            ForEach(statusSections(for: repository)) { section in
-                statusGroup(section, repository: repository, leadingInset: leadingInset)
-            }
-        }
+        .padding(.vertical, 3)
+        .help(isExpanded ? "折叠 \(repository.name)" : "展开 \(repository.name)")
+        .accessibilityValue(isExpanded ? "已展开" : "已折叠")
     }
 
     @ViewBuilder
@@ -397,14 +472,13 @@ struct ChangesView: View {
         leadingInset: CGFloat
     ) -> some View {
         let statusID = "repository:\(repository.id):group:\(section.kind.rawValue)"
-        let isExpanded = expandedNodeIDs.contains(statusID)
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                commitCheckbox(selections: section.selections, repository: repository)
-                Button {
-                    toggleNodeExpansion(statusID)
-                } label: {
-                    HStack(spacing: 6) {
+        let isExpanded = isNodeExpanded(statusID)
+        HStack(spacing: 6) {
+            commitCheckbox(selections: section.selections, repository: repository)
+            Button {
+                toggleNodeExpansion(statusID)
+            } label: {
+                HStack(spacing: 6) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
                         .frame(width: 10)
@@ -414,35 +488,27 @@ struct ChangesView: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                    .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
+                .contentShape(.rect)
             }
-            .fontWeight(.semibold)
-            .padding(.vertical, 2)
-            .help(isExpanded ? "折叠 \(section.kind.rawValue)" : "展开 \(section.kind.rawValue)")
-            .accessibilityValue(isExpanded ? "已展开" : "已折叠")
-            .fileSystemPathCopyMenu(
-                nil,
-                rollbackItem: {
-                    requestRollback(
-                        title: section.kind.rawValue,
-                        repository: repository,
-                        selections: section.selections
-                    )
-                },
-                isContextMenuPresented: contextMenuPresentationBinding(for: statusID)
-            )
-
-            if isExpanded {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(outlineRows(for: section, repository: repository, statusID: statusID)) { row in
-                        outlineRow(row, repository: repository, kind: section.kind)
-                    }
-                }
-            }
+            .buttonStyle(.plain)
+            .focusable(false)
         }
+        .fontWeight(.semibold)
+        .padding(.vertical, 2)
         .padding(.leading, leadingInset)
+        .help(isExpanded ? "折叠 \(section.kind.rawValue)" : "展开 \(section.kind.rawValue)")
+        .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+        .fileSystemPathCopyMenu(
+            nil,
+            rollbackItem: {
+                requestRollback(
+                    title: section.kind.rawValue,
+                    repository: repository,
+                    selections: section.selections
+                )
+            },
+            isContextMenuPresented: contextMenuPresentationBinding(for: statusID)
+        )
     }
 
     private func outlineRows(
@@ -450,6 +516,10 @@ struct ChangesView: View {
         repository: RegisteredRepository,
         statusID: String
     ) -> [ChangeOutlineRow] {
+        let activeExpandedNodeIDs = fileSearch.expandedNodeIDs(
+            allIDs: fileSearch.isActive ? expandableNodeIDs(for: repository) : [],
+            normalExpandedIDs: expandedNodeIDs
+        )
         let changesByPath = Dictionary(
             uniqueKeysWithValues: (appState.repositorySnapshots[repository.id]?.changes ?? []).map {
                 ($0.path, $0)
@@ -463,7 +533,7 @@ struct ChangesView: View {
             return ChangesOutlineBuilder.flatRows(
                 selections: section.selections,
                 namespace: statusID,
-                statusIsExpanded: expandedNodeIDs.contains(statusID),
+                statusIsExpanded: activeExpandedNodeIDs.contains(statusID),
                 operationCode: code
             )
         }
@@ -471,8 +541,8 @@ struct ChangesView: View {
             return ChangesOutlineBuilder.directoryRows(
                 selections: section.selections,
                 namespace: statusID,
-                statusIsExpanded: expandedNodeIDs.contains(statusID),
-                expandedNodeIDs: expandedNodeIDs,
+                statusIsExpanded: activeExpandedNodeIDs.contains(statusID),
+                expandedNodeIDs: activeExpandedNodeIDs,
                 operationCode: code
             )
         }
@@ -488,8 +558,8 @@ struct ChangesView: View {
                 selections: section.selections,
                 namespace: statusID,
                 repositoryName: repository.name,
-                statusIsExpanded: expandedNodeIDs.contains(statusID),
-                expandedNodeIDs: expandedNodeIDs,
+                statusIsExpanded: activeExpandedNodeIDs.contains(statusID),
+                expandedNodeIDs: activeExpandedNodeIDs,
                 operationCode: code
             ) { selection in
                 resolver.modulePath(for: selection.path)
@@ -499,8 +569,8 @@ struct ChangesView: View {
             selections: section.selections,
             namespace: statusID,
             repositoryName: repository.name,
-            statusIsExpanded: expandedNodeIDs.contains(statusID),
-            expandedNodeIDs: expandedNodeIDs,
+            statusIsExpanded: activeExpandedNodeIDs.contains(statusID),
+            expandedNodeIDs: activeExpandedNodeIDs,
             operationCode: code
         ) { selection in
             resolver.modulePath(for: selection.path)
@@ -575,7 +645,7 @@ struct ChangesView: View {
         pathCopyValues: FileSystemPathCopyValues?,
         repository: RegisteredRepository
     ) -> some View {
-        let isExpanded = expandedNodeIDs.contains(id)
+        let isExpanded = isNodeExpanded(id)
         return HStack(spacing: 6) {
             commitCheckbox(selections: selections, repository: repository)
             Button {
@@ -605,6 +675,7 @@ struct ChangesView: View {
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .focusable(false)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
@@ -632,10 +703,7 @@ struct ChangesView: View {
         let rowID = "file:\(repository.id):\(selection.id)"
         return HStack(spacing: 7) {
             commitCheckbox(selections: [selection], repository: repository)
-            Button {
-                appState.selectChange(selection, repositoryID: repository.id)
-            } label: {
-                HStack(spacing: 7) {
+            HStack(spacing: 7) {
                 FileTypeIcon(path: selection.path)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(fileName(selection.path)).lineLimit(1)
@@ -663,9 +731,10 @@ struct ChangesView: View {
                 Spacer(minLength: 4)
                 GitStatusBadge(code: operationCode, kind: kind)
             }
-                .contentShape(.rect)
+            .contentShape(.rect)
+            .onTapGesture {
+                appState.selectChange(selection, repositoryID: repository.id)
             }
-            .buttonStyle(.plain)
             .simultaneousGesture(
                 TapGesture(count: 2)
                     .onEnded {
@@ -680,6 +749,7 @@ struct ChangesView: View {
             in: .rect(cornerRadius: 5)
         )
         .padding(.leading, 18 + CGFloat(depth) * 14)
+        .focusable(false)
         .help(selection.path)
         .fileSystemPathCopyMenu(
             pathCopyValues(repository: repository, relativePath: selection.path),
@@ -693,51 +763,8 @@ struct ChangesView: View {
     @ViewBuilder
     private var diffDetail: some View {
         if let selection = appState.selectedChange,
-           let repository = appState.selectedChangeRepository,
-           let diff = appState.currentDiff {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    FileTypeIcon(path: selection.path)
-                    Text(repository.name).fontWeight(.semibold)
-                    Text(selection.kind.rawValue).font(.caption).foregroundStyle(color(for: selection.kind))
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 36)
-                Divider()
-                GitDiffView(
-                    diff: diff,
-                    ignoresWhitespace: appState.ignoresWhitespaceInDiff,
-                    toggleIgnoreWhitespace: appState.toggleIgnoreWhitespace,
-                    presentation: appState.diffPresentation,
-                    setPresentation: appState.setDiffPresentation,
-                    jumpToSource: { line in
-                        appState.jumpToSource(repositoryID: repository.id, path: selection.path, line: line)
-                    },
-                    openComparison: { renderModel in
-                        openDiffComparison(
-                            selection: selection,
-                            repository: repository,
-                            diff: diff,
-                            renderModel: renderModel
-                        )
-                    },
-                    fontSize: CGFloat(appState.fileContentFontSize)
-                )
-                .id("\(repository.id):\(selection.id)")
-            }
-            .overlay {
-                if appState.isLoadingDiff {
-                    ProgressView()
-                        .controlSize(.small)
-                        .padding(10)
-                        .background(.regularMaterial, in: .rect(cornerRadius: 6))
-                        .allowsHitTesting(false)
-                }
-            }
-        } else if appState.isLoadingDiff {
-            ProgressView("正在加载 Diff…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+           let repository = appState.selectedChangeRepository {
+            diffPane(selection: selection, repository: repository)
         } else if let error = appState.diffErrorMessage {
             ContentUnavailableView("Diff 不可用", systemImage: "exclamationmark.triangle", description: Text(error))
         } else {
@@ -747,6 +774,113 @@ struct ChangesView: View {
                 description: Text("从左侧选择文件后查看内容 Diff。")
             )
         }
+    }
+
+    private func diffPane(
+        selection: GitChangeSelection,
+        repository: RegisteredRepository
+    ) -> some View {
+        let diff = diffMatching(selection)
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                FileTypeIcon(path: selection.path)
+                Text(repository.name).fontWeight(.semibold)
+                Text(selection.kind.rawValue).font(.caption).foregroundStyle(color(for: selection.kind))
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            Divider()
+            Group {
+                if let diff {
+                    GitDiffView(
+                        diff: diff,
+                        ignoresWhitespace: appState.ignoresWhitespaceInDiff,
+                        toggleIgnoreWhitespace: appState.toggleIgnoreWhitespace,
+                        presentation: appState.diffPresentation,
+                        setPresentation: appState.setDiffPresentation,
+                        jumpToSource: { line in
+                            appState.jumpToSource(repositoryID: repository.id, path: selection.path, line: line)
+                        },
+                        openComparison: { renderModel in
+                            openDiffComparison(
+                                selection: selection,
+                                repository: repository,
+                                diff: diff,
+                                renderModel: renderModel
+                            )
+                        },
+                        fontSize: CGFloat(appState.fileContentFontSize)
+                    )
+                    .id("\(repository.id):\(selection.id)")
+                } else if let error = appState.diffErrorMessage, !appState.isLoadingDiff {
+                    ContentUnavailableView(
+                        "Diff 不可用",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(error)
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ProgressView("正在加载 Diff…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .overlay {
+            if diff != nil, appState.isLoadingDiff {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(10)
+                    .background(.regularMaterial, in: .rect(cornerRadius: 6))
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    private func diffMatching(_ selection: GitChangeSelection) -> GitFileDiff? {
+        guard let diff = appState.currentDiff, diff.path == selection.path else { return nil }
+        return diff
+    }
+
+    private func selectAdjacentChangeFromKeyboard(offset: Int) {
+        if fileSearch.isActive {
+            let entries = browserEntries.compactMap { entry -> (String, GitChangeSelection)? in
+                guard case .outline(let row, let repository, _, _) = entry,
+                      case .file(_, let selection, _, _, _) = row else { return nil }
+                return (repository.id, selection)
+            }
+            guard !entries.isEmpty else { return }
+            let current = entries.firstIndex {
+                $0.0 == appState.selectedChangeRepositoryID && $0.1 == appState.selectedChange
+            }
+            let next = current.map { min(max($0 + offset, 0), entries.count - 1) } ?? 0
+            appState.selectChange(entries[next].1, repositoryID: entries[next].0)
+        } else {
+            appState.selectAdjacentChange(offset: offset)
+        }
+        guard let selection = appState.selectedChange,
+              let repositoryID = appState.selectedChangeRepositoryID,
+              let scrollID = outlineFileID(for: selection, repositoryID: repositoryID) else {
+            return
+        }
+        pendingOutlineScrollID = scrollID
+    }
+
+    private func outlineFileID(
+        for selection: GitChangeSelection,
+        repositoryID: RegisteredRepository.ID
+    ) -> String? {
+        for entry in browserEntries {
+            guard case .outline(let row, let repository, _, _) = entry,
+                  repository.id == repositoryID,
+                  case .file(let id, let rowSelection, _, _, _) = row,
+                  rowSelection == selection else {
+                continue
+            }
+            return id
+        }
+        return nil
     }
 
     private func openDiffComparison(
@@ -779,7 +913,7 @@ struct ChangesView: View {
 
         guard appState.selectedChangeRepositoryID == repository.id,
               appState.selectedChange == selection,
-              let diff = appState.currentDiff else {
+              let diff = diffMatching(selection) else {
             appState.selectChange(selection, repositoryID: repository.id)
             return
         }
@@ -795,6 +929,7 @@ struct ChangesView: View {
     private func openPendingDiffComparisonIfReady(with diff: GitFileDiff?) {
         guard let pending = pendingDiffComparison,
               let diff,
+              diff.path == pending.selection.path,
               appState.selectedChangeRepositoryID == pending.repositoryID,
               appState.selectedChange == pending.selection else {
             return
@@ -854,6 +989,7 @@ struct ChangesView: View {
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
+        .focusable(false)
         .disabled(selections.isEmpty || appState.isGitWriteOperationRunning)
         .help(state == .checked ? "从本次 Commit 中排除" : "加入本次 Commit")
     }
@@ -868,26 +1004,38 @@ struct ChangesView: View {
     }
 
     private var visibleRepositories: [RegisteredRepository] {
+        guard fileSearch.isActive else { return scopedRepositories }
+        return scopedRepositories.filter {
+            selectionCount(for: $0) > 0
+                || appState.refreshingRepositoryIDs.contains($0.id)
+                || appState.repositorySnapshotErrors[$0.id] != nil
+                || appState.repositoryUnavailableMessage(for: $0) != nil
+        }
+    }
+
+    private var scopedRepositories: [RegisteredRepository] {
         appState.repositories.filter { repository in
             (effectiveRepositoryScopeID == nil || effectiveRepositoryScopeID == repository.id)
-                && (selectionCount(for: repository) > 0
+                && (!statusSections(for: repository, matchingSearch: false).isEmpty
                     || appState.refreshingRepositoryIDs.contains(repository.id)
                     || appState.repositorySnapshotErrors[repository.id] != nil
                     || appState.repositoryUnavailableMessage(for: repository) != nil)
         }
     }
 
-    private func statusSections(for repository: RegisteredRepository) -> [ChangeStatusSection] {
+    private func statusSections(
+        for repository: RegisteredRepository,
+        matchingSearch: Bool = true
+    ) -> [ChangeStatusSection] {
         GitChangeKind.allDisplayCases.compactMap { kind in
-            let selections = appState.changes(for: kind, repositoryID: repository.id)
+            let allSelections = appState.changes(for: kind, repositoryID: repository.id)
+            let selections = matchingSearch ? fileSearch.filter(allSelections) : allSelections
             return selections.isEmpty ? nil : ChangeStatusSection(kind: kind, selections: selections)
         }
     }
 
     private func selectionCount(for repository: RegisteredRepository) -> Int {
-        GitChangeKind.allDisplayCases.reduce(0) {
-            $0 + appState.changes(for: $1, repositoryID: repository.id).count
-        }
+        statusSections(for: repository).reduce(0) { $0 + $1.selections.count }
     }
 
     private var effectiveRepositoryScopeID: RegisteredRepository.ID? {
@@ -914,8 +1062,11 @@ struct ChangesView: View {
         appState.isWorkspaceContext ? "工作区干净" : "Repository 干净"
     }
 
-    private var visibleChangeCount: Int {
-        visibleRepositories.reduce(0) { $0 + selectionCount(for: $1) }
+    private var scopedChangeCount: Int {
+        scopedRepositories.reduce(0) { count, repository in
+            count + statusSections(for: repository, matchingSearch: false)
+                .reduce(0) { $0 + $1.selections.count }
+        }
     }
 
     private var automaticExpansionContextID: String {
@@ -923,17 +1074,17 @@ struct ChangesView: View {
     }
 
     private var automaticExpansionTaskID: String {
-        let prefix = "\(automaticExpansionContextID)|\(visibleChangeCount)"
+        let prefix = "\(automaticExpansionContextID)|\(scopedChangeCount)"
         let settings = automaticExpansionSession.contextID == automaticExpansionContextID
             ? automaticExpansionSession.settings : appState.changesAutoExpansion
         guard ChangesAutoExpansionPolicy.shouldExpandAll(
-            fileCount: visibleChangeCount,
+            fileCount: scopedChangeCount,
             settings: settings
         ) else {
             return prefix
         }
-        let selections = visibleRepositories.flatMap { repository in
-            statusSections(for: repository).flatMap { section in
+        let selections = scopedRepositories.flatMap { repository in
+            statusSections(for: repository, matchingSearch: false).flatMap { section in
                 section.selections.map { "\(repository.id):\(section.kind.rawValue):\($0.id)" }
             }
         }
@@ -945,11 +1096,25 @@ struct ChangesView: View {
             contextID: automaticExpansionContextID,
             settings: appState.changesAutoExpansion
         )
-        guard automaticExpansionSession.shouldExpandAll(fileCount: visibleChangeCount) else { return }
-        expandAllChanges()
+        guard automaticExpansionSession.shouldExpandAll(fileCount: scopedChangeCount) else { return }
+        expandUnfilteredChanges()
+    }
+
+    private func isRepositoryCollapsed(_ id: String) -> Bool {
+        (fileSearch.isActive ? fileSearch.collapsedRepositoryIDs : collapsedRepositoryIDs).contains(id)
+    }
+
+    private func isNodeExpanded(_ id: String) -> Bool {
+        fileSearch.isNodeExpanded(id, normalExpandedIDs: expandedNodeIDs)
     }
 
     private func toggleRepositoryExpansion(_ id: String) {
+        if fileSearch.isActive {
+            if fileSearch.collapsedRepositoryIDs.remove(id) == nil {
+                fileSearch.collapsedRepositoryIDs.insert(id)
+            }
+            return
+        }
         automaticExpansionSession.recordManualInteraction()
         if collapsedRepositoryIDs.remove(id) == nil {
             collapsedRepositoryIDs.insert(id)
@@ -957,6 +1122,12 @@ struct ChangesView: View {
     }
 
     private func toggleNodeExpansion(_ id: String) {
+        if fileSearch.isActive {
+            if fileSearch.collapsedNodeIDs.remove(id) == nil {
+                fileSearch.collapsedNodeIDs.insert(id)
+            }
+            return
+        }
         automaticExpansionSession.recordManualInteraction()
         if expandedNodeIDs.remove(id) == nil {
             expandedNodeIDs.insert(id)
@@ -964,24 +1135,44 @@ struct ChangesView: View {
     }
 
     private func expandAllChanges() {
-        collapsedRepositoryIDs.subtract(visibleRepositories.map(\.id))
-        for repository in visibleRepositories {
-            expandedNodeIDs.formUnion(expandableNodeIDs(for: repository))
+        if fileSearch.isActive {
+            fileSearch.resetExpansion()
+            return
+        }
+        expandUnfilteredChanges()
+    }
+
+    private func expandUnfilteredChanges() {
+        collapsedRepositoryIDs.subtract(scopedRepositories.map(\.id))
+        for repository in scopedRepositories {
+            expandedNodeIDs.formUnion(expandableNodeIDs(for: repository, matchingSearch: false))
         }
     }
 
     private func collapseAllChanges() {
+        if fileSearch.isActive {
+            if showsRepositoryGroups {
+                fileSearch.collapsedRepositoryIDs.formUnion(visibleRepositories.map(\.id))
+            }
+            for repository in visibleRepositories {
+                fileSearch.collapsedNodeIDs.formUnion(expandableNodeIDs(for: repository))
+            }
+            return
+        }
         if showsRepositoryGroups {
             collapsedRepositoryIDs.formUnion(visibleRepositories.map(\.id))
         }
         expandedNodeIDs.removeAll()
     }
 
-    private func expandableNodeIDs(for repository: RegisteredRepository) -> Set<String> {
+    private func expandableNodeIDs(
+        for repository: RegisteredRepository,
+        matchingSearch: Bool = true
+    ) -> Set<String> {
         var nodeIDs: Set<String> = []
         var moduleResolver = changeModulePathResolver(for: repository)
 
-        for section in statusSections(for: repository) {
+        for section in statusSections(for: repository, matchingSearch: matchingSearch) {
             let statusID = "repository:\(repository.id):group:\(section.kind.rawValue)"
             nodeIDs.insert(statusID)
             let grouping = appState.changesGrouping
@@ -1415,6 +1606,29 @@ private struct GitDiffComparisonContent: View {
                 visibleBlameSides.remove(side)
                 blameErrorMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+private enum ChangesBrowserEntry: Identifiable {
+    case repository(RegisteredRepository)
+    case unavailable(RegisteredRepository, String, CGFloat)
+    case snapshotError(RegisteredRepository, String, CGFloat)
+    case status(ChangeStatusSection, RegisteredRepository, CGFloat)
+    case outline(ChangeOutlineRow, RegisteredRepository, GitChangeKind, CGFloat)
+
+    var id: String {
+        switch self {
+        case .repository(let repository):
+            "browser-repository:\(repository.id)"
+        case .unavailable(let repository, _, _):
+            "browser-unavailable:\(repository.id)"
+        case .snapshotError(let repository, _, _):
+            "browser-snapshot-error:\(repository.id)"
+        case .status(let section, let repository, _):
+            "repository:\(repository.id):group:\(section.kind.rawValue)"
+        case .outline(let row, _, _, _):
+            row.id
         }
     }
 }

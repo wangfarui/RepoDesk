@@ -2114,8 +2114,8 @@ final class AppState {
 
     func selectChange(_ selection: GitChangeSelection) {
         if selectedChange != selection {
-            currentDiff = nil
             diffErrorMessage = nil
+            isLoadingDiff = true
         }
         selectedChange = selection
         if let repositoryID = selectedChangeRepositoryID ?? selectedRepositoryID {
@@ -2132,6 +2132,7 @@ final class AppState {
         if selectedChangeRepositoryID != repositoryID {
             currentDiff = nil
             diffErrorMessage = nil
+            isLoadingDiff = true
         }
         selectedChangeRepositoryID = repositoryID
         selectChange(selection)
@@ -2274,6 +2275,7 @@ final class AppState {
               let repositoryURL = repositoryURL(for: repository) else {
             if presentation == .foreground {
                 currentDiff = nil
+                isLoadingDiff = false
             }
             return
         }

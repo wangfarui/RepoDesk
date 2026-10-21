@@ -326,22 +326,30 @@ struct BackgroundRepositoryRefreshTests {
         #expect(!state.refreshingRepositoryIDs.contains(repository.id))
     }
 
-    @Test func selectingDifferentChangeDoesNotShowPreviousFileDiff() async {
+    @Test func selectingDifferentChangeRetainsPreviousDiffUntilReplacementLoads() async {
         let repository = testRepository
+        let oldDiff = testDiff(newLines: ["old"])
+        let newDiff = testDiff(newLines: ["new"])
         let reader = ControlledRefreshReader(
             snapshot: testSnapshot(changes: []),
-            diff: testDiff(newLines: ["new"]),
+            diff: newDiff,
             blocksDiff: true
         )
         let state = makeState(repository: repository, reader: reader)
         state.selectedChangeRepositoryID = repository.id
         state.selectedChange = GitChangeSelection(path: "Sources/Old.swift", kind: .changes)
-        state.currentDiff = testDiff(newLines: ["old"])
+        state.currentDiff = oldDiff
 
         state.selectChange(GitChangeSelection(path: "Sources/New.swift", kind: .changes))
 
-        #expect(state.currentDiff == nil)
+        #expect(state.currentDiff == oldDiff)
+        #expect(state.isLoadingDiff)
         await reader.unblockDiff()
+        for _ in 0..<100 where state.currentDiff != newDiff || state.isLoadingDiff {
+            await Task.yield()
+        }
+        #expect(state.currentDiff == newDiff)
+        #expect(!state.isLoadingDiff)
     }
 
     private var testRepository: RegisteredRepository {

@@ -307,7 +307,7 @@ struct FilesView: View {
                 GeometryReader { geometry in
                     ScrollViewReader { proxy in
                         ScrollView([.horizontal, .vertical]) {
-                            LazyVStack(alignment: .leading, spacing: 1) {
+                            VStack(alignment: .leading, spacing: 1) {
                                 if let message = appState.workspaceMonitoringErrorMessage {
                                     Label(message, systemImage: "exclamationmark.triangle")
                                         .font(.caption)
@@ -354,9 +354,7 @@ struct FilesView: View {
                         }
                         .onChange(of: appState.fileTreeRevealRequest?.id) {
                             guard let fileURL = appState.fileTreeRevealRequest?.fileURL else { return }
-                            withAnimation {
-                                proxy.scrollTo(fileURL, anchor: .center)
-                            }
+                            proxy.scrollTo(fileURL)
                         }
                     }
                 }
@@ -1416,7 +1414,7 @@ private struct FileTreeEntryView: View {
                 )
                 .padding(.leading, CGFloat(depth + 1) * 14)
             }
-            LazyVStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 1) {
                 ForEach(visibleChildren) { child in
                     FileTreeEntryView(
                         entry: child,

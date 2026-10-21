@@ -103,16 +103,114 @@ struct ChangesRepositoryRenderingVerification {
         guard Set([repositoryRendering, combinedRendering, flatRendering]).count == 3 else {
             throw VerificationError.mismatch("grouping changes did not produce distinct renderings")
         }
+        try verifyFileNameSearch(state: state, hosting: hostingView, member: member, apiJar: apiJar)
         print("Changes repository rendering verification passed")
     }
 
+    @MainActor
+    private static func verifyFileNameSearch(
+        state: AppState,
+        hosting: NSView,
+        member: RegisteredRepository,
+        apiJar: RegisteredRepository
+    ) throws {
+        state.repositorySnapshots[member.id] = snapshot(paths: [
+            "src/OrderService.java", "config/order.xml", "order/Customer.java"
+        ])
+        state.repositorySnapshots[apiJar.id] = snapshot(paths: ["src/OrderApi.java", "src/Other.java"])
+        state.changesAutoExpansion = ChangesAutoExpansionSettings(mode: .never)
+        state.selectWorkspaceContext()
+        state.selectChangesRepositoryScope(nil)
+        state.selectChangesGrouping(.directory)
+        updateLayout(hosting)
+
+        let excluded = GitChangeSelection(path: "config/order.xml", kind: .unversioned)
+        state.setCommitInclusion([excluded], repositoryID: member.id, included: false)
+        let before = state.includedCommitChanges(repositoryID: member.id)
+        let collapsedRendering = try renderingData(of: hosting)
+        try setSearch("oRdEr", in: hosting)
+        let searchRendering = try saveRendering(
+            of: hosting, to: URL(fileURLWithPath: "build/changes-file-search-rendering.png")
+        )
+        guard searchRendering != collapsedRendering else {
+            throw VerificationError.mismatch("Typing in Changes search did not update the list")
+        }
+        guard state.includedCommitChanges(repositoryID: member.id) == before else {
+            throw VerificationError.mismatch("Searching changed commit inclusion")
+        }
+
+        for grouping: GitChangesGrouping in [[], .module, .all] {
+            state.selectChangesGrouping(grouping)
+            updateLayout(hosting)
+            _ = try saveRendering(
+                of: hosting,
+                to: URL(fileURLWithPath: "build/changes-search-grouping-\(grouping.rawValue).png")
+            )
+        }
+        state.selectChangesRepositoryScope(member.id)
+        updateLayout(hosting)
+        let scopedRendering = try saveRendering(
+            of: hosting, to: URL(fileURLWithPath: "build/changes-search-single-repository.png")
+        )
+        try setSearch("not-a-file", in: hosting)
+        let emptyRendering = try saveRendering(
+            of: hosting, to: URL(fileURLWithPath: "build/changes-search-empty.png")
+        )
+        guard emptyRendering != scopedRendering else {
+            throw VerificationError.mismatch("An unmatched search did not update the list")
+        }
+
+        // Re-enter a directory scope with automatic expansion disabled. Ending a
+        // search should render the same collapsed groups as before the search.
+        state.selectChangesGrouping(.directory)
+        updateLayout(hosting)
+        try setSearch("", in: hosting)
+        let beforeSearch = try renderingData(of: hosting)
+        try setSearch("order", in: hosting)
+        let duringSearch = try renderingData(of: hosting)
+        try setSearch("", in: hosting)
+        let afterSearch = try renderingData(of: hosting)
+        guard beforeSearch == afterSearch, duringSearch != afterSearch else {
+            throw VerificationError.mismatch("Clearing search did not restore the original rendering")
+        }
+        guard state.includedCommitChanges(repositoryID: member.id) == before else {
+            throw VerificationError.mismatch("Clearing search changed commit inclusion")
+        }
+        print("Changes file search interaction verification passed")
+    }
+
+    @MainActor
+    private static func updateLayout(_ view: NSView) {
+        view.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
+    }
+
+    @MainActor
+    private static func setSearch(_ query: String, in view: NSView) throws {
+        guard let field = descendants(view).compactMap({ $0 as? NSTextField }).first(where: {
+            $0.placeholderString == "搜索改动文件名"
+        }) else { throw VerificationError.mismatch("Changes file name search field is missing") }
+        field.stringValue = query
+        field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
+        updateLayout(view)
+    }
+
+    @MainActor
+    private static func descendants(_ view: NSView) -> [NSView] {
+        [view] + view.subviews.flatMap { descendants($0) }
+    }
+
     private static func snapshot(path: String) -> GitRepositorySnapshot {
+        snapshot(paths: [path])
+    }
+
+    private static func snapshot(paths: [String]) -> GitRepositorySnapshot {
         GitRepositorySnapshot(
             branch: "main",
             isDetachedHEAD: false,
             aheadCount: 0,
             behindCount: 0,
-            changes: [
+            changes: paths.map { path in
                 GitFileChange(
                     path: path,
                     originalPath: nil,
@@ -121,7 +219,7 @@ struct ChangesRepositoryRenderingVerification {
                     isUntracked: true,
                     isConflicted: false
                 )
-            ],
+            },
             lastCommit: nil
         )
     }

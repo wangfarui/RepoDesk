@@ -13,6 +13,8 @@ enum ChangesOutlineVerificationError: Error, CustomStringConvertible {
 @main
 enum ChangesOutlineVerification {
     static func main() throws {
+        try verifyFileNameSearch()
+        try verifySearchExpansionIsolation()
         try verifyAutomaticExpansion()
         try verifySingleDirectoryChainCompaction()
         try verifyCompactionStopsAtBranch()
@@ -23,6 +25,73 @@ enum ChangesOutlineVerification {
         try verifyCommitCheckboxAggregation()
         try verifyGroupingPersistenceCompatibility()
         print("Changes outline verification passed")
+    }
+
+    private static func verifyFileNameSearch() throws {
+        let service = GitChangeSelection(path: "src/OrderService.java", kind: .changes)
+        let xml = GitChangeSelection(path: "config/order.xml", kind: .unversioned)
+        let directoryOnly = GitChangeSelection(path: "order/Customer.java", kind: .changes)
+        let renamed = GitChangeSelection(
+            path: "src/Customer.java", kind: .changes, originalPath: "src/Order.java"
+        )
+        let selections = [service, xml, directoryOnly, renamed]
+        var search = ChangesFileSearch()
+        try expect(search.filter(selections) == selections, "Empty search changed the list")
+        search.query = "  oRdEr  "
+        try expect(search.filter(selections) == [service, xml], "Search must match current file names only")
+        search.query = ".XML"
+        try expect(search.filter(selections) == [xml], "Search did not match the extension")
+        let namespace = "repo:unversioned"
+        let matches = search.filter(selections)
+        let allIDs = ChangesOutlineBuilder.directoryExpandableNodeIDs(selections: matches, namespace: namespace)
+        let rows = ChangesOutlineBuilder.directoryRows(
+            selections: matches,
+            namespace: namespace,
+            statusIsExpanded: true,
+            expandedNodeIDs: search.expandedNodeIDs(allIDs: allIDs, normalExpandedIDs: [])
+        )
+        try expect(rows.contains {
+            if case .file(_, let selection, _, _, _) = $0 { return selection == xml }
+            return false
+        }, "Matched files were still hidden under collapsed directories")
+        try expect(
+            ChangesCommitSelectionScope.directorySelections(
+                path: "config", modulePath: nil, selections: matches
+            ) == [xml],
+            "Search group operations included files outside the matches"
+        )
+        search.query = "missing"
+        try expect(search.filter(selections).isEmpty, "Unmatched search returned files")
+        search.query = " \n "
+        try expect(!search.isActive && search.filter(selections) == selections, "Whitespace search did not restore files")
+    }
+
+    private static func verifySearchExpansionIsolation() throws {
+        let normal: Set<String> = ["status", "directory:manual"]
+        let searchNodes: Set<String> = ["status", "directory:matched"]
+        var search = ChangesFileSearch()
+        search.query = "order"
+        try expect(
+            search.expandedNodeIDs(allIDs: searchNodes, normalExpandedIDs: normal) == searchNodes,
+            "Search did not reveal matched ancestors"
+        )
+        search.collapsedNodeIDs.insert("directory:matched")
+        search.collapsedRepositoryIDs.insert("repository")
+        try expect(
+            !search.isNodeExpanded("directory:matched", normalExpandedIDs: normal),
+            "Manual collapse during search was ignored"
+        )
+        search.query = "service"
+        try expect(search.collapsedNodeIDs.isEmpty && search.collapsedRepositoryIDs.isEmpty,
+                   "New keyword did not reveal new matches")
+        search.collapsedNodeIDs.insert("status")
+        search.query = ""
+        try expect(
+            search.expandedNodeIDs(allIDs: searchNodes, normalExpandedIDs: normal) == normal,
+            "Clearing search did not restore normal expansion"
+        )
+        try expect(search.isNodeExpanded("status", normalExpandedIDs: normal),
+                   "Search collapse leaked into the normal list")
     }
 
     private static func verifyAutomaticExpansion() throws {

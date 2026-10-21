@@ -22,6 +22,29 @@ enum VerifyFileTreeHorizontalScrolling {
         let fileName = "20261015_" + String(repeating: "inventory_goods_price_hash_", count: 5) + ".sql"
         let fileURL = parentURL.appendingPathComponent(fileName)
         try "SELECT 1;".write(to: fileURL, atomically: true, encoding: .utf8)
+        let extraFileCount = 40
+        var leafEntries = [
+            WorkspaceFileEntry(url: fileURL, name: fileName, isDirectory: false)
+        ]
+        for index in 0..<extraFileCount {
+            let name = String(format: "row-%02d.sql", index)
+            let extraURL = parentURL.appendingPathComponent(name)
+            try "SELECT \(index);".write(to: extraURL, atomically: true, encoding: .utf8)
+            leafEntries.append(
+                WorkspaceFileEntry(url: extraURL, name: name, isDirectory: false)
+            )
+        }
+
+        let rootFileCount = 12
+        var rootEntries: [WorkspaceFileEntry] = []
+        for index in 0..<rootFileCount {
+            let name = String(format: "root-%02d.txt", index)
+            let rootFileURL = rootURL.appendingPathComponent(name)
+            try "root \(index)".write(to: rootFileURL, atomically: true, encoding: .utf8)
+            rootEntries.append(
+                WorkspaceFileEntry(url: rootFileURL, name: name, isDirectory: false)
+            )
+        }
 
         let state = AppState(
             workspace: WorkspaceSummary(url: rootURL),
@@ -29,13 +52,10 @@ enum VerifyFileTreeHorizontalScrolling {
         )
         for (index, directoryURL) in directoryURLs.enumerated() {
             let parent = index == 0 ? rootURL : directoryURLs[index - 1]
-            state.fileChildren[parent] = [
-                WorkspaceFileEntry(url: directoryURL, name: directoryNames[index], isDirectory: true)
-            ]
+            let child = WorkspaceFileEntry(url: directoryURL, name: directoryNames[index], isDirectory: true)
+            state.fileChildren[parent] = index == 0 ? rootEntries + [child] : [child]
         }
-        state.fileChildren[parentURL] = [
-            WorkspaceFileEntry(url: fileURL, name: fileName, isDirectory: false)
-        ]
+        state.fileChildren[parentURL] = leafEntries
         state.expandedDirectoryURLs = Set(directoryURLs)
 
         _ = NSApplication.shared
@@ -81,6 +101,45 @@ enum VerifyFileTreeHorizontalScrolling {
         scrollView.reflectScrolledClipView(scrollView.contentView)
         guard scrollView.contentView.bounds.origin.x >= maximumOffset - 1 else {
             throw VerificationError.failed("Files tree did not reach its rightmost offset")
+        }
+
+        state.fileTreeRevealRequest = FileTreeRevealRequest(fileURL: fileURL)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.4))
+        hostingView.layoutSubtreeIfNeeded()
+        guard let revealedScrollView = descendants(of: hostingView)
+            .compactMap({ $0 as? NSScrollView })
+            .first(where: { $0.contentView.bounds.width >= 230 && $0.contentView.bounds.width <= 450 }),
+              let revealedDocument = revealedScrollView.documentView else {
+            throw VerificationError.failed("Files tree scroll view disappeared after locating a file")
+        }
+        let revealedViewport = revealedScrollView.contentView.bounds.height
+        let visibleRowCount = rootFileCount + directoryNames.count + extraFileCount + 1
+        let rowBudget = max(revealedViewport, CGFloat(visibleRowCount) * 36 + 48) + 24
+        guard revealedDocument.frame.height <= rowBudget else {
+            throw VerificationError.failed(
+                "Locating a file stretched the tree to \(Int(revealedDocument.frame.height)), "
+                    + "above the \(Int(rowBudget)) row budget"
+            )
+        }
+        var stableHeight = revealedDocument.frame.height
+        for _ in 0..<6 {
+            let maximumVerticalOffset = max(
+                0,
+                revealedDocument.frame.height - revealedViewport
+            )
+            revealedScrollView.contentView.scroll(
+                to: NSPoint(x: revealedScrollView.contentView.bounds.origin.x, y: maximumVerticalOffset)
+            )
+            revealedScrollView.reflectScrolledClipView(revealedScrollView.contentView)
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+            hostingView.layoutSubtreeIfNeeded()
+            guard revealedDocument.frame.height <= stableHeight + 1 else {
+                throw VerificationError.failed(
+                    "Files tree kept growing while scrolling down "
+                        + "(\(Int(stableHeight)) -> \(Int(revealedDocument.frame.height)))"
+                )
+            }
+            stableHeight = revealedDocument.frame.height
         }
         print("Files tree horizontal scrolling verification passed")
     }

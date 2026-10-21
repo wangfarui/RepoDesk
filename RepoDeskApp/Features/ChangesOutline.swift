@@ -1,5 +1,45 @@
 import Foundation
 
+/// Search changes by their current file name; keep temporary expansion separate from the full list.
+struct ChangesFileSearch {
+    var query = "" {
+        didSet {
+            if query.trimmingCharacters(in: .whitespacesAndNewlines)
+                != oldValue.trimmingCharacters(in: .whitespacesAndNewlines) {
+                resetExpansion()
+            }
+        }
+    }
+    var collapsedRepositoryIDs: Set<String> = []
+    var collapsedNodeIDs: Set<String> = []
+
+    var isActive: Bool { !keyword.isEmpty }
+
+    private var keyword: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    func filter(_ selections: [GitChangeSelection]) -> [GitChangeSelection] {
+        guard isActive else { return selections }
+        let keyword = keyword
+        return selections.filter {
+            let name = $0.path.split(separator: "/").last.map(String.init) ?? $0.path
+            return name.range(of: keyword, options: .caseInsensitive) != nil
+        }
+    }
+
+    func isNodeExpanded(_ id: String, normalExpandedIDs: Set<String>) -> Bool {
+        isActive ? !collapsedNodeIDs.contains(id) : normalExpandedIDs.contains(id)
+    }
+
+    func expandedNodeIDs(allIDs: Set<String>, normalExpandedIDs: Set<String>) -> Set<String> {
+        isActive ? allIDs.subtracting(collapsedNodeIDs) : normalExpandedIDs
+    }
+
+    mutating func resetExpansion() {
+        collapsedRepositoryIDs = []
+        collapsedNodeIDs = []
+    }
+}
+
 enum ChangesAutoExpansionPolicy {
     static func shouldExpandAll(
         fileCount: Int,
