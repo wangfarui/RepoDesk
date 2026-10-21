@@ -3,6 +3,67 @@ import Testing
 @testable import RepoDesk
 
 struct ChangesOutlineTests {
+    @Test func arrowNavigationStopsAtTheEndsAndStartsAtTheFirstFile() {
+        #expect(ChangesFileNavigation.destinationIndex(current: nil, offset: 1, count: 3) == 0)
+        #expect(ChangesFileNavigation.destinationIndex(current: nil, offset: -1, count: 3) == 0)
+        #expect(ChangesFileNavigation.destinationIndex(current: 0, offset: -1, count: 3) == 0)
+        #expect(ChangesFileNavigation.destinationIndex(current: 2, offset: 1, count: 3) == 2)
+        #expect(ChangesFileNavigation.destinationIndex(current: 1, offset: 1, count: 3) == 2)
+        #expect(ChangesFileNavigation.destinationIndex(current: 1, offset: -1, count: 3) == 0)
+        #expect(ChangesFileNavigation.destinationIndex(current: 0, offset: 1, count: 0) == nil)
+    }
+
+    @Test func directoryFileLocationRecordsTheExpandedAncestorsNeededToRevealIt() {
+        let namespace = "repo:changes"
+        let lib = GitChangeSelection(path: "lib/B.swift", kind: .changes)
+        let src = GitChangeSelection(path: "src/A.swift", kind: .changes)
+        let nodeIDs = ChangesOutlineBuilder.directoryExpandableNodeIDs(
+            selections: [src, lib],
+            namespace: namespace
+        )
+        let rows = ChangesOutlineBuilder.directoryRows(
+            selections: [src, lib],
+            namespace: namespace,
+            statusIsExpanded: true,
+            expandedNodeIDs: nodeIDs
+        )
+
+        let locations = ChangesOutlineNavigation.fileLocations(in: rows)
+
+        #expect(locations.map(\.selection) == [lib, src])
+        #expect(locations.first?.ancestorNodeIDs == ["\(namespace):directory:lib"])
+        #expect(locations.last?.ancestorNodeIDs == ["\(namespace):directory:src"])
+    }
+
+    @Test func moduleFileLocationKeepsTheModuleAsItsAncestor() {
+        let namespace = "repo:changes"
+        let selection = GitChangeSelection(path: "app/src/Main.swift", kind: .changes)
+        let moduleID = "\(namespace):module:app"
+        let rows = ChangesOutlineBuilder.moduleRows(
+            selections: [selection],
+            namespace: namespace,
+            repositoryName: "repo",
+            statusIsExpanded: true,
+            expandedNodeIDs: [moduleID]
+        ) { _ in "app" }
+
+        let locations = ChangesOutlineNavigation.fileLocations(in: rows)
+
+        #expect(locations.map(\.selection) == [selection])
+        #expect(locations.first?.ancestorNodeIDs == [moduleID])
+    }
+
+    @Test func flatFileLocationHasNoGroupAncestors() {
+        let selection = GitChangeSelection(path: "README.md", kind: .changes)
+        let rows = ChangesOutlineBuilder.flatRows(
+            selections: [selection],
+            namespace: "repo:changes",
+            statusIsExpanded: true
+        )
+
+        #expect(ChangesOutlineNavigation.fileLocations(in: rows).first?.ancestorNodeIDs.isEmpty == true)
+    }
+
     @Test func autoExpansionAppliesOnlyToSmallNonemptyChangeSets() {
         #expect(!ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 0))
         #expect(ChangesAutoExpansionPolicy.shouldExpandAll(fileCount: 1))

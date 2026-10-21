@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private struct ChangesRollbackRequest: Identifiable {
@@ -30,8 +31,10 @@ struct ChangesView: View {
     @State private var pendingDiffComparison: PendingDiffComparison?
     @State private var pendingOutlineScrollID: String?
     @State private var fileSearch = ChangesFileSearch()
+    @State private var arrowKeyMonitor = ChangesArrowKeyMonitor()
 
     var body: some View {
+        let _ = prepareArrowKeyMonitor()
         Group {
             if appState.repositories.isEmpty {
                 ContentUnavailableView {
@@ -62,20 +65,28 @@ struct ChangesView: View {
         .onChange(of: automaticExpansionContextID) { _, _ in
             fileSearch.resetExpansion()
         }
+        .onAppear {
+            arrowKeyMonitor.start()
+            selectFirstChangeIfNeeded()
+        }
         .onDisappear {
             automaticExpansionSession = ChangesAutoExpansionSession()
+            arrowKeyMonitor.stop()
+        }
+        .onChange(of: changeSelectionRefreshID) { _, _ in
+            selectFirstChangeIfNeeded()
         }
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
                 Button("上一个改动", systemImage: "chevron.up") {
                     selectAdjacentChangeFromKeyboard(offset: -1)
                 }
-                .disabled(appState.selectedChange == nil)
+                .disabled(visibleChangeFiles().isEmpty)
                 .help("上一个改动")
                 Button("下一个改动", systemImage: "chevron.down") {
                     selectAdjacentChangeFromKeyboard(offset: 1)
                 }
-                .disabled(appState.selectedChange == nil)
+                .disabled(visibleChangeFiles().isEmpty)
                 .help("下一个改动")
             }
         }
@@ -209,6 +220,11 @@ struct ChangesView: View {
                 }
             }
             .id(changesListIdentity)
+            .background {
+                ChangesWindowAnchor { window in
+                    arrowKeyMonitor.window = window
+                }
+            }
             .overlay {
                 if visibleRepositories.isEmpty, appState.refreshingRepositoryIDs.isEmpty {
                     ContentUnavailableView(
@@ -514,9 +530,10 @@ struct ChangesView: View {
     private func outlineRows(
         for section: ChangeStatusSection,
         repository: RegisteredRepository,
-        statusID: String
+        statusID: String,
+        forcedExpandedNodeIDs: Set<String>? = nil
     ) -> [ChangeOutlineRow] {
-        let activeExpandedNodeIDs = fileSearch.expandedNodeIDs(
+        let activeExpandedNodeIDs = forcedExpandedNodeIDs ?? fileSearch.expandedNodeIDs(
             allIDs: fileSearch.isActive ? expandableNodeIDs(for: repository) : [],
             normalExpandedIDs: expandedNodeIDs
         )
@@ -843,44 +860,142 @@ struct ChangesView: View {
         return diff
     }
 
-    private func selectAdjacentChangeFromKeyboard(offset: Int) {
-        if fileSearch.isActive {
-            let entries = browserEntries.compactMap { entry -> (String, GitChangeSelection)? in
-                guard case .outline(let row, let repository, _, _) = entry,
-                      case .file(_, let selection, _, _, _) = row else { return nil }
-                return (repository.id, selection)
-            }
-            guard !entries.isEmpty else { return }
-            let current = entries.firstIndex {
-                $0.0 == appState.selectedChangeRepositoryID && $0.1 == appState.selectedChange
-            }
-            let next = current.map { min(max($0 + offset, 0), entries.count - 1) } ?? 0
-            appState.selectChange(entries[next].1, repositoryID: entries[next].0)
-        } else {
-            appState.selectAdjacentChange(offset: offset)
+    private func prepareArrowKeyMonitor() {
+        arrowKeyMonitor.isBlocked = rollbackRequest != nil
+        arrowKeyMonitor.move = { offset in
+            selectAdjacentChangeFromKeyboard(offset: offset)
         }
-        guard let selection = appState.selectedChange,
-              let repositoryID = appState.selectedChangeRepositoryID,
-              let scrollID = outlineFileID(for: selection, repositoryID: repositoryID) else {
-            return
-        }
-        pendingOutlineScrollID = scrollID
     }
 
-    private func outlineFileID(
-        for selection: GitChangeSelection,
-        repositoryID: RegisteredRepository.ID
-    ) -> String? {
-        for entry in browserEntries {
-            guard case .outline(let row, let repository, _, _) = entry,
-                  repository.id == repositoryID,
-                  case .file(let id, let rowSelection, _, _, _) = row,
-                  rowSelection == selection else {
-                continue
+    private var changeSelectionRefreshID: String {
+        let query = fileSearch.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selection = appState.selectedChange?.id ?? ""
+        let repositoryID = appState.selectedChangeRepositoryID ?? ""
+        let scope = effectiveRepositoryScopeID ?? "all"
+        let files = scopedRepositories.map { repository in
+            statusSections(for: repository, matchingSearch: false)
+                .flatMap { section in
+                    section.selections.map { "\(repository.id):\($0.id)" }
+                }
+                .joined(separator: ",")
+        }.joined(separator: "|")
+        let pendingSnapshots = scopedRepositories
+            .filter(isAwaitingSnapshot)
+            .map(\.id)
+            .joined(separator: ",")
+        return "\(query)|\(scope)|\(repositoryID)|\(selection)|\(appState.changesGrouping.rawValue)|\(pendingSnapshots)|\(files)"
+    }
+
+    private var currentChangeSelectionIsAvailable: Bool {
+        guard let selection = appState.selectedChange,
+              let repositoryID = appState.selectedChangeRepositoryID else {
+            return false
+        }
+        if let scope = effectiveRepositoryScopeID, scope != repositoryID {
+            return false
+        }
+        guard appState.repositorySnapshots[repositoryID] != nil else {
+            guard let repository = appState.repositories.first(where: { $0.id == repositoryID }) else {
+                return false
             }
-            return id
+            return appState.repositorySnapshotErrors[repositoryID] == nil
+                && appState.repositoryUnavailableMessage(for: repository) == nil
+        }
+        return appState.changes(for: selection.kind, repositoryID: repositoryID).contains(selection)
+    }
+
+    private var isAwaitingInitialChangeSnapshots: Bool {
+        scopedRepositories.contains(where: isAwaitingSnapshot)
+    }
+
+    private func isAwaitingSnapshot(_ repository: RegisteredRepository) -> Bool {
+        appState.repositorySnapshots[repository.id] == nil
+            && appState.repositorySnapshotErrors[repository.id] == nil
+            && appState.repositoryUnavailableMessage(for: repository) == nil
+    }
+
+    private func selectFirstChangeIfNeeded() {
+        guard !currentChangeSelectionIsAvailable else { return }
+        guard !isAwaitingInitialChangeSnapshots else { return }
+        if visibleChangeFiles().isEmpty {
+            revealFirstPresentationFile()
+        }
+        guard let first = visibleChangeFiles().first else { return }
+        appState.selectChange(first.selection, repositoryID: first.repositoryID)
+        pendingOutlineScrollID = first.rowID
+    }
+
+    private func revealFirstPresentationFile() {
+        guard let file = firstPresentationFile() else { return }
+        if fileSearch.isActive {
+            fileSearch.collapsedRepositoryIDs.remove(file.repositoryID)
+            fileSearch.collapsedNodeIDs.remove(file.statusID)
+            fileSearch.collapsedNodeIDs.subtract(file.ancestorNodeIDs)
+            return
+        }
+        collapsedRepositoryIDs.remove(file.repositoryID)
+        var expanded = expandedNodeIDs
+        expanded.insert(file.statusID)
+        expanded.formUnion(file.ancestorNodeIDs)
+        if expanded != expandedNodeIDs {
+            expandedNodeIDs = expanded
+        }
+    }
+
+    private func firstPresentationFile() -> PresentationChangeFile? {
+        for repository in visibleRepositories {
+            for section in statusSections(for: repository) {
+                let statusID = "repository:\(repository.id):group:\(section.kind.rawValue)"
+                let rows = outlineRows(
+                    for: section,
+                    repository: repository,
+                    statusID: statusID,
+                    forcedExpandedNodeIDs: expandableNodeIDs(for: repository)
+                )
+                guard let location = ChangesOutlineNavigation.fileLocations(in: rows).first else {
+                    continue
+                }
+                return PresentationChangeFile(
+                    repositoryID: repository.id,
+                    selection: location.selection,
+                    rowID: location.rowID,
+                    statusID: statusID,
+                    ancestorNodeIDs: location.ancestorNodeIDs
+                )
+            }
         }
         return nil
+    }
+
+    private func selectAdjacentChangeFromKeyboard(offset: Int) {
+        let entries = visibleChangeFiles()
+        let current = entries.firstIndex {
+            $0.repositoryID == appState.selectedChangeRepositoryID && $0.selection == appState.selectedChange
+        }
+        guard let index = ChangesFileNavigation.destinationIndex(
+            current: current,
+            offset: offset,
+            count: entries.count
+        ) else { return }
+        let target = entries[index]
+        if appState.selectedChangeRepositoryID != target.repositoryID || appState.selectedChange != target.selection {
+            appState.selectChange(target.selection, repositoryID: target.repositoryID)
+        }
+        pendingOutlineScrollID = target.rowID
+    }
+
+    private func visibleChangeFiles() -> [VisibleChangeFile] {
+        browserEntries.compactMap { entry in
+            guard case .outline(let row, let repository, _, _) = entry,
+                  case .file(let id, let selection, _, _, _) = row else {
+                return nil
+            }
+            return VisibleChangeFile(
+                repositoryID: repository.id,
+                selection: selection,
+                rowID: id
+            )
+        }
     }
 
     private func openDiffComparison(
@@ -1671,5 +1786,98 @@ private struct GitStatusBadge: View {
         case "?": .orange
         default: .secondary
         }
+    }
+}
+
+private struct VisibleChangeFile: Equatable {
+    let repositoryID: RegisteredRepository.ID
+    let selection: GitChangeSelection
+    let rowID: String
+}
+
+private struct PresentationChangeFile {
+    let repositoryID: RegisteredRepository.ID
+    let selection: GitChangeSelection
+    let rowID: String
+    let statusID: String
+    let ancestorNodeIDs: [String]
+}
+
+@MainActor
+private final class ChangesArrowKeyMonitor {
+    weak var window: NSWindow?
+    var isBlocked = false
+    var move: ((Int) -> Void)?
+    private var monitor: Any?
+
+    func start() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handle(event)
+        }
+    }
+
+    func stop() {
+        guard let monitor else { return }
+        NSEvent.removeMonitor(monitor)
+        self.monitor = nil
+    }
+
+    private func handle(_ event: NSEvent) -> NSEvent? {
+        guard let offset = Self.offset(for: event) else { return event }
+        let modifiers = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function])
+        guard modifiers.isEmpty else { return event }
+        guard let window, event.window === window, window.attachedSheet == nil else { return event }
+        guard !isBlocked, !Self.menuIsVisible, !Self.keepsArrowKeys(in: window) else { return event }
+        move?(offset)
+        return nil
+    }
+
+    private static func offset(for event: NSEvent) -> Int? {
+        switch event.specialKey {
+        case .upArrow: -1
+        case .downArrow: 1
+        default: nil
+        }
+    }
+
+    private static func keepsArrowKeys(in window: NSWindow) -> Bool {
+        if window.firstResponder is NSTextField { return true }
+        guard let textView = window.firstResponder as? NSTextView else { return false }
+        return !(textView is GitDiffSelectableTextViewSurface)
+    }
+
+    private static var menuIsVisible: Bool {
+        NSApp.windows.contains { candidate in
+            candidate.isVisible
+                && NSStringFromClass(type(of: candidate)).localizedCaseInsensitiveContains("Menu")
+        }
+    }
+}
+
+private struct ChangesWindowAnchor: NSViewRepresentable {
+    var onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> ChangesWindowAnchorView {
+        let view = ChangesWindowAnchorView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ view: ChangesWindowAnchorView, context: Context) {
+        view.onWindow = onWindow
+        onWindow(view.window)
+    }
+}
+
+private final class ChangesWindowAnchorView: NSView {
+    var onWindow: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindow?(window)
     }
 }

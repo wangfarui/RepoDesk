@@ -2357,23 +2357,6 @@ final class AppState {
         persistAppPreferences()
     }
 
-    func selectAdjacentChange(offset: Int) {
-        let scopedRepositories = repositories.filter {
-            changesRepositoryScopeID == nil || changesRepositoryScopeID == $0.id
-        }
-        let entries = scopedRepositories.flatMap { repository in
-            GitChangeKind.allDisplayCases.flatMap { kind in
-                changes(for: kind, repositoryID: repository.id).map { (repository.id, $0) }
-            }
-        }
-        guard !entries.isEmpty else { return }
-        let currentIndex = entries.firstIndex {
-            $0.0 == selectedChangeRepositoryID && $0.1 == selectedChange
-        } ?? 0
-        let nextIndex = min(max(currentIndex + offset, 0), entries.count - 1)
-        selectChange(entries[nextIndex].1, repositoryID: entries[nextIndex].0)
-    }
-
     func loadWorkspaceRoot() async {
         guard let visibleWorkspaceRootURL else { return }
         await loadDirectory(visibleWorkspaceRootURL)

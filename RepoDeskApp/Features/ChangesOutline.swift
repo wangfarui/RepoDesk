@@ -476,6 +476,52 @@ enum ChangesOutlineBuilder {
     }
 }
 
+struct ChangesOutlineFileLocation: Equatable {
+    let selection: GitChangeSelection
+    let rowID: String
+    let ancestorNodeIDs: [String]
+}
+
+enum ChangesOutlineNavigation {
+    static func fileLocations(in rows: [ChangeOutlineRow]) -> [ChangesOutlineFileLocation] {
+        var moduleAncestor: String?
+        var directoryAncestors: [(depth: Int, id: String)] = []
+        var locations: [ChangesOutlineFileLocation] = []
+        for row in rows {
+            switch row {
+            case .module(let id, _, _, _):
+                moduleAncestor = id
+                directoryAncestors.removeAll()
+            case .directory(let id, _, _, let depth, _, _):
+                directoryAncestors.removeAll { $0.depth >= depth }
+                directoryAncestors.append((depth, id))
+            case .file(let id, let selection, let depth, _, _):
+                var ancestors: [String] = []
+                if let moduleAncestor {
+                    ancestors.append(moduleAncestor)
+                }
+                ancestors.append(contentsOf: directoryAncestors.filter { $0.depth < depth }.map(\.id))
+                locations.append(
+                    ChangesOutlineFileLocation(
+                        selection: selection,
+                        rowID: id,
+                        ancestorNodeIDs: ancestors
+                    )
+                )
+            }
+        }
+        return locations
+    }
+}
+
+enum ChangesFileNavigation {
+    static func destinationIndex(current: Int?, offset: Int, count: Int) -> Int? {
+        guard count > 0 else { return nil }
+        guard let current else { return 0 }
+        return min(max(current + offset, 0), count - 1)
+    }
+}
+
 struct ChangeModulePathResolver {
     private static let markers = [
         "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle",
