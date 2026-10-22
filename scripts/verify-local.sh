@@ -851,6 +851,20 @@ swiftc \
 DYLD_LIBRARY_PATH="${project_dir}/build" \
   "${project_dir}/build/verify-maven-queue"
 
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-search-result-selection.swift" \
+  -o "${project_dir}/build/verify-search-result-selection"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-search-result-selection"
+
 "${script_dir}/build-local.sh"
 
 app_bundle="${project_dir}/build/RepoDesk.app"

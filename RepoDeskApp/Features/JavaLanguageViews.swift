@@ -594,6 +594,7 @@ struct JavaSymbolSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var scope: JavaSymbolSearchScope
+    @State private var selection = SearchResultSelection()
     @FocusState private var queryFocused: Bool
 
     init(appState: AppState, initialScope: JavaSymbolSearchScope) {
@@ -610,7 +611,7 @@ struct JavaSymbolSearchSheet: View {
                 TextField(searchPlaceholder, text: $query)
                     .textFieldStyle(.plain)
                     .focused($queryFocused)
-                    .onSubmit(openFirstResult)
+                    .onSubmit(openSelectedResult)
                     .accessibilityIdentifier("RepoDesk.JavaSymbolSearch.Query")
                 Picker("范围", selection: $scope) {
                     Text("类").tag(JavaSymbolSearchScope.types)
@@ -625,32 +626,81 @@ struct JavaSymbolSearchSheet: View {
             }
             .padding(14)
             Divider()
-            if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ContentUnavailableView("输入 Java 符号", systemImage: "curlybraces")
+            if queryIsEmpty {
+                Text(emptySearchHint)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                    .padding(.bottom, 12)
             } else if appState.javaSymbolSearchResults.isEmpty, !appState.isSearchingJavaSymbols {
                 ContentUnavailableView("没有可用结果", systemImage: "magnifyingglass")
             } else {
-                List(appState.javaSymbolSearchResults) { target in
-                    Button {
-                        appState.selectJavaSymbolTarget(target)
-                        dismiss()
-                    } label: {
-                        JavaNavigationTargetRow(target: target)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(Array(appState.javaSymbolSearchResults.enumerated()), id: \.element.id) { index, target in
+                                Button {
+                                    appState.selectJavaSymbolTarget(target)
+                                    dismiss()
+                                } label: {
+                                    JavaNavigationTargetRow(target: target, isSelected: index == selection.index)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 14)
+                                .background(index == selection.index ? Color.accentColor.opacity(0.16) : Color.clear)
+                                .accessibilityIdentifier(targetAccessibilityIdentifier(target))
+                                .accessibilityAddTraits(index == selection.index ? .isSelected : [])
+                                .id(target.id)
+                            }
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier(targetAccessibilityIdentifier(target))
+                    .onChange(of: selection.index) {
+                        guard appState.javaSymbolSearchResults.indices.contains(selection.index) else { return }
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            proxy.scrollTo(appState.javaSymbolSearchResults[selection.index].id, anchor: .center)
+                        }
+                    }
                 }
             }
         }
-        .frame(minWidth: 700, minHeight: 460)
+        .frame(minWidth: 700, minHeight: queryIsEmpty ? nil : 460, alignment: .top)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("RepoDesk.JavaSymbolSearch")
         .onAppear {
             queryFocused = true
+            selection.reset()
             appState.javaSymbolSearchResults = []
         }
-        .onChange(of: query) { search() }
-        .onChange(of: scope) { search() }
+        .onChange(of: query) {
+            selection.reset()
+            search()
+        }
+        .onChange(of: scope) {
+            selection.reset()
+            search()
+        }
+        .onChange(of: appState.javaSymbolSearchResults) {
+            selection.clamp(toCount: appState.javaSymbolSearchResults.count)
+        }
+        .searchResultArrowKeys(
+            isEnabled: queryFocused,
+            count: appState.javaSymbolSearchResults.count,
+            selection: $selection
+        )
+    }
+
+    private var queryIsEmpty: Bool {
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var emptySearchHint: String {
+        switch scope {
+        case .types: "按类名或接口名查找。↑↓ 选择，回车打开"
+        case .methods: "按方法名查找。↑↓ 选择，回车打开"
+        case .all: "按类名或方法名查找。↑↓ 选择，回车打开"
+        }
     }
 
     private var searchPlaceholder: String {
@@ -665,15 +715,16 @@ struct JavaSymbolSearchSheet: View {
         appState.searchJavaSymbols(query: query, scope: scope)
     }
 
-    private func openFirstResult() {
-        guard let target = appState.javaSymbolSearchResults.first else { return }
-        appState.selectJavaSymbolTarget(target)
+    private func openSelectedResult() {
+        guard appState.javaSymbolSearchResults.indices.contains(selection.index) else { return }
+        appState.selectJavaSymbolTarget(appState.javaSymbolSearchResults[selection.index])
         dismiss()
     }
 }
 
 private struct JavaNavigationTargetRow: View {
     let target: JavaNavigationTarget
+    var isSelected = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -683,7 +734,7 @@ private struct JavaNavigationTargetRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(target.name)
-                        .fontWeight(.medium)
+                        .fontWeight(isSelected ? .semibold : .medium)
                     if let detail = target.detail, !detail.isEmpty {
                         Text(detail)
                             .foregroundStyle(.secondary)

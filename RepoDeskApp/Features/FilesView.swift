@@ -2016,7 +2016,7 @@ struct FileNameSearchSheet: View {
     @Bindable var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
-    @State private var selectedResultIndex = 0
+    @State private var selection = SearchResultSelection()
     @FocusState private var isQueryFocused: Bool
 
     var body: some View {
@@ -2033,7 +2033,7 @@ struct FileNameSearchSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($isQueryFocused)
                 .onChange(of: query) { _, value in
-                    selectedResultIndex = 0
+                    selection.reset()
                     appState.searchFiles(query: value)
                 }
                 .onSubmit { openSelectedResult() }
@@ -2043,12 +2043,12 @@ struct FileNameSearchSheet: View {
                     LazyVStack(spacing: 3) {
                         ForEach(Array(appState.fileSearchResults.enumerated()), id: \.element.id) { index, entry in
                             Button {
-                                selectedResultIndex = index
+                                selection.index = index
                                 openSelectedResult()
                             } label: {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(entry.name)
-                                        .fontWeight(index == selectedResultIndex ? .semibold : .regular)
+                                        .fontWeight(index == selection.index ? .semibold : .regular)
                                     Text(relativePath(for: entry.url))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
@@ -2059,18 +2059,19 @@ struct FileNameSearchSheet: View {
                             }
                             .buttonStyle(.plain)
                             .background(
-                                index == selectedResultIndex ? Color.accentColor.opacity(0.16) : .clear,
+                                index == selection.index ? Color.accentColor.opacity(0.16) : .clear,
                                 in: .rect(cornerRadius: 5)
                             )
+                            .accessibilityAddTraits(index == selection.index ? .isSelected : [])
                             .id(entry.id)
                         }
                     }
                     .padding(.horizontal, 2)
                 }
-                .onChange(of: selectedResultIndex) {
-                    guard appState.fileSearchResults.indices.contains(selectedResultIndex) else { return }
+                .onChange(of: selection.index) {
+                    guard appState.fileSearchResults.indices.contains(selection.index) else { return }
                     withAnimation(.easeOut(duration: 0.12)) {
-                        proxy.scrollTo(appState.fileSearchResults[selectedResultIndex].id, anchor: .center)
+                        proxy.scrollTo(appState.fileSearchResults[selection.index].id, anchor: .center)
                     }
                 }
             }
@@ -2089,28 +2090,18 @@ struct FileNameSearchSheet: View {
             isQueryFocused = true
         }
         .onChange(of: appState.fileSearchResults) {
-            if appState.fileSearchResults.isEmpty {
-                selectedResultIndex = 0
-            } else {
-                selectedResultIndex = min(selectedResultIndex, appState.fileSearchResults.count - 1)
-            }
+            selection.clamp(toCount: appState.fileSearchResults.count)
         }
-        .onMoveCommand { direction in
-            guard !appState.fileSearchResults.isEmpty else { return }
-            switch direction {
-            case .down:
-                selectedResultIndex = (selectedResultIndex + 1) % appState.fileSearchResults.count
-            case .up:
-                selectedResultIndex = (selectedResultIndex - 1 + appState.fileSearchResults.count) % appState.fileSearchResults.count
-            default:
-                break
-            }
-        }
+        .searchResultArrowKeys(
+            isEnabled: isQueryFocused,
+            count: appState.fileSearchResults.count,
+            selection: $selection
+        )
     }
 
     private func openSelectedResult() {
-        guard appState.fileSearchResults.indices.contains(selectedResultIndex) else { return }
-        appState.selectFile(appState.fileSearchResults[selectedResultIndex].url)
+        guard appState.fileSearchResults.indices.contains(selection.index) else { return }
+        appState.selectFile(appState.fileSearchResults[selection.index].url)
         appState.selectSection(.files)
         dismiss()
     }
@@ -2131,8 +2122,7 @@ struct FullTextSearchSheet: View {
     @Bindable var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
-    @State private var selectedResultIndex = 0
-    @State private var keyDownMonitor: Any?
+    @State private var selection = SearchResultSelection()
     @FocusState private var isQueryFocused: Bool
 
     var body: some View {
@@ -2149,7 +2139,7 @@ struct FullTextSearchSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($isQueryFocused)
                 .onChange(of: query) { _, value in
-                    selectedResultIndex = 0
+                    selection.reset()
                     appState.searchWorkspaceText(query: value)
                 }
                 .onSubmit { openSelectedResult() }
@@ -2159,14 +2149,14 @@ struct FullTextSearchSheet: View {
                     LazyVStack(spacing: 3) {
                         ForEach(Array(appState.textSearchResults.enumerated()), id: \.element.id) { index, result in
                             Button {
-                                selectedResultIndex = index
+                                selection.index = index
                                 openSelectedResult()
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack(spacing: 6) {
                                         FileTypeIcon(path: result.fileURL.path)
                                         Text(result.fileURL.lastPathComponent)
-                                            .fontWeight(index == selectedResultIndex ? .semibold : .regular)
+                                            .fontWeight(index == selection.index ? .semibold : .regular)
                                         Text(":\(result.line)")
                                             .font(.caption.monospacedDigit())
                                             .foregroundStyle(.secondary)
@@ -2186,18 +2176,19 @@ struct FullTextSearchSheet: View {
                             }
                             .buttonStyle(.plain)
                             .background(
-                                index == selectedResultIndex ? Color.accentColor.opacity(0.16) : .clear,
+                                index == selection.index ? Color.accentColor.opacity(0.16) : .clear,
                                 in: .rect(cornerRadius: 5)
                             )
+                            .accessibilityAddTraits(index == selection.index ? .isSelected : [])
                             .id(result.id)
                         }
                     }
                     .padding(.horizontal, 2)
                 }
-                .onChange(of: selectedResultIndex) {
-                    guard appState.textSearchResults.indices.contains(selectedResultIndex) else { return }
+                .onChange(of: selection.index) {
+                    guard appState.textSearchResults.indices.contains(selection.index) else { return }
                     withAnimation(.easeOut(duration: 0.12)) {
-                        proxy.scrollTo(appState.textSearchResults[selectedResultIndex].id, anchor: .center)
+                        proxy.scrollTo(appState.textSearchResults[selection.index].id, anchor: .center)
                     }
                 }
             }
@@ -2214,41 +2205,20 @@ struct FullTextSearchSheet: View {
         .onAppear {
             appState.searchWorkspaceText(query: "")
             isQueryFocused = true
-            keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard isQueryFocused,
-                      !appState.textSearchResults.isEmpty,
-                      event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else {
-                    return event
-                }
-                switch event.keyCode {
-                case 125:
-                    selectedResultIndex = min(selectedResultIndex + 1, appState.textSearchResults.count - 1)
-                case 126:
-                    selectedResultIndex = max(selectedResultIndex - 1, 0)
-                default:
-                    return event
-                }
-                return nil
-            }
-        }
-        .onDisappear {
-            if let keyDownMonitor {
-                NSEvent.removeMonitor(keyDownMonitor)
-                self.keyDownMonitor = nil
-            }
         }
         .onChange(of: appState.textSearchResults) {
-            if appState.textSearchResults.isEmpty {
-                selectedResultIndex = 0
-            } else {
-                selectedResultIndex = min(selectedResultIndex, appState.textSearchResults.count - 1)
-            }
+            selection.clamp(toCount: appState.textSearchResults.count)
         }
+        .searchResultArrowKeys(
+            isEnabled: isQueryFocused,
+            count: appState.textSearchResults.count,
+            selection: $selection
+        )
     }
 
     private func openSelectedResult() {
-        guard appState.textSearchResults.indices.contains(selectedResultIndex) else { return }
-        let result = appState.textSearchResults[selectedResultIndex]
+        guard appState.textSearchResults.indices.contains(selection.index) else { return }
+        let result = appState.textSearchResults[selection.index]
         appState.selectFile(result.fileURL, line: result.line)
         appState.selectSection(.files)
         dismiss()
