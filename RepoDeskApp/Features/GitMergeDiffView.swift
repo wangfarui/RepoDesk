@@ -152,6 +152,7 @@ struct GitMergeDiffView: View {
     let toggleIgnoreWhitespace: () -> Void
     let jumpToSource: (Int?) -> Void
     let blame: [GitHistoryBlameSide: [Int: GitBlameLine]]
+    private let blameColorScales: [GitHistoryBlameSide: GitBlameColorScale]
     let toggleBlame: (GitHistoryBlameSide) -> (() -> Void)?
     let fontSize: CGFloat
 
@@ -187,6 +188,10 @@ struct GitMergeDiffView: View {
         self.toggleIgnoreWhitespace = toggleIgnoreWhitespace
         self.jumpToSource = jumpToSource
         self.blame = blame
+        blameColorScales = blame.mapValues { annotations in
+            GitBlameColorScale(dates: annotations.values.lazy
+                .filter { !$0.isUncommitted }.compactMap(\.authoredAt))
+        }
         self.toggleBlame = toggleBlame
         self.fontSize = fontSize
         rowHeight = max(22, ceil(fontSize + 8))
@@ -423,7 +428,8 @@ struct GitMergeDiffView: View {
                 case .line(let row):
                     GitBlameAnnotationCell(
                         blame: line(in: row, pane: pane).flatMap { blame[pane]?[$0.number] },
-                        height: rowHeight
+                        height: rowHeight,
+                        colorScale: blameColorScales[pane] ?? GitBlameColorScale(dates: [])
                     )
                 case .gap(let gap):
                     Color.clear.frame(height: rowHeight)

@@ -232,6 +232,7 @@ private final class NativeLineNumberRulerView: NSRulerView {
     private weak var textView: NSTextView?
     private var lineIndex = SourceLineIndex(text: "")
     private var gitBlame: [Int: NativeGitBlameAnnotation]?
+    private var blameColorScale = GitBlameColorScale(dates: [])
     private var canToggleGitBlame = false
     private var onToggleGitBlame: (() -> Void)?
     weak var importFolding: NativeJavaImportFolding?
@@ -284,6 +285,10 @@ private final class NativeLineNumberRulerView: NSRulerView {
         onToggle: (() -> Void)?
     ) {
         let visibilityChanged = (self.gitBlame == nil) != (gitBlame == nil)
+        if self.gitBlame != gitBlame {
+            blameColorScale = GitBlameColorScale(dates: (gitBlame ?? [:]).values.lazy
+                .filter { !$0.isUncommitted }.compactMap(\.authoredAt))
+        }
         self.gitBlame = gitBlame
         canToggleGitBlame = canToggle
         onToggleGitBlame = onToggle
@@ -368,6 +373,14 @@ private final class NativeLineNumberRulerView: NSRulerView {
             )
             let rulerOrigin = textView.convert(textOrigin, to: self)
             if let gitBlame {
+                GitBlamePalette.background(for: gitBlame[line]?.isUncommitted == false
+                    ? blameColorScale.level(for: gitBlame[line]?.authoredAt) : nil).setFill()
+                NSRect(
+                    x: 0,
+                    y: rulerOrigin.y,
+                    width: Self.gitBlameWidth - 1,
+                    height: lineRect.height
+                ).fill()
                 drawGitBlame(
                     gitBlame[line],
                     y: rulerOrigin.y + (lineRect.height - labelFont.pointSize - 2) / 2
@@ -414,7 +427,7 @@ private final class NativeLineNumberRulerView: NSRulerView {
         ]
         let secondaryAttributes: [NSAttributedString.Key: Any] = [
             .font: font,
-            .foregroundColor: NSColor.tertiaryLabelColor
+            .foregroundColor: NSColor.secondaryLabelColor
         ]
         let date = blame?.authoredAt.map(Self.blameDateFormatter.string(from:)) ?? ""
         let author = blame?.author ?? ""

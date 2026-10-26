@@ -459,6 +459,8 @@ struct GitDiffView: View {
     let openComparison: ((GitDiffRenderModel) -> Void)?
     let oldBlame: [Int: GitBlameLine]?
     let newBlame: [Int: GitBlameLine]?
+    private let oldBlameColorScale: GitBlameColorScale
+    private let newBlameColorScale: GitBlameColorScale
     let toggleOldBlame: (() -> Void)?
     let toggleNewBlame: (() -> Void)?
     let fontSize: CGFloat
@@ -506,6 +508,10 @@ struct GitDiffView: View {
         self.openComparison = openComparison
         self.oldBlame = oldBlame
         self.newBlame = newBlame
+        oldBlameColorScale = GitBlameColorScale(dates: (oldBlame ?? [:]).values.lazy
+            .filter { !$0.isUncommitted }.compactMap(\.authoredAt))
+        newBlameColorScale = GitBlameColorScale(dates: (newBlame ?? [:]).values.lazy
+            .filter { !$0.isUncommitted }.compactMap(\.authoredAt))
         self.toggleOldBlame = toggleOldBlame
         self.toggleNewBlame = toggleNewBlame
         self.fontSize = fontSize
@@ -938,7 +944,8 @@ struct GitDiffView: View {
                         blameLine(
                             for: side == .old ? row.old : row.new,
                             side: side
-                        )
+                        ),
+                        colorScale: side == .old ? oldBlameColorScale : newBlameColorScale
                     )
                 }
             }
@@ -1035,8 +1042,8 @@ struct GitDiffView: View {
         )
     }
 
-    private func blameCell(_ blame: GitBlameLine?) -> some View {
-        GitBlameAnnotationCell(blame: blame, height: lineHeight)
+    private func blameCell(_ blame: GitBlameLine?, colorScale: GitBlameColorScale) -> some View {
+        GitBlameAnnotationCell(blame: blame, height: lineHeight, colorScale: colorScale)
     }
 
     private var sideBySideContentHeight: CGFloat {

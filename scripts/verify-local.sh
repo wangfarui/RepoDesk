@@ -529,6 +529,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-layout.swift" \
@@ -544,6 +545,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-selection.swift" \
@@ -559,6 +561,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-mouse-copy.swift" \
@@ -574,6 +577,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/RepoDeskApp/Features/GitMergeDiffView.swift" \
@@ -602,6 +606,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameAnnotationCell.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffView.swift" \
   "${project_dir}/scripts/verify-git-diff-performance.swift" \
@@ -668,6 +673,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
   "${project_dir}/RepoDeskApp/Features/JavaImportFolding.swift" \
   "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
@@ -688,6 +694,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/SourceLineNavigation.swift" \
   "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
+  "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
   "${project_dir}/RepoDeskApp/Features/JavaImportFolding.swift" \
   "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
@@ -795,6 +802,20 @@ swiftc \
   -o "${project_dir}/build/verify-git-blame"
 
 "${project_dir}/build/verify-git-blame"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-git-blame-colors.swift" \
+  -o "${project_dir}/build/verify-git-blame-colors"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-git-blame-colors"
 
 swiftc \
   -parse-as-library \

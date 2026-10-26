@@ -414,6 +414,7 @@ struct MergeConflictEditorSheet: View {
     @State private var horizontalOffset: CGFloat = 0
     @State private var resultContentWidth: CGFloat
     @State private var blameAnnotations: GitMergeConflictBlame?
+    @State private var blameColorScales: [MergeConflictPane: GitBlameColorScale] = [:]
     @State private var isLoadingBlame = false
     private let yoursContentWidth: CGFloat
     private let theirsContentWidth: CGFloat
@@ -1136,6 +1137,7 @@ struct MergeConflictEditorSheet: View {
         guard !isLoadingBlame else { return }
         if blameIsVisible {
             blameAnnotations = nil
+            blameColorScales = [:]
             return
         }
         isLoadingBlame = true
@@ -1144,6 +1146,15 @@ struct MergeConflictEditorSheet: View {
             await MainActor.run {
                 if let annotations {
                     blameAnnotations = annotations
+                    let panes: [MergeConflictPane: [Int: GitBlameLine]] = [
+                        .yours: annotations.yours,
+                        .result: annotations.result,
+                        .theirs: annotations.theirs
+                    ]
+                    blameColorScales = panes.mapValues { lines in
+                        GitBlameColorScale(dates: lines.values.lazy
+                            .filter { !$0.isUncommitted }.compactMap(\.authoredAt))
+                    }
                 }
                 isLoadingBlame = false
             }
@@ -1155,7 +1166,8 @@ struct MergeConflictEditorSheet: View {
         if blameIsVisible {
             GitBlameAnnotationCell(
                 blame: blame(for: pane)[lineNumber],
-                height: codeLineHeight
+                height: codeLineHeight,
+                colorScale: blameColorScales[pane] ?? GitBlameColorScale(dates: [])
             )
         }
     }

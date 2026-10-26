@@ -6,6 +6,7 @@ struct GitBlameAnnotationCell: View {
 
     let blame: GitBlameLine?
     let height: CGFloat
+    let colorScale: GitBlameColorScale
 
     var body: some View {
         HStack(spacing: 6) {
@@ -15,7 +16,7 @@ struct GitBlameAnnotationCell: View {
                 .lineLimit(1)
                 .frame(width: 92, alignment: .leading)
             Text(blame?.isUncommitted != false ? "" : String(blame?.commitHash.prefix(8) ?? ""))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .frame(width: 58, alignment: .leading)
         }
         .font(.caption2.monospaced())
@@ -23,7 +24,9 @@ struct GitBlameAnnotationCell: View {
         .padding(.horizontal, 7)
         .frame(width: Self.width, alignment: .leading)
         .frame(height: height)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.85))
+        .background(Color(nsColor: GitBlamePalette.background(
+            for: blame?.isUncommitted == false ? colorScale.level(for: blame?.authoredAt) : nil
+        )))
     }
 
     private static let dateFormatter: DateFormatter = {
