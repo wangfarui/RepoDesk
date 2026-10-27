@@ -201,6 +201,10 @@ final class AppState {
     var historyFilePath: String?
     var historyBranchFilter: GitHistoryBranchFilter = .current
     var historyAuthorFilter: GitHistoryAuthorFilter = .all
+    private(set) var historyHashQuery = ""
+    var normalizedHistoryHashQuery: String {
+        historyHashQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
     var historyGrouping: GitChangesGrouping = .directory
     var historyVerticalSplitFraction = HistorySplitLayout.defaultVerticalFraction
     var historyHorizontalSplitFraction = HistorySplitLayout.defaultHorizontalFraction
@@ -266,6 +270,7 @@ final class AppState {
     private var diffRequestID: UUID?
     private var documentRequestID: UUID?
     private var historyRequestID: UUID?
+    @ObservationIgnored private var historyReloadTask: Task<Void, Never>?
     private var branchesRequestID: UUID?
     private var historyAuthorsRequestID: UUID?
     private var commitRequestID: UUID?
@@ -697,6 +702,7 @@ final class AppState {
         loadedDocument = nil
         resetDocumentEditingState()
         fileTabSessionsByContext = [:]
+        resetHistoryHashSearch()
         commitHistory = []
         branches = []
         gitStashes = []
@@ -840,6 +846,7 @@ final class AppState {
         loadedDocument = nil
         resetDocumentEditingState()
         fileTabSessionsByContext = [:]
+        resetHistoryHashSearch()
         commitHistory = []
         branches = []
         gitStashes = []
@@ -998,6 +1005,7 @@ final class AppState {
             diffErrorMessage = nil
         }
         guard repositoryChanged else { return }
+        resetHistoryHashSearch()
         commitHistory = []
         branches = []
         gitStashes = []
@@ -4242,6 +4250,7 @@ final class AppState {
         historyErrorMessage = nil
         let skip = reset ? 0 : commitHistory.count
         let author = resolvedHistoryAuthorName
+        let hashPrefix = normalizedHistoryHashQuery
 
         if historyAuthorFilter == .me, author == nil {
             if reset {
@@ -4261,7 +4270,17 @@ final class AppState {
 
         do {
             let history: [GitCommitSummary]
-            if let historyFilePath,
+            if !hashPrefix.isEmpty {
+                history = try await gitRepositoryReader.searchHistory(
+                    repositoryURL: repositoryURL,
+                    hashPrefix: hashPrefix,
+                    path: historyFileRepositoryID == repositoryID ? historyFilePath : nil,
+                    limit: 50,
+                    skip: skip,
+                    revision: historyRevision,
+                    author: author
+                )
+            } else if let historyFilePath,
                historyFileRepositoryID == repositoryID {
                 history = try await gitRepositoryReader.fileHistory(
                     repositoryURL: repositoryURL,
@@ -4546,6 +4565,13 @@ final class AppState {
         resetHistorySelectionAndReload()
     }
 
+    func setHistoryHashQuery(_ query: String) {
+        let previousQuery = normalizedHistoryHashQuery
+        historyHashQuery = query
+        guard normalizedHistoryHashQuery != previousQuery else { return }
+        resetHistorySelectionAndReload(debounce: !normalizedHistoryHashQuery.isEmpty)
+    }
+
     func selectHistoryAuthorFilter(_ filter: GitHistoryAuthorFilter) {
         historyAuthorFilter = filter
         if let repositoryID = selectedRepositoryID {
@@ -4574,7 +4600,28 @@ final class AppState {
         }
     }
 
-    private func resetHistorySelectionAndReload() {
+    private func resetHistoryHashSearch() {
+        historyReloadTask?.cancel()
+        historyReloadTask = nil
+        historyRequestID = nil
+        commitRequestID = nil
+        commitDiffRequestID = nil
+        historyHashQuery = ""
+        isLoadingHistory = false
+        isLoadingCommit = false
+        isLoadingCommitDiff = false
+        hasMoreHistory = true
+    }
+
+    private func resetHistorySelectionAndReload(debounce: Bool = false) {
+        historyReloadTask?.cancel()
+        historyRequestID = nil
+        commitRequestID = nil
+        commitDiffRequestID = nil
+        isLoadingCommit = false
+        isLoadingCommitDiff = false
+        isLoadingHistory = true
+        hasMoreHistory = false
         commitHistory = []
         selectedCommitHash = nil
         selectedCommitDetail = nil
@@ -4587,8 +4634,19 @@ final class AppState {
         }
         historyErrorMessage = nil
         commitErrorMessage = nil
+        commitDiffErrorMessage = nil
         persistWindowState()
-        Task { await loadHistory() }
+        historyReloadTask = Task { [weak self] in
+            if debounce {
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled, let self else { return }
+            await self.loadHistory()
+        }
     }
 
     func loadTaskCatalog() {

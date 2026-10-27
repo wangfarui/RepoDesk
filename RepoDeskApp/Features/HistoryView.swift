@@ -145,6 +145,31 @@ struct HistoryView: View {
                     }
                 }
 
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("按 Commit Hash 筛选…", text: Binding(
+                        get: { appState.historyHashQuery },
+                        set: { appState.setHistoryHashQuery($0) }
+                    ))
+                    .textFieldStyle(.plain)
+                    .accessibilityLabel("按 Commit Hash 筛选")
+                    if !appState.historyHashQuery.isEmpty {
+                        Button {
+                            appState.setHistoryHashQuery("")
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("清除 Hash 筛选")
+                        .accessibilityLabel("清除 Hash 筛选")
+                    }
+                }
+                .padding(7)
+                .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 5))
+                .help("输入短 Hash 或完整 Hash，搜索当前 Branch、User 范围内的全部提交")
+
                 if appState.showsHistoryLoadingIndicator {
                     ProgressView().controlSize(.small)
                 }
@@ -195,7 +220,9 @@ struct HistoryView: View {
                     ContentUnavailableView(
                         "没有匹配的 Commit",
                         systemImage: "clock.arrow.circlepath",
-                        description: Text("没有 Commit 符合当前 Branch 和 User 筛选。")
+                        description: Text(appState.normalizedHistoryHashQuery.isEmpty
+                            ? "没有 Commit 符合当前 Branch 和 User 筛选。"
+                            : "没有 Commit 符合当前 Hash、Branch 和 User 筛选。")
                     )
                 }
             }

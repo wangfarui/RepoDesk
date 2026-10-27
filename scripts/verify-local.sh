@@ -886,6 +886,20 @@ swiftc \
 DYLD_LIBRARY_PATH="${project_dir}/build" \
   "${project_dir}/build/verify-search-result-selection"
 
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-history-hash-search.swift" \
+  -o "${project_dir}/build/verify-history-hash-search"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-history-hash-search"
+
 "${script_dir}/build-local.sh"
 
 app_bundle="${project_dir}/build/RepoDesk.app"

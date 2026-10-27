@@ -22,6 +22,15 @@ protocol GitRepositoryReading: Sendable {
         revision: String?,
         author: String?
     ) async throws -> [GitCommitSummary]
+    func searchHistory(
+        repositoryURL: URL,
+        hashPrefix: String,
+        path: String?,
+        limit: Int,
+        skip: Int,
+        revision: String?,
+        author: String?
+    ) async throws -> [GitCommitSummary]
     func branches(repositoryURL: URL) async throws -> [GitBranch]
     func authors(repositoryURL: URL) async throws -> [String]
     func currentUserName(repositoryURL: URL) async throws -> String?
@@ -51,6 +60,41 @@ protocol GitRepositoryReading: Sendable {
 }
 
 extension GitRepositoryReading {
+    func searchHistory(
+        repositoryURL: URL,
+        hashPrefix: String,
+        path: String?,
+        limit: Int,
+        skip: Int,
+        revision: String?,
+        author: String?
+    ) async throws -> [GitCommitSummary] {
+        let prefix = hashPrefix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !prefix.isEmpty, prefix.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              limit > 0, skip >= 0 else { return [] }
+        var matches: [GitCommitSummary] = []
+        var offset = 0
+        while true {
+            try Task.checkCancellation()
+            let page: [GitCommitSummary]
+            if let path {
+                page = try await fileHistory(
+                    repositoryURL: repositoryURL, path: path, limit: 200, skip: offset,
+                    revision: revision, author: author
+                )
+            } else {
+                page = try await history(
+                    repositoryURL: repositoryURL, limit: 200, skip: offset,
+                    revision: revision, author: author
+                )
+            }
+            matches.append(contentsOf: page.filter { $0.hash.lowercased().hasPrefix(prefix) })
+            if page.count < 200 || matches.count >= skip + limit { break }
+            offset += page.count
+        }
+        return Array(matches.dropFirst(skip).prefix(limit))
+    }
+
     func fileHistory(
         repositoryURL: URL,
         path: String,
@@ -649,6 +693,44 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             revision: revision,
             author: author
         )
+    }
+
+    func searchHistory(
+        repositoryURL: URL,
+        hashPrefix: String,
+        path: String?,
+        limit: Int,
+        skip: Int,
+        revision: String?,
+        author: String?
+    ) async throws -> [GitCommitSummary] {
+        let prefix = hashPrefix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !prefix.isEmpty, prefix.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              limit > 0, skip >= 0 else { return [] }
+
+        // Enumerate hashes in the filtered history before paginating matches. Loading only
+        // hashes keeps repository-wide searches small even when the target is very old.
+        var arguments = ["log", "--format=%H"]
+        if path != nil { arguments.append("--follow") }
+        if let author {
+            arguments.append(contentsOf: [
+                "--extended-regexp", "--author=^\(escapedExtendedRegularExpression(author)) <"
+            ])
+        }
+        if let revision { arguments.append(revision) }
+        if let path { arguments.append(contentsOf: ["--", path]) }
+        let data = try await runGit(arguments, in: repositoryURL, allowsEmptyOutput: true)
+        try Task.checkCancellation()
+        let hashes = String(decoding: data, as: UTF8.self).split(separator: "\n")
+            .lazy.filter { $0.hasPrefix(prefix) }.dropFirst(skip).prefix(limit).map(String.init)
+        guard !hashes.isEmpty else { return [] }
+        let summaries = try await runGit(
+            ["show", "--no-patch", "--no-walk=unsorted", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D"]
+                + hashes + ["--"],
+            in: repositoryURL,
+            allowsEmptyOutput: true
+        )
+        return GitHistoryParser.parse(summaries)
     }
 
     func fileHistory(

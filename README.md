@@ -33,6 +33,10 @@ The verification script runs strict-concurrency type checking, parses the test s
 
 The final local artifact is `build/RepoDesk.app`. Release contents, accepted replacement coverage, known limitations, and the App icon generation record are in `docs/release-v0.1.md`.
 
+### Find commits by hash in History
+
+Use “按 Commit Hash 筛选…” above the commit list to filter by a short or full hash prefix. Matching ignores case and surrounding whitespace, searches the complete history within the selected Branch and User filters, and preserves the file scope when viewing file History. A single result is selected automatically; ambiguous prefixes show matching commits in history order with normal pagination. Clear the field to restore the unfiltered list. The search is cleared when switching repositories.
+
 ### JAR changes in History
 
 Select a changed `.jar` in History to compare its internal files. The upper list shows added, deleted and modified entries; enable “显示未改动文件” to browse everything. Select a `.class` to compare Java decompiled with the bundled CFR runtime, or select a text resource for a direct side-by-side diff. The lower pane supports search, selection, copying and ignoring whitespace. For merge commits, choose which parent to compare against.
