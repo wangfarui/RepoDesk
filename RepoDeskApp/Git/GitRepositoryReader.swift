@@ -373,7 +373,28 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         }
         arguments.append(contentsOf: ["--", path])
         let data = try await runGit(arguments, in: repositoryURL, allowsEmptyOutput: true)
-        return GitBlameParser.parse(data)
+        let lines = GitBlameParser.parse(data)
+        let hashes = Set(lines.lazy.filter { !$0.isUncommitted }.map(\.commitHash)).sorted()
+        var messages: [String: String] = [:]
+        // Fetch full messages once per commit, in bounded batches rather than per annotated line.
+        for start in stride(from: 0, to: hashes.count, by: 256) {
+            let batch = Array(hashes[start..<min(start + 256, hashes.count)])
+            let metadata = try await runGit(
+                ["log", "--no-walk=unsorted", "--format=%H%x00%B%x00"] + batch + ["--"],
+                in: repositoryURL, allowsEmptyOutput: true
+            )
+            let fields = String(decoding: metadata, as: UTF8.self)
+                .split(separator: "\0", omittingEmptySubsequences: false)
+            for index in stride(from: 0, to: max(0, fields.count - 1), by: 2) {
+                let hash = fields[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                messages[hash] = fields[index + 1].trimmingCharacters(in: .newlines)
+            }
+        }
+        return lines.map { line in
+            GitBlameLine(lineNumber: line.lineNumber, commitHash: line.commitHash,
+                         author: line.author, authoredAt: line.authoredAt,
+                         authorEmail: line.authorEmail, message: messages[line.commitHash] ?? line.message)
+        }
     }
 
     private func loadHistory(

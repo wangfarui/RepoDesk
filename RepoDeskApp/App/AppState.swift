@@ -1306,6 +1306,24 @@ final class AppState {
         resetHistorySelectionAndReload()
     }
 
+    func showFileBlameCommitInHistory(_ hash: String, fileURL: URL) {
+        guard hash.count == 40, hash.allSatisfy(\.isHexDigit), hash.contains(where: { $0 != "0" }),
+              let workspaceURL,
+              let target = GitFileBlameTarget.resolve(fileURL: fileURL, workspaceURL: workspaceURL,
+                                                     repositories: repositories) else { return }
+        selectRepositoryContext(target.repositoryID)
+        historyFileRepositoryID = nil
+        historyFilePath = nil
+        historyBranchFilter = .all
+        historyAuthorFilter = .all
+        rememberedHistoryBranchFilters[target.repositoryID] = .all
+        rememberedHistoryAuthorFilters[target.repositoryID] = nil
+        historyHashQuery = hash.lowercased()
+        selectedSection = .history
+        // Exact hash search reaches commits beyond the loaded page, including renamed files.
+        resetHistorySelectionAndReload()
+    }
+
     func clearFileHistoryScope() {
         guard historyFilePath != nil else { return }
         historyFileRepositoryID = nil

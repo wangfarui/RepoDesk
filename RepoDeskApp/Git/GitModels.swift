@@ -262,6 +262,18 @@ struct GitBlameLine: Equatable, Sendable {
     let commitHash: String
     let author: String
     let authoredAt: Date?
+    let authorEmail: String?
+    let message: String?
+
+    init(lineNumber: Int, commitHash: String, author: String, authoredAt: Date?,
+         authorEmail: String? = nil, message: String? = nil) {
+        self.lineNumber = lineNumber
+        self.commitHash = commitHash
+        self.author = author
+        self.authoredAt = authoredAt
+        self.authorEmail = authorEmail
+        self.message = message
+    }
 
     var isUncommitted: Bool {
         commitHash.allSatisfy { $0 == "0" }

@@ -12,6 +12,23 @@ struct NativeGitBlameAnnotation: Equatable, Sendable {
     let author: String
     let authoredAt: Date?
     let isUncommitted: Bool
+    let authorEmail: String?
+    let message: String?
+
+    init(commitHash: String, author: String, authoredAt: Date?, isUncommitted: Bool,
+         authorEmail: String? = nil, message: String? = nil) {
+        self.commitHash = commitHash
+        self.author = author
+        self.authoredAt = authoredAt
+        self.isUncommitted = isUncommitted
+        self.authorEmail = authorEmail
+        self.message = message
+    }
+
+    @MainActor var detailText: String {
+        GitBlamePalette.detailText(hash: commitHash, author: author, email: authorEmail,
+                                  date: authoredAt, message: message, isUncommitted: isUncommitted)
+    }
 }
 
 @MainActor
@@ -228,24 +245,19 @@ private final class NativeCodeTextView: NSTextView {
 }
 
 @MainActor
-private final class NativeLineNumberRulerView: NSRulerView {
+final class NativeLineNumberRulerView: NSRulerView {
     private weak var textView: NSTextView?
     private var lineIndex = SourceLineIndex(text: "")
     private var gitBlame: [Int: NativeGitBlameAnnotation]?
     private var blameColorScale = GitBlameColorScale(dates: [])
     private var canToggleGitBlame = false
     private var onToggleGitBlame: (() -> Void)?
+    private var onSelectGitBlameCommit: ((String) -> Void)?
+    private var blameRects: [Int: NSRect] = [:]
     weak var importFolding: NativeJavaImportFolding?
     private var importToggleRect: NSRect?
 
-    private static let gitBlameWidth: CGFloat = 226
-
-    private static let blameDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yy/MM/dd"
-        return formatter
-    }()
+    private static let gitBlameWidth = GitBlamePalette.annotationWidth
 
     private var labelFont: NSFont {
         NSFont.monospacedDigitSystemFont(
@@ -266,6 +278,8 @@ private final class NativeLineNumberRulerView: NSRulerView {
     }
 
     func refresh(text: String) {
+        removeAllToolTips()
+        blameRects.removeAll()
         lineIndex = SourceLineIndex(text: text)
         let digits = max(2, String(lineIndex.lineCount).count)
         let digitWidth = ("0" as NSString).size(withAttributes: [.font: labelFont]).width
@@ -282,16 +296,20 @@ private final class NativeLineNumberRulerView: NSRulerView {
     func configureGitBlame(
         _ gitBlame: [Int: NativeGitBlameAnnotation]?,
         canToggle: Bool,
-        onToggle: (() -> Void)?
+        onToggle: (() -> Void)?,
+        onSelectCommit: ((String) -> Void)?
     ) {
         let visibilityChanged = (self.gitBlame == nil) != (gitBlame == nil)
         if self.gitBlame != gitBlame {
+            removeAllToolTips()
+            blameRects.removeAll()
             blameColorScale = GitBlameColorScale(dates: (gitBlame ?? [:]).values.lazy
                 .filter { !$0.isUncommitted }.compactMap(\.authoredAt))
         }
         self.gitBlame = gitBlame
         canToggleGitBlame = canToggle
         onToggleGitBlame = onToggle
+        onSelectGitBlameCommit = onSelectCommit
         if visibilityChanged {
             refresh(text: textView?.string ?? "")
         } else if gitBlame != nil {
@@ -318,6 +336,8 @@ private final class NativeLineNumberRulerView: NSRulerView {
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
+        removeAllToolTips()
+        blameRects.removeAll()
         guard let textView,
               let layoutManager = textView.layoutManager,
               let textContainer = textView.textContainer else { return }
@@ -373,14 +393,21 @@ private final class NativeLineNumberRulerView: NSRulerView {
             )
             let rulerOrigin = textView.convert(textOrigin, to: self)
             if let gitBlame {
-                GitBlamePalette.background(for: gitBlame[line]?.isUncommitted == false
-                    ? blameColorScale.level(for: gitBlame[line]?.authoredAt) : nil).setFill()
+                let colorLevel = gitBlame[line]?.isUncommitted == false
+                    ? blameColorScale.level(for: gitBlame[line]?.authoredAt) : nil
+                GitBlamePalette.background(for: colorLevel).setFill()
                 NSRect(
                     x: 0,
                     y: rulerOrigin.y,
                     width: Self.gitBlameWidth - 1,
                     height: lineRect.height
                 ).fill()
+                let annotationRect = NSRect(x: 0, y: rulerOrigin.y,
+                                            width: Self.gitBlameWidth - 1, height: lineRect.height)
+                if gitBlame[line] != nil {
+                    blameRects[line] = annotationRect
+                    _ = addToolTip(annotationRect, owner: self, userData: nil)
+                }
                 drawGitBlame(
                     gitBlame[line],
                     y: rulerOrigin.y + (lineRect.height - labelFont.pointSize - 2) / 2
@@ -408,6 +435,11 @@ private final class NativeLineNumberRulerView: NSRulerView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if let annotation = blameAnnotation(at: point), !annotation.isUncommitted {
+            onSelectGitBlameCommit?(annotation.commitHash)
+            return
+        }
         if let importToggleRect, importToggleRect.contains(convert(event.locationInWindow, from: nil)) {
             importFolding?.toggle()
             needsDisplay = true
@@ -416,36 +448,42 @@ private final class NativeLineNumberRulerView: NSRulerView {
         super.mouseDown(with: event)
     }
 
+    func blameAnnotation(at point: NSPoint) -> NativeGitBlameAnnotation? {
+        guard let line = blameRects.first(where: { $0.value.contains(point) })?.key else { return nil }
+        return gitBlame?[line]
+    }
+
+    @objc func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
+                    point: NSPoint, userData: UnsafeMutableRawPointer?) -> String {
+        blameAnnotation(at: point)?.detailText ?? ""
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard onSelectGitBlameCommit != nil else { return }
+        for (line, rect) in blameRects where gitBlame?[line]?.isUncommitted == false {
+            addCursorRect(rect, cursor: .pointingHand)
+        }
+    }
+
     private func drawGitBlame(_ blame: NativeGitBlameAnnotation?, y: CGFloat) {
         let font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
         let color = blame?.isUncommitted != false
             ? NSColor.secondaryLabelColor
-            : NSColor.labelColor
+            : GitBlamePalette.foreground(for: blameColorScale.level(for: blame?.authoredAt))
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: color
         ]
-        let secondaryAttributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.secondaryLabelColor
-        ]
-        let date = blame?.authoredAt.map(Self.blameDateFormatter.string(from:)) ?? ""
+        let date = blame?.authoredAt.map(GitBlamePalette.dateFormatter.string(from:)) ?? ""
         let author = blame?.author ?? ""
-        let hash = blame?.isUncommitted != false
-            ? ""
-            : String(blame?.commitHash.prefix(8) ?? "")
-
         (date as NSString).draw(
-            in: NSRect(x: 7, y: y, width: 58, height: 14),
+            in: NSRect(x: 7, y: y, width: 74, height: 14),
             withAttributes: attributes
         )
         (author as NSString).draw(
-            in: NSRect(x: 69, y: y, width: 92, height: 14),
+            in: NSRect(x: 87, y: y, width: 110, height: 14),
             withAttributes: attributes
-        )
-        (hash as NSString).draw(
-            in: NSRect(x: 165, y: y, width: 54, height: 14),
-            withAttributes: secondaryAttributes
         )
     }
 }
@@ -462,6 +500,7 @@ struct NativeCodeEditor: NSViewRepresentable {
     var gitBlame: [Int: NativeGitBlameAnnotation]? = nil
     var canToggleGitBlame = false
     var onToggleGitBlame: (() -> Void)? = nil
+    var onSelectGitBlameCommit: ((String) -> Void)? = nil
     var onRequestGoToLine: ((_ currentLine: Int, _ lineCount: Int) -> Void)? = nil
     var onVisibleLineChange: ((Int) -> Void)? = nil
     var onNavigationHandled: ((UUID) -> Void)? = nil
@@ -487,6 +526,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             gitBlame: gitBlame,
             canToggleGitBlame: canToggleGitBlame,
             onToggleGitBlame: onToggleGitBlame,
+            onSelectGitBlameCommit: onSelectGitBlameCommit,
             onRequestGoToLine: onRequestGoToLine,
             onVisibleLineChange: onVisibleLineChange,
             onNavigationHandled: onNavigationHandled,
@@ -583,6 +623,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.gitBlame = gitBlame
         context.coordinator.canToggleGitBlame = canToggleGitBlame
         context.coordinator.onToggleGitBlame = onToggleGitBlame
+        context.coordinator.onSelectGitBlameCommit = onSelectGitBlameCommit
         context.coordinator.onRequestGoToLine = onRequestGoToLine
         context.coordinator.onVisibleLineChange = onVisibleLineChange
         context.coordinator.onNavigationHandled = onNavigationHandled
@@ -655,6 +696,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         var gitBlame: [Int: NativeGitBlameAnnotation]?
         var canToggleGitBlame: Bool
         var onToggleGitBlame: (() -> Void)?
+        var onSelectGitBlameCommit: ((String) -> Void)?
         var onRequestGoToLine: ((_ currentLine: Int, _ lineCount: Int) -> Void)?
         var onVisibleLineChange: ((Int) -> Void)?
         var onNavigationHandled: ((UUID) -> Void)?
@@ -688,6 +730,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             gitBlame: [Int: NativeGitBlameAnnotation]?,
             canToggleGitBlame: Bool,
             onToggleGitBlame: (() -> Void)?,
+            onSelectGitBlameCommit: ((String) -> Void)? = nil,
             onRequestGoToLine: ((_ currentLine: Int, _ lineCount: Int) -> Void)?,
             onVisibleLineChange: ((Int) -> Void)?,
             onNavigationHandled: ((UUID) -> Void)?,
@@ -702,6 +745,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             self.gitBlame = gitBlame
             self.canToggleGitBlame = canToggleGitBlame
             self.onToggleGitBlame = onToggleGitBlame
+            self.onSelectGitBlameCommit = onSelectGitBlameCommit
             self.onRequestGoToLine = onRequestGoToLine
             self.onVisibleLineChange = onVisibleLineChange
             self.onNavigationHandled = onNavigationHandled
@@ -751,7 +795,8 @@ struct NativeCodeEditor: NSViewRepresentable {
             lineNumberRuler?.configureGitBlame(
                 gitBlame,
                 canToggle: canToggleGitBlame,
-                onToggle: onToggleGitBlame
+                onToggle: onToggleGitBlame,
+                onSelectCommit: onSelectGitBlameCommit
             )
         }
 

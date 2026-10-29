@@ -117,6 +117,28 @@ enum VerifyHistoryHashSearch {
         try await Task.sleep(for: .milliseconds(350))
         try require(switchState.historyHashQuery.isEmpty && switchState.commitHistory.isEmpty && !switchState.isLoadingHistory,
                     "Switching repositories must clear the query and cancel pending searches")
+
+        let jumpState = AppState(workspace: WorkspaceSummary(url: workspace), repositories: [repository, secondRepository],
+                                 selectedRepositoryID: secondRepository.id, selectedSection: .files,
+                                 gitRepositoryReader: reader, windowStateStore: UserDefaultsWindowStateStore(defaults: defaults),
+                                 restoresWorkspaceOnLaunch: false)
+        jumpState.historyAuthorFilter = .author("Other Author")
+        jumpState.historyBranchFilter = .branch("side")
+        jumpState.historyFileRepositoryID = secondRepository.id
+        jumpState.historyFilePath = "missing.txt"
+        let sourceURL = repositoryURL.appendingPathComponent("renamed.txt")
+        jumpState.showFileBlameCommitInHistory(String(repeating: "0", count: 40), fileURL: sourceURL)
+        try require(jumpState.selectedSection == .files, "Uncommitted lines must not navigate")
+        jumpState.showFileBlameCommitInHistory(oldest, fileURL: sourceURL)
+        try await waitUntil { !jumpState.isLoadingHistory && !jumpState.isLoadingCommit }
+        try require(jumpState.selectedRepositoryID == repository.id && jumpState.selectedSection == .history,
+                    "A Files blame click must open the file's owning repository History")
+        try require(jumpState.commitHistory.map(\.hash) == [oldest]
+                    && jumpState.selectedCommitDetail?.summary.hash == oldest,
+                    "A Files blame click must reveal and select an unloaded commit across a rename")
+        try require(jumpState.historyFilePath == nil && jumpState.historyAuthorFilter == .all
+                    && jumpState.historyBranchFilter == .all,
+                    "Previous History scopes must not hide the clicked commit")
         print("History hash search verification passed (unloaded history, prefixes, scopes, pagination, selection, clear, stale requests)")
     }
 

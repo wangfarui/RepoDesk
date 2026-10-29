@@ -25,7 +25,7 @@ struct GitReviewVerifier {
         try write("rename base\n", to: repositoryURL.appendingPathComponent("working rename.txt"))
         try Data([0, 1, 2, 3]).write(to: repositoryURL.appendingPathComponent("binary.dat"))
         try await git(["add", "--all"], runner: runner, at: repositoryURL)
-        try await git(["commit", "-m", "Initial commit"], runner: runner, at: repositoryURL)
+        try await git(["commit", "-m", "Initial commit", "-m", "Detailed body 中文\nSecond body line"], runner: runner, at: repositoryURL)
 
         try write("source\n", to: repositoryURL.appendingPathComponent("committed copy.txt"))
         try await git(["mv", "working rename.txt", "committed rename.txt"], runner: runner, at: repositoryURL)
@@ -64,6 +64,12 @@ struct GitReviewVerifier {
         try write("one\n", to: specialURL)
 
         let reader = SystemGitRepositoryReader()
+        let blame = try await reader.blame(repositoryURL: repositoryURL, path: "copy source.txt",
+                                           revision: "HEAD", contentsPath: nil)
+        try require(blame.first?.authorEmail == "repodesk@example.invalid",
+                    "Blame must provide the author email for hover details")
+        try require(blame.first?.message == "Initial commit\n\nDetailed body 中文\nSecond body line",
+                    "Blame must load the full multiline commit message, not just its subject")
         let firstSnapshot = try await reader.snapshot(repositoryURL: repositoryURL)
         try require(firstSnapshot.changes.contains(where: { $0.isConflicted && $0.path == "conflict.txt" }), "Conflict status was not parsed")
         try require(firstSnapshot.changes.contains(where: { $0.indexStatus == .renamed && $0.originalPath == "committed rename.txt" }), "Working rename was not parsed")

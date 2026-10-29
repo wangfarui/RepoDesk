@@ -14,6 +14,8 @@ enum GitBlameParser {
         var finalLine = 0
         var author = ""
         var authoredAt: Date?
+        var authorEmail: String?
+        var message: String?
 
         for lineValue in lines {
             let line = String(lineValue)
@@ -22,9 +24,16 @@ enum GitBlameParser {
                 finalLine = header.finalLine
                 author = ""
                 authoredAt = nil
+                authorEmail = nil
+                message = nil
             } else if line.hasPrefix("author ") {
                 let value = String(line.dropFirst("author ".count))
                 author = value == "Not Committed Yet" ? "未提交" : value
+            } else if line.hasPrefix("author-mail ") {
+                authorEmail = String(line.dropFirst("author-mail ".count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+            } else if line.hasPrefix("summary ") {
+                message = String(line.dropFirst("summary ".count))
             } else if line.hasPrefix("author-time ") {
                 if let seconds = TimeInterval(line.dropFirst("author-time ".count)) {
                     authoredAt = Date(timeIntervalSince1970: seconds)
@@ -35,7 +44,9 @@ enum GitBlameParser {
                         lineNumber: finalLine,
                         commitHash: hash,
                         author: author.isEmpty ? "未提交" : author,
-                        authoredAt: authoredAt
+                        authoredAt: authoredAt,
+                        authorEmail: authorEmail,
+                        message: message
                     )
                 )
             }

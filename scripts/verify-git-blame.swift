@@ -6,7 +6,9 @@ struct VerifyGitBlame {
         let data = Data("""
         ^1111111111111111111111111111111111111111 1 1 1
         author Alice
+        author-mail <alice@example.invalid>
         author-time 1704067200
+        summary Subject with 中文
         filename file.txt
         \tcommitted
         0000000000000000000000000000000000000000 2 2 1
@@ -18,6 +20,10 @@ struct VerifyGitBlame {
         let lines = GitBlameParser.parse(data)
         try require(lines.count == 2, "Blame parser returned an unexpected line count")
         try require(lines[0].author == "Alice", "Committed author was not parsed")
+        try require(lines[0].authorEmail == "alice@example.invalid" && lines[0].message == "Subject with 中文",
+                    "Blame hover metadata must retain email and summary")
+        try require(lines[1].authorEmail == nil && lines[1].message == nil,
+                    "Metadata must not leak between commits")
         try require(lines[1].isUncommitted, "Working tree line was not marked uncommitted")
 
         let duplicate = GitBlameLine(

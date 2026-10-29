@@ -480,6 +480,10 @@ struct FilesView: View {
                         onNavigationForward: { appState.navigateFileForward() },
                         shortcuts: appState.shortcuts,
                         loadGitBlame: selectedFileGitBlameLoader,
+                        onGitBlameCommitSelected: { hash in
+                            guard let fileURL = appState.selectedFileURL else { return }
+                            appState.showFileBlameCommitInHistory(hash, fileURL: fileURL)
+                        },
                         importsExpanded: selectedFileImportsExpanded
                     )
                 }
@@ -1595,6 +1599,7 @@ struct SourceDocumentView: View {
     let onNavigationForward: () -> Void
     let shortcuts: [AppShortcutID: ShortcutBinding]
     let loadGitBlame: (() async throws -> [GitBlameLine])?
+    var onGitBlameCommitSelected: ((String) -> Void)? = nil
     var importsExpanded: Binding<Bool>? = nil
     @State private var showsGoToLine = false
     @State private var goToLineInput = ""
@@ -1693,6 +1698,7 @@ struct SourceDocumentView: View {
                         gitBlame: gitBlame,
                         canToggleGitBlame: loadGitBlame != nil && !isLoadingGitBlame,
                         onToggleGitBlame: toggleGitBlame,
+                        onSelectGitBlameCommit: onGitBlameCommitSelected,
                         onRequestGoToLine: { _, lineCount in
                             presentGoToLine(maximumLine: lineCount)
                         },
@@ -1915,7 +1921,9 @@ struct SourceDocumentView: View {
                             commitHash: line.commitHash,
                             author: line.author,
                             authoredAt: line.authoredAt,
-                            isUncommitted: line.isUncommitted
+                            isUncommitted: line.isUncommitted,
+                            authorEmail: line.authorEmail,
+                            message: line.message
                         )
                     }
                 }
