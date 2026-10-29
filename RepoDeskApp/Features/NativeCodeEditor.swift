@@ -33,6 +33,43 @@ struct NativeGitBlameAnnotation: Equatable, Sendable {
 
 @MainActor
 private final class NativeCodeTextView: NSTextView {
+    private let documentUndoManager = UndoManager()
+    private var isSettingMarkedText = false
+    private var isCompositionCompletionPending = false
+    var isComposingText: Bool { isSettingMarkedText || hasMarkedText() }
+    var compositionEndedHandler: (() -> Void)?
+
+    override var undoManager: UndoManager? { documentUndoManager }
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        isSettingMarkedText = true
+        defer { isSettingMarkedText = false }
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        let wasComposing = isComposingText
+        super.insertText(insertString, replacementRange: replacementRange)
+        if wasComposing { scheduleCompositionCompletion() }
+    }
+
+    override func unmarkText() {
+        let wasComposing = isComposingText
+        super.unmarkText()
+        if wasComposing { scheduleCompositionCompletion() }
+    }
+
+    private func scheduleCompositionCompletion() {
+        guard !isCompositionCompletionPending else { return }
+        isCompositionCompletionPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            isCompositionCompletionPending = false
+            guard !isComposingText else { return }
+            compositionEndedHandler?()
+        }
+    }
+
     var goToLineHandler: (() -> Void)?
     var javaNavigationHandler: ((JavaNavigationAction, JavaSourcePosition, CGPoint?) -> Void)?
     var javaPopupDismissHandler: (() -> Void)?
@@ -44,6 +81,20 @@ private final class NativeCodeTextView: NSTextView {
     private var hoveredJavaRange: NSRange?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if window?.firstResponder === self, isEditable, !isComposingText,
+           event.charactersIgnoringModifiers?.lowercased() == "z" {
+            let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            if modifiers == .command {
+                breakUndoCoalescing()
+                if undoManager?.canUndo == true { undoManager?.undo() }
+                return true
+            }
+            if modifiers == [.command, .shift] {
+                breakUndoCoalescing()
+                if undoManager?.canRedo == true { undoManager?.redo() }
+                return true
+            }
+        }
         if window?.firstResponder === self,
            matches(.goToLine, event: event) {
             goToLineHandler?()
@@ -577,6 +628,10 @@ struct NativeCodeEditor: NSViewRepresentable {
 
         let textView = NativeCodeTextView(frame: scrollView.contentView.bounds)
         textView.delegate = context.coordinator
+        textView.compositionEndedHandler = { [weak coordinator = context.coordinator, weak textView] in
+            guard let textView else { return }
+            coordinator?.textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+        }
         textView.goToLineHandler = { [weak coordinator = context.coordinator] in
             coordinator?.requestGoToLine()
         }
@@ -669,9 +724,17 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         context.coordinator.contentIdentity = contentIdentity
         context.coordinator.configureLineNumbers(showsLineNumbers, in: scrollView)
+        // Marked text and its selection belong to the input method until commit.
+        // A semantic/font refresh must not end composition or consume its Return.
+        if textView.isComposingText && !contentIdentityChanged { return }
+        if contentIdentityChanged { textView.unmarkText() }
         context.coordinator.configureFont(in: textView)
         textView.isEditable = isEditable
         let textChanged = textView.string != text
+        if contentIdentityChanged || (textChanged && isEditable) {
+            textView.breakUndoCoalescing()
+            textView.undoManager?.removeAllActions()
+        }
         let visibleOrigin = scrollView.contentView.bounds.origin
         let shouldFollowTail = context.coordinator.isFollowingTail
         if textChanged || styleChanged || contentIdentityChanged {
@@ -886,6 +949,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         func applyVisibleSourceStyling() {
             guard canStyleIncrementally, !isApplyingStyle,
                   let textView, let plan = sourceHighlightPlan,
+                  (textView as? NativeCodeTextView)?.isComposingText != true,
                   let storage = textView.textStorage, storage.length > 0,
                   let layout = textView.layoutManager, let container = textView.textContainer else { return }
             isApplyingStyle = true
@@ -951,7 +1015,11 @@ struct NativeCodeEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard !isApplyingStyle,
                   let textView = notification.object as? NSTextView else { return }
-            text.wrappedValue = textView.string
+            if text.wrappedValue != textView.string { text.wrappedValue = textView.string }
+            // Do not replace attributes, restore selections, or fold source while
+            // AppKit is still building an input method's marked-text transaction.
+            guard (textView as? NativeCodeTextView)?.isComposingText != true else { return }
+            configureFont(in: textView)
             if canStyleIncrementally {
                 scheduleSourceStyling()
             } else {

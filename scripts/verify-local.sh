@@ -947,6 +947,20 @@ swiftc \
 DYLD_LIBRARY_PATH="${project_dir}/build" \
   "${project_dir}/build/verify-files-editing-performance"
 
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-editor-input.swift" \
+  -o "${project_dir}/build/verify-editor-input"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-editor-input"
+
 "${script_dir}/build-local.sh"
 
 app_bundle="${project_dir}/build/RepoDesk.app"

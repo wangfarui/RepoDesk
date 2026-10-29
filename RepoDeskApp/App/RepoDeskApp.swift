@@ -27,13 +27,15 @@ enum RepoDeskKeyboardShortcut {
         modifiers: NSEvent.ModifierFlags,
         binding: ShortcutBinding = AppShortcutID.undoFileDeletion.defaultBinding,
         selectedSection: AppSection,
-        canUndo: Bool
+        canUndo: Bool,
+        isEditingText: Bool = false
     ) -> Bool {
         let normalizedModifiers = modifiers.intersection(.deviceIndependentFlagsMask)
         return key?.lowercased() == binding.key
             && normalizedModifiers == binding.modifierFlags
             && selectedSection == .files
             && canUndo
+            && !isEditingText
     }
 }
 
@@ -196,7 +198,8 @@ final class RepoDeskApplicationDelegate: NSObject, NSApplicationDelegate {
                     modifiers: event.modifierFlags,
                     binding: appState.shortcut(for: .undoFileDeletion),
                     selectedSection: appState.selectedSection,
-                    canUndo: appState.lastDeletedFileSession != nil
+                    canUndo: appState.lastDeletedFileSession != nil,
+                    isEditingText: ((event.window ?? NSApp.keyWindow)?.firstResponder as? NSTextView)?.isEditable == true
                   ) else {
                 return event
             }
