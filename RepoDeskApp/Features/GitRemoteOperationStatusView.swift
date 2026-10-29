@@ -85,54 +85,19 @@ struct GitRemoteOperationStatusView: View {
         detail: String,
         detailLineLimit: Int? = 1,
         canDismiss: Bool = false,
-        @ViewBuilder actions: () -> Actions
+        @ViewBuilder actions: @escaping () -> Actions
     ) -> some View {
-        HStack(alignment: .center, spacing: 9) {
-            Group {
-                if showsProgress {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    Image(systemName: systemImage)
-                        .foregroundStyle(tint)
-                }
-            }
-            .frame(width: 16, height: 18)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                Text(detail)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(detailLineLimit)
-                    .textSelection(.enabled)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 8) {
-                actions()
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-
-            if canDismiss {
-                Button("关闭", systemImage: "xmark", action: dismiss)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("关闭 Git 操作结果")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .frame(maxWidth: .infinity, minHeight: 38)
-        .background(tint.opacity(0.08))
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(tint.opacity(0.7))
-                .frame(width: 3)
-        }
+        GitOperationStatusBand(
+            tint: tint,
+            showsProgress: showsProgress,
+            systemImage: systemImage,
+            title: title,
+            detail: detail,
+            detailLineLimit: detailLineLimit,
+            canDismiss: canDismiss,
+            dismiss: dismiss,
+            actions: actions
+        )
     }
 
     private func elapsedText(from start: Date, to end: Date) -> String {
@@ -175,5 +140,70 @@ struct GitRemoteOperationStatusView: View {
 
     private func durationText(_ duration: TimeInterval) -> String {
         String(format: "%.1f 秒", duration)
+    }
+}
+
+/// Shared, nonmodal feedback for local and remote Git operations.
+@MainActor
+struct GitOperationStatusBand<Actions: View>: View {
+    let tint: Color
+    var showsProgress = false
+    let systemImage: String
+    let title: String
+    var detail: String? = nil
+    var detailLineLimit: Int? = 1
+    var canDismiss = true
+    let dismiss: () -> Void
+    @ViewBuilder let actions: () -> Actions
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 9) {
+            Group {
+                if showsProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: systemImage)
+                        .foregroundStyle(tint)
+                }
+            }
+            .frame(width: 16, height: 18)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                if let detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(detailLineLimit)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 8) {
+                actions()
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+
+            if canDismiss {
+                Button("关闭", systemImage: "xmark", action: dismiss)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("关闭 Git 操作结果")
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, minHeight: 38)
+        .background(tint.opacity(0.08))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(tint.opacity(0.7))
+                .frame(width: 3)
+        }
     }
 }

@@ -53,6 +53,16 @@ struct RootView: View {
                 if appState.workspace != nil {
                     sectionNavigationBar
                     Divider()
+                    if let message = appState.branchOperationStatusMessage {
+                        GitOperationStatusBand(
+                            tint: .blue,
+                            systemImage: "info.circle.fill",
+                            title: message,
+                            dismiss: { appState.branchOperationStatusMessage = nil }
+                        ) { EmptyView() }
+                        .accessibilityIdentifier("RepoDesk.BranchOperation.Status")
+                        Divider()
+                    }
                     if appState.gitRemoteOperationState != .idle {
                         GitRemoteOperationStatusView(
                             state: appState.gitRemoteOperationState,
@@ -316,6 +326,17 @@ struct RootView: View {
         }
         .task(id: repositorySnapshotTaskID) {
             await ensureWorkspaceRepositorySnapshots()
+        }
+        .task(id: appState.branchOperationStatusMessage) {
+            guard let message = appState.branchOperationStatusMessage else { return }
+            do {
+                try await Task.sleep(for: .seconds(5))
+            } catch {
+                return
+            }
+            if appState.branchOperationStatusMessage == message {
+                appState.branchOperationStatusMessage = nil
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, appState.refreshesWhenBecomingActive {

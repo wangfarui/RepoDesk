@@ -9,6 +9,7 @@ private struct VerificationError: Error {
 @MainActor
 enum VerifyMergeConflictResolution {
     static func main() async throws {
+        try await verifyMergeOutcomes()
         try verifyStableConflictNavigationModel()
         try verifyConflictBaseSlices()
         try verifyNavigationScopeModel()
@@ -66,6 +67,90 @@ enum VerifyMergeConflictResolution {
         try require(state.mergeSourceBranch == nil, "Continue Merge did not close the conflict flow.")
 
         print("Merge conflict resolution verification passed")
+    }
+
+    private static func verifyMergeOutcomes() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-merge-outcomes-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let runner = SystemCommandRunner()
+        func git(_ arguments: [String]) async throws -> String {
+            let result = try await runner.run(CommandRequest(
+                executableURL: URL(fileURLWithPath: "/usr/bin/git"),
+                arguments: [
+                    "-c", "user.name=RepoDesk Verification", "-c", "user.email=verification@example.invalid",
+                    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"
+                ] + arguments,
+                workingDirectoryURL: url,
+                environment: nil
+            ))
+            try require(result.terminationStatus == 0, "Merge fixture command failed: \(arguments.first ?? "git")")
+            return String(decoding: result.standardOutput, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        _ = try await git(["init", "--initial-branch=main"])
+        _ = try await git(["config", "user.name", "RepoDesk Verification"])
+        _ = try await git(["config", "user.email", "verification@example.invalid"])
+        _ = try await git(["config", "commit.gpgsign", "false"])
+        _ = try await git(["config", "core.hooksPath", "/dev/null"])
+        _ = try await git(["config", "merge.ff", "true"])
+        _ = try await git(["commit", "--allow-empty", "-m", "Initial"])
+        _ = try await git(["branch", "feature"])
+
+        let repository = RegisteredRepository(displayName: "repo", relativePath: ".", isPinned: false)
+        let state = AppState(
+            workspace: WorkspaceSummary(name: "merge verification", path: url.path),
+            repositories: [repository],
+            selectedRepositoryID: repository.id,
+            gitRepositoryReader: MergeConflictReader(),
+            gitRepositoryOperator: SystemGitRepositoryOperator(),
+            restoresWorkspaceOnLaunch: false
+        )
+        state.selectRepositoryContext(repository.id)
+        let branch = GitBranch(name: "feature", hash: "", upstream: nil, isRemote: false, isCurrent: false)
+        let upToDateMessage = "当前分支已包含该分支的最新代码，无需合并。"
+
+        let originalHead = try await git(["rev-parse", "HEAD"])
+        await state.mergeBranch(branch)
+        try require(state.branchOperationStatusMessage == upToDateMessage, "Equal tips did not show the no-op message.")
+        let sameHead = try await git(["rev-parse", "HEAD"])
+        try require(sameHead == originalHead, "No-op Merge changed HEAD.")
+        try require(state.branchOperationErrorMessage == nil, "No-op Merge was treated as an error.")
+        try require(state.mergeSourceBranch == nil, "No-op Merge opened conflict resolution.")
+
+        _ = try await git(["commit", "--allow-empty", "-m", "Main ahead"])
+        await state.mergeBranch(branch)
+        try require(state.branchOperationStatusMessage == upToDateMessage, "An included ancestor was not recognized.")
+
+        _ = try await git(["switch", "feature"])
+        _ = try await git(["merge", "--ff-only", "main"])
+        _ = try await git(["commit", "--allow-empty", "-m", "Feature ahead"])
+        let featureHead = try await git(["rev-parse", "HEAD"])
+        _ = try await git(["switch", "main"])
+        await state.mergeBranch(branch)
+        try require(state.branchOperationStatusMessage == "Merge 成功。", "Fast-forward with identical files was mistaken for a no-op.")
+        let fastForwardHead = try await git(["rev-parse", "HEAD"])
+        try require(fastForwardHead == featureHead, "Fast-forward did not include the feature commit.")
+
+        await state.mergeBranch(branch)
+        try require(state.branchOperationStatusMessage == upToDateMessage, "Repeated Merge did not show the no-op message.")
+
+        _ = try await git(["commit", "--allow-empty", "-m", "Main diverged"])
+        _ = try await git(["switch", "feature"])
+        _ = try await git(["commit", "--allow-empty", "-m", "Feature diverged"])
+        _ = try await git(["switch", "main"])
+        await state.mergeBranch(branch)
+        try require(state.branchOperationStatusMessage == "Merge 成功。", "A real Merge with identical files was mistaken for a no-op.")
+        let parents = try await git(["rev-list", "--parents", "-n", "1", "HEAD"])
+        try require(parents.split(separator: " ").count == 3, "Diverged histories did not create a merge commit.")
+
+        await state.mergeBranch(GitBranch(name: "missing", hash: "", upstream: nil, isRemote: false, isCurrent: false))
+        try require(state.branchOperationStatusMessage == nil, "Failed Merge retained a success message.")
+        try require(state.branchOperationErrorMessage != nil, "Failed Merge did not report its error.")
+        print("Merge outcome verification passed (equal tips, ancestor, fast-forward, repeat, merge commit, failure)")
     }
 
     private static func verifyStableConflictNavigationModel() throws {

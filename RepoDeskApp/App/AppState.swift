@@ -1539,8 +1539,10 @@ final class AppState {
         branchOperationStatusMessage = nil
         defer { isPerformingBranchOperation = false }
         do {
-            try await gitRepositoryOperator.mergeBranch(repositoryURL: repositoryURL, branch: branch)
-            branchOperationStatusMessage = "Merge 成功。"
+            let outcome = try await gitRepositoryOperator.mergeBranch(repositoryURL: repositoryURL, branch: branch)
+            branchOperationStatusMessage = outcome == .upToDate
+                ? "当前分支已包含该分支的最新代码，无需合并。"
+                : "Merge 成功。"
             await refreshAfterBranchOperation()
         } catch {
             let files = (try? await gitRepositoryOperator.conflictFiles(repositoryURL: repositoryURL)) ?? []

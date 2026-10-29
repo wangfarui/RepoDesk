@@ -21,7 +21,8 @@ protocol GitRepositoryOperating: Sendable {
     ) async throws -> GitPushOutcome
     func switchBranch(repositoryURL: URL, branch: GitBranch) async throws
     func pushBranch(repositoryURL: URL, branch: GitBranch) async throws
-    func mergeBranch(repositoryURL: URL, branch: GitBranch) async throws
+    @discardableResult
+    func mergeBranch(repositoryURL: URL, branch: GitBranch) async throws -> GitMergeOutcome
     func renameBranch(repositoryURL: URL, branch: GitBranch, to newName: String) async throws
     func deleteBranch(repositoryURL: URL, branch: GitBranch) async throws
     func abortMerge(repositoryURL: URL) async throws
@@ -64,7 +65,8 @@ extension GitRepositoryOperating {
         try await pushCurrentBranchOutcome(repositoryURL: repositoryURL)
     }
     func pushBranch(repositoryURL: URL, branch: GitBranch) async throws { try await pushCurrentBranch(repositoryURL: repositoryURL) }
-    func mergeBranch(repositoryURL: URL, branch: GitBranch) async throws {}
+    @discardableResult
+    func mergeBranch(repositoryURL: URL, branch: GitBranch) async throws -> GitMergeOutcome { .merged }
     func renameBranch(repositoryURL: URL, branch: GitBranch, to newName: String) async throws {}
     func deleteBranch(repositoryURL: URL, branch: GitBranch) async throws {}
     func abortMerge(repositoryURL: URL) async throws {}
@@ -86,6 +88,11 @@ struct GitCreatedCommit: Equatable, Sendable {
 
 enum GitPushOutcome: Equatable, Sendable {
     case pushed
+    case upToDate
+}
+
+enum GitMergeOutcome: Equatable, Sendable {
+    case merged
     case upToDate
 }
 
@@ -499,8 +506,13 @@ struct SystemGitRepositoryOperator: GitRepositoryOperating {
         )
     }
 
-    func mergeBranch(repositoryURL: URL, branch: GitBranch) async throws {
-        _ = try await runGit(["merge", "--no-edit", branch.name], operation: .merge, repositoryURL: repositoryURL)
+    @discardableResult
+    func mergeBranch(repositoryURL: URL, branch: GitBranch) async throws -> GitMergeOutcome {
+        let result = try await runGit(["merge", "--no-edit", branch.name], operation: .merge, repositoryURL: repositoryURL)
+        // runGit fixes LC_ALL to C, so Git's no-op result has a stable message.
+        let lines = String(decoding: result.standardOutput, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+        return lines.contains("Already up to date.") ? .upToDate : .merged
     }
 
     func renameBranch(repositoryURL: URL, branch: GitBranch, to newName: String) async throws {

@@ -25,6 +25,12 @@ enum VerifyGitRemoteOperationRendering {
             startedAt: context.startedAt
         )
         let preview = VStack(spacing: 8) {
+            GitOperationStatusBand(
+                tint: .blue,
+                systemImage: "info.circle.fill",
+                title: "当前分支已包含该分支的最新代码，无需合并。",
+                dismiss: {}
+            ) { EmptyView() }
             GitRemoteOperationStatusView(
                 state: .running(context),
                 retry: {},
@@ -60,10 +66,10 @@ enum VerifyGitRemoteOperationRendering {
         .background(Color(nsColor: .windowBackgroundColor))
 
         let hostingView = NSHostingView(rootView: preview)
-        hostingView.frame = NSRect(x: 0, y: 0, width: 680, height: 285)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 680, height: 335)
         hostingView.layoutSubtreeIfNeeded()
         guard hostingView.fittingSize.width <= 681,
-              hostingView.fittingSize.height <= 286 else {
+              hostingView.fittingSize.height <= 336 else {
             throw VerificationError(message: "Git operation status content overflowed its container.")
         }
         guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
