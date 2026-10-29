@@ -7,6 +7,7 @@ import SwiftUI
 enum VerifyJavaImportFolding {
     static func main() throws {
         _ = NSApplication.shared
+        try verifyLargeImportLayout()
         let source = """
         /* import fake.Comment; */
         package example;
@@ -115,6 +116,69 @@ enum VerifyJavaImportFolding {
         let layout = view.layoutManager!
         layout.ensureLayout(for: view.textContainer!)
         return layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: offset), effectiveRange: nil).minY
+    }
+
+    static func verifyLargeImportLayout() throws {
+        // Cross TextKit's glyph batches; short import lists miss the paragraph corruption.
+        let imports = (1...179).map {
+            "import example.application.sales.inventory.processing.manager.library.Type\($0);"
+        }.joined(separator: "\n")
+        let methods = (1...300).map { "    public void method\($0)() {\n        return;\n    }" }.joined(separator: "\n\n")
+        let source = "package example;\n\n\(imports)\n\n@Component\n@Slf4j\npublic class Example {\n\n    private static final String PREFIX = \"采购单\";\n\n\(methods)\n}\n"
+        let host = NSHostingView(rootView: NativeCodeEditor(
+            text: .constant(source), isEditable: true, style: .source(fileExtension: "java"),
+            showsLineNumbers: true, foldsJavaImports: true
+        ))
+        host.frame = NSRect(x: 0, y: 0, width: 1200, height: 600)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        let view = try unwrap(findTextView(host), "Missing large editor")
+        let folding = try unwrap(view.layoutManager?.delegate as? NativeJavaImportFolding, "Missing large folding")
+        try verifyVisibleLineLayout(source, in: view, folding: folding)
+        view.enclosingScrollView?.tile()
+        view.enclosingScrollView?.contentView.scroll(to: .zero)
+        try screenshot(host, name: "java-imports-large-collapsed")
+        host.appearance = NSAppearance(named: .darkAqua)
+        folding.updatePlaceholder()
+        try screenshot(host, name: "java-imports-large-collapsed-dark")
+        host.appearance = NSAppearance(named: .aqua)
+        for updatedSource in [source, source.replacingOccurrences(of: "\n", with: "\r\n")] {
+            NativeTextStorageUpdater.update(
+                updatedSource, style: .source(fileExtension: "java"), styleChanged: true,
+                mode: .replace, in: view
+            )
+            folding.configure(enabled: true, expanded: false, sourceChanged: true)
+            try verifyVisibleLineLayout(updatedSource, in: view, folding: folding)
+            folding.toggle()
+            try verifyVisibleLineLayout(updatedSource, in: view, folding: folding)
+            folding.toggle()
+            try verifyVisibleLineLayout(updatedSource, in: view, folding: folding)
+            try require(view.string == updatedSource, "Large import folding changed source")
+        }
+    }
+
+    static func verifyVisibleLineLayout(
+        _ source: String, in view: NSTextView, folding: NativeJavaImportFolding
+    ) throws {
+        let index = SourceLineIndex(text: source)
+        let layout = try unwrap(view.layoutManager, "Missing large layout")
+        layout.ensureLayout(for: view.textContainer!)
+        var previousY: CGFloat = -1
+        for (line, offset) in index.lineStartOffsets.enumerated() {
+            if folding.isHidden(lineStart: offset) { continue }
+            if offset == index.utf16Length { continue }
+            let y = layout.lineFragmentRect(
+                forGlyphAt: layout.glyphIndexForCharacter(at: offset), effectiveRange: nil
+            ).minY
+            try require(y > previousY, "Visible source line \(line + 1) overlaps its predecessor: \(previousY) -> \(y)")
+            previousY = y
+        }
+        if !folding.isExpanded {
+            let classOffset = (source as NSString).range(of: "public class").location
+            try require(lineY(classOffset, in: view) < 130, "Large import block still consumes vertical space")
+        }
     }
 
     static func findTextView(_ view: NSView) -> NSTextView? {

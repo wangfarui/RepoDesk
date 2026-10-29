@@ -1,6 +1,6 @@
 import AppKit
 
-/// Source offsets stay unchanged: only glyph generation hides the import body.
+/// Source offsets stay unchanged: the import body has zero layout advancement.
 struct JavaImportRegion: Equatable {
     let keywordRange: NSRange
     let hiddenRange: NSRange
@@ -65,9 +65,11 @@ final class NativeJavaImportFolding: NSObject, @preconcurrency NSLayoutManagerDe
         placeholder.action = #selector(toggle)
         placeholder.bezelStyle = .inline
         placeholder.attributedTitle = NSAttributedString(
-            string: "...", attributes: [.foregroundColor: NSColor.labelColor]
+            string: "...", attributes: [.foregroundColor: NSColor.systemRed]
         )
-        placeholder.isBordered = true
+        placeholder.isBordered = false
+        placeholder.wantsLayer = true
+        placeholder.layer?.cornerRadius = 2
         placeholder.toolTip = "展开 import"
         placeholder.setAccessibilityIdentifier("RepoDesk.JavaImports.Expand")
         placeholder.setAccessibilityLabel("展开 import")
@@ -137,6 +139,9 @@ final class NativeJavaImportFolding: NSObject, @preconcurrency NSLayoutManagerDe
         let glyphs = layoutManager.glyphRange(forCharacterRange: region.keywordRange, actualCharacterRange: nil)
         let rect = layoutManager.boundingRect(forGlyphRange: glyphs, in: container)
         placeholder.font = textView.font
+        textView.effectiveAppearance.performAsCurrentDrawingAppearance {
+            placeholder.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.1).cgColor
+        }
         placeholder.frame = NSRect(
             x: rect.maxX + textView.textContainerOrigin.x + 4,
             y: rect.minY + textView.textContainerOrigin.y,
@@ -152,6 +157,16 @@ final class NativeJavaImportFolding: NSObject, @preconcurrency NSLayoutManagerDe
 
     func layoutManager(
         _ layoutManager: NSLayoutManager,
+        shouldUse action: NSLayoutManager.ControlCharacterAction,
+        forControlCharacterAt charIndex: Int
+    ) -> NSLayoutManager.ControlCharacterAction {
+        guard let region, !isExpanded,
+              NSLocationInRange(charIndex, region.hiddenRange) else { return action }
+        return .zeroAdvancement
+    }
+
+    func layoutManager(
+        _ layoutManager: NSLayoutManager,
         shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
         properties props: UnsafePointer<NSLayoutManager.GlyphProperty>,
         characterIndexes charIndexes: UnsafePointer<Int>,
@@ -162,7 +177,10 @@ final class NativeJavaImportFolding: NSObject, @preconcurrency NSLayoutManagerDe
         var properties = Array(UnsafeBufferPointer(start: props, count: glyphRange.length))
         var changed = false
         for index in properties.indices where NSLocationInRange(charIndexes[index], region.hiddenRange) {
-            properties[index] = .null
+            // Large runs of .null glyphs corrupt NSATSTypesetter's paragraph ranges,
+            // merging visible lines after the fold. Control glyphs retain the source
+            // mapping while the delegate above suppresses their width and line breaks.
+            properties[index] = .controlCharacter
             changed = true
         }
         guard changed else { return 0 }
