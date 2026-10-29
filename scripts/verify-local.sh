@@ -675,6 +675,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/JavaImportFolding.swift" \
   "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
   "${project_dir}/RepoDeskApp/Features/StreamingOutputView.swift" \
@@ -696,6 +697,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Files/XMLSyntaxHighlighter.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
   "${project_dir}/RepoDeskApp/Features/JavaImportFolding.swift" \
   "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
   "${project_dir}/scripts/verify-source-editor-scroll-performance.swift" \
@@ -831,6 +833,9 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitHistoryParser.swift" \
   "${project_dir}/RepoDeskApp/Git/GitStatusParser.swift" \
   "${project_dir}/RepoDeskApp/Git/GitRepositoryReader.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitLineChanges.swift" \
+  "${project_dir}/RepoDeskApp/Files/FileModels.swift" \
+  "${project_dir}/RepoDeskApp/Files/DocumentLoader.swift" \
   "${project_dir}/scripts/verify-git-review.swift" \
   -o "${project_dir}/build/verify-git-review"
 
@@ -913,6 +918,34 @@ swiftc \
 
 DYLD_LIBRARY_PATH="${project_dir}/build" \
   "${project_dir}/build/verify-history-presentation"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-git-line-changes.swift" \
+  -o "${project_dir}/build/verify-git-line-changes"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-git-line-changes"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-files-editing-performance.swift" \
+  -o "${project_dir}/build/verify-files-editing-performance"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-files-editing-performance"
 
 "${script_dir}/build-local.sh"
 

@@ -93,7 +93,7 @@ struct FileSystemDocumentStore: DocumentLoading, DocumentSaving {
         return Double(controlByteCount) / Double(sample.count) < 0.01
     }
 
-    private static func decodeText(_ data: Data) -> (text: String, encoding: DocumentTextEncoding)? {
+    static func decodeText(_ data: Data) -> (text: String, encoding: DocumentTextEncoding)? {
         if data.starts(with: [0xEF, 0xBB, 0xBF]),
            let text = String(data: data.dropFirst(3), encoding: .utf8) {
             return (text, .utf8WithByteOrderMark)

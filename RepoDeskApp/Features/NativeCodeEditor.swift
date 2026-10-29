@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-enum NativeTextStyle: Equatable {
+enum NativeTextStyle: Equatable, Sendable {
     case plain
     case diff
     case source(fileExtension: String)
@@ -249,6 +249,8 @@ final class NativeLineNumberRulerView: NSRulerView {
     private weak var textView: NSTextView?
     private var lineIndex = SourceLineIndex(text: "")
     private var gitBlame: [Int: NativeGitBlameAnnotation]?
+    private var gitLineChanges: [Int: GitLineChangeKind]?
+    private var changeMarkerWidth: CGFloat { gitLineChanges == nil ? 0 : 8 }
     private var blameColorScale = GitBlameColorScale(dates: [])
     private var canToggleGitBlame = false
     private var onToggleGitBlame: (() -> Void)?
@@ -277,15 +279,15 @@ final class NativeLineNumberRulerView: NSRulerView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func refresh(text: String) {
+    func refresh(text: String, index: SourceLineIndex? = nil) {
         removeAllToolTips()
         blameRects.removeAll()
-        lineIndex = SourceLineIndex(text: text)
+        lineIndex = index ?? SourceLineIndex(text: text)
         let digits = max(2, String(lineIndex.lineCount).count)
         let digitWidth = ("0" as NSString).size(withAttributes: [.font: labelFont]).width
         let foldingWidth: CGFloat = importFolding?.region == nil ? 0 : 14
         let lineNumberWidth = max(40, ceil(CGFloat(digits) * digitWidth + 18)) + foldingWidth
-        let updatedThickness = lineNumberWidth + (gitBlame == nil ? 0 : Self.gitBlameWidth)
+        let updatedThickness = lineNumberWidth + changeMarkerWidth + (gitBlame == nil ? 0 : Self.gitBlameWidth)
         if ruleThickness != updatedThickness {
             ruleThickness = updatedThickness
             scrollView?.tile()
@@ -315,6 +317,14 @@ final class NativeLineNumberRulerView: NSRulerView {
         } else if gitBlame != nil {
             needsDisplay = true
         }
+    }
+
+    func configureGitLineChanges(_ markers: [Int: GitLineChangeKind]?) {
+        guard gitLineChanges != markers else { return }
+        let visibilityChanged = (gitLineChanges == nil) != (markers == nil)
+        gitLineChanges = markers
+        if visibilityChanged { refresh(text: textView?.string ?? "") }
+        needsDisplay = true
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -416,15 +426,25 @@ final class NativeLineNumberRulerView: NSRulerView {
             let label = "\(line)" as NSString
             let labelSize = label.size(withAttributes: attributes)
             let labelRect = NSRect(
-                x: bounds.maxX - labelSize.width - 9 - (importFolding?.region == nil ? 0 : 14),
+                x: bounds.maxX - changeMarkerWidth - labelSize.width - 9 - (importFolding?.region == nil ? 0 : 14),
                 y: rulerOrigin.y + (lineRect.height - labelSize.height) / 2,
                 width: labelSize.width,
                 height: labelSize.height
             )
             label.draw(in: labelRect, withAttributes: attributes)
+            if let change = gitLineChanges?[line] {
+                let color = change == .modified
+                    ? NSColor(srgbRed: 0.34, green: 0.59, blue: 0.94, alpha: 1)
+                    : NSColor(srgbRed: 0.35, green: 0.72, blue: 0.43, alpha: 1)
+                color.setFill()
+                NSRect(
+                    x: bounds.maxX - 7, y: rulerOrigin.y,
+                    width: 4, height: lineRect.height
+                ).fill()
+            }
             if let folding = importFolding, let region = folding.region,
                line == lineIndex.lineNumber(containingUTF16Offset: region.keywordRange.location) {
-                let toggleRect = NSRect(x: bounds.maxX - 14, y: labelRect.minY, width: 14, height: labelRect.height)
+                let toggleRect = NSRect(x: bounds.maxX - changeMarkerWidth - 14, y: labelRect.minY, width: 14, height: labelRect.height)
                 importToggleRect = toggleRect
                 let symbol = folding.isExpanded ? "chevron.down" : "chevron.right"
                 NSImage(systemSymbolName: symbol, accessibilityDescription: "折叠或展开 import")?
@@ -498,6 +518,7 @@ struct NativeCodeEditor: NSViewRepresentable {
     var navigationRequest: NativeTextNavigationRequest? = nil
     var showsLineNumbers = false
     var gitBlame: [Int: NativeGitBlameAnnotation]? = nil
+    var gitLineChanges: [Int: GitLineChangeKind]? = nil
     var canToggleGitBlame = false
     var onToggleGitBlame: (() -> Void)? = nil
     var onSelectGitBlameCommit: ((String) -> Void)? = nil
@@ -518,6 +539,7 @@ struct NativeCodeEditor: NSViewRepresentable {
     var shortcuts: [AppShortcutID: ShortcutBinding] = ShortcutBinding.defaults()
     var foldsJavaImports = false
     var importsExpanded: Binding<Bool>? = nil
+    var usesIncrementalStyling = false
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -534,7 +556,9 @@ struct NativeCodeEditor: NSViewRepresentable {
             contentIdentity: contentIdentity,
             fontSize: fontSize,
             contentSearch: contentSearch,
-            semanticTokens: semanticTokens
+            semanticTokens: semanticTokens,
+            gitLineChanges: gitLineChanges,
+            usesIncrementalStyling: usesIncrementalStyling
         )
     }
 
@@ -599,13 +623,12 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.configureLineNumbers(showsLineNumbers, in: scrollView)
         context.coordinator.startObserving(scrollView)
-        NativeTextStyler.apply(
-            text,
-            style: style,
-            fontSize: fontSize,
-            semanticTokens: semanticTokens,
-            to: textView
-        )
+        if context.coordinator.canStyleIncrementally {
+            textView.string = text
+            context.coordinator.scheduleSourceStyling()
+        } else {
+            NativeTextStyler.apply(text, style: style, fontSize: fontSize, semanticTokens: semanticTokens, to: textView)
+        }
         context.coordinator.lastAppliedSemanticTokens = semanticTokens
         context.coordinator.configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
         context.coordinator.refreshLineNumbers()
@@ -621,6 +644,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NativeCodeTextView else { return }
         context.coordinator.text = $text
         context.coordinator.gitBlame = gitBlame
+        context.coordinator.gitLineChanges = gitLineChanges
         context.coordinator.canToggleGitBlame = canToggleGitBlame
         context.coordinator.onToggleGitBlame = onToggleGitBlame
         context.coordinator.onSelectGitBlameCommit = onSelectGitBlameCommit
@@ -630,6 +654,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.followsTail = followsTail
         context.coordinator.contentSearch = contentSearch
         context.coordinator.semanticTokens = semanticTokens
+        context.coordinator.usesIncrementalStyling = usesIncrementalStyling
         textView.isJavaNavigationEnabled = isJavaNavigationEnabled
         textView.javaNavigationHandler = onJavaNavigation
         textView.javaPopupDismissHandler = onJavaPopupDismiss
@@ -652,17 +677,22 @@ struct NativeCodeEditor: NSViewRepresentable {
         if textChanged || styleChanged || contentIdentityChanged {
             context.coordinator.beginScrollAdjustment()
             let selection = textView.selectedRange()
-            NativeTextStorageUpdater.update(
-                text,
-                style: style,
-                fontSize: fontSize,
-                semanticTokens: semanticTokens,
-                styleChanged: styleChanged,
-                mode: contentIdentityChanged
-                    ? .replace
-                    : (contentIdentity == nil ? .verifyAppend : .appendOnly),
-                in: textView
-            )
+            if context.coordinator.canStyleIncrementally {
+                if textChanged { textView.string = text }
+                context.coordinator.scheduleSourceStyling()
+            } else {
+                NativeTextStorageUpdater.update(
+                    text,
+                    style: style,
+                    fontSize: fontSize,
+                    semanticTokens: semanticTokens,
+                    styleChanged: styleChanged,
+                    mode: contentIdentityChanged
+                        ? .replace
+                        : (contentIdentity == nil ? .verifyAppend : .appendOnly),
+                    in: textView
+                )
+            }
             context.coordinator.lastAppliedSemanticTokens = semanticTokens
             context.coordinator.invalidateContentSearch()
             context.coordinator.resetExternalNavigation()
@@ -694,6 +724,8 @@ struct NativeCodeEditor: NSViewRepresentable {
         var text: Binding<String>
         var style: NativeTextStyle
         var gitBlame: [Int: NativeGitBlameAnnotation]?
+        var gitLineChanges: [Int: GitLineChangeKind]?
+        var usesIncrementalStyling: Bool
         var canToggleGitBlame: Bool
         var onToggleGitBlame: (() -> Void)?
         var onSelectGitBlameCommit: ((String) -> Void)?
@@ -723,6 +755,10 @@ struct NativeCodeEditor: NSViewRepresentable {
         private var lastAppliedContentSearch: ContentSearchPresentation?
         private var hasAppliedContentSearch = false
         private var lastReportedVisibleLine: Int?
+        private var sourceHighlightTask: Task<NativeSourceHighlightPlan, Never>?
+        private var sourceHighlightGeneration = UUID()
+        private var sourceHighlightPlan: NativeSourceHighlightPlan?
+        private var paintedSourceRange: NSRange?
 
         init(
             text: Binding<String>,
@@ -738,11 +774,15 @@ struct NativeCodeEditor: NSViewRepresentable {
             contentIdentity: String?,
             fontSize: CGFloat,
             contentSearch: ContentSearchPresentation?,
-            semanticTokens: [JavaSemanticToken]
+            semanticTokens: [JavaSemanticToken],
+            gitLineChanges: [Int: GitLineChangeKind]? = nil,
+            usesIncrementalStyling: Bool = false
         ) {
             self.text = text
             self.style = style
             self.gitBlame = gitBlame
+            self.gitLineChanges = gitLineChanges
+            self.usesIncrementalStyling = usesIncrementalStyling
             self.canToggleGitBlame = canToggleGitBlame
             self.onToggleGitBlame = onToggleGitBlame
             self.onSelectGitBlameCommit = onSelectGitBlameCommit
@@ -757,6 +797,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         }
 
         deinit {
+            sourceHighlightTask?.cancel()
             NotificationCenter.default.removeObserver(self)
         }
 
@@ -789,6 +830,7 @@ struct NativeCodeEditor: NSViewRepresentable {
                 lineNumberRuler = ruler
             }
             configureGitBlame()
+            lineNumberRuler?.configureGitLineChanges(gitLineChanges)
         }
 
         func configureGitBlame() {
@@ -810,7 +852,53 @@ struct NativeCodeEditor: NSViewRepresentable {
         func refreshLineNumbers() {
             guard let textView else { return }
             lineIndex = SourceLineIndex(text: textView.string)
-            lineNumberRuler?.refresh(text: textView.string)
+            lineNumberRuler?.refresh(text: textView.string, index: lineIndex)
+        }
+
+        var canStyleIncrementally: Bool {
+            if case .source = style { return usesIncrementalStyling }
+            return false
+        }
+
+        func scheduleSourceStyling() {
+            guard let textView, case .source(let fileExtension) = style else { return }
+            sourceHighlightTask?.cancel()
+            sourceHighlightGeneration = UUID()
+            let generation = sourceHighlightGeneration
+            let source = textView.string
+            let tokens = semanticTokens
+            lastAppliedSemanticTokens = tokens
+            sourceHighlightPlan = nil
+            paintedSourceRange = nil
+            let task = Task.detached(priority: .userInitiated) {
+                NativeSourceHighlightPlan.prepare(source, fileExtension: fileExtension, semanticTokens: tokens)
+            }
+            sourceHighlightTask = task
+            Task { [weak self] in
+                let plan = await task.value
+                guard let self, sourceHighlightGeneration == generation, !task.isCancelled,
+                      self.textView?.string == source else { return }
+                sourceHighlightPlan = plan
+                applyVisibleSourceStyling()
+            }
+        }
+
+        func applyVisibleSourceStyling() {
+            guard canStyleIncrementally, !isApplyingStyle,
+                  let textView, let plan = sourceHighlightPlan,
+                  let storage = textView.textStorage, storage.length > 0,
+                  let layout = textView.layoutManager, let container = textView.textContainer else { return }
+            isApplyingStyle = true
+            defer { isApplyingStyle = false }
+            let visible = textView.visibleRect.insetBy(dx: 0, dy: -80)
+            layout.ensureLayout(forBoundingRect: visible, in: container)
+            let glyphs = layout.glyphRange(forBoundingRect: visible, in: container)
+            let characters = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            let range = (textView.string as NSString).lineRange(for: characters)
+            guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
+            if let paintedSourceRange, NSIntersectionRange(paintedSourceRange, range) == range { return }
+            NativeTextStyler.apply(plan, in: range, fontSize: fontSize, to: storage)
+            paintedSourceRange = range
         }
 
         func configureImportFolding(enabled: Bool, expanded: Binding<Bool>?, sourceChanged: Bool) {
@@ -864,22 +952,22 @@ struct NativeCodeEditor: NSViewRepresentable {
             guard !isApplyingStyle,
                   let textView = notification.object as? NSTextView else { return }
             text.wrappedValue = textView.string
-            let selection = textView.selectedRange()
-            isApplyingStyle = true
-            NativeTextStyler.apply(
-                textView.string,
-                style: style,
-                fontSize: fontSize,
-                semanticTokens: semanticTokens,
-                to: textView
-            )
-            lastAppliedSemanticTokens = semanticTokens
-            textView.setSelectedRange(selection)
-            isApplyingStyle = false
+            if canStyleIncrementally {
+                scheduleSourceStyling()
+            } else {
+                let selection = textView.selectedRange()
+                isApplyingStyle = true
+                NativeTextStyler.apply(textView.string, style: style, fontSize: fontSize, semanticTokens: semanticTokens, to: textView)
+                lastAppliedSemanticTokens = semanticTokens
+                textView.setSelectedRange(selection)
+                isApplyingStyle = false
+            }
             configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
             refreshLineNumbers()
-            invalidateContentSearch()
-            applyContentSearch(contentSearch)
+            if contentSearch != nil {
+                invalidateContentSearch()
+                applyContentSearch(contentSearch)
+            }
         }
 
         func applyContentSearch(_ presentation: ContentSearchPresentation?) {
@@ -1050,6 +1138,7 @@ struct NativeCodeEditor: NSViewRepresentable {
 
         func endScrollAdjustment() {
             isAdjustingScroll = false
+            applyVisibleSourceStyling()
         }
 
         func scrollToTail() {
@@ -1066,6 +1155,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             scrollView.reflectScrolledClipView(scrollView.contentView)
             followsTail?.wrappedValue = true
             isAdjustingScroll = wasAdjustingScroll
+            if !isAdjustingScroll { applyVisibleSourceStyling() }
         }
 
         func restoreVisibleOrigin(_ origin: NSPoint) {
@@ -1075,12 +1165,14 @@ struct NativeCodeEditor: NSViewRepresentable {
             scrollView.contentView.scroll(to: origin)
             scrollView.reflectScrolledClipView(scrollView.contentView)
             isAdjustingScroll = wasAdjustingScroll
+            if !isAdjustingScroll { applyVisibleSourceStyling() }
         }
 
         @objc private func visibleBoundsDidChange(_ notification: Notification) {
             guard !isAdjustingScroll,
                   let scrollView,
                   let documentView = scrollView.documentView else { return }
+            applyVisibleSourceStyling()
             if let line = centerVisibleLine(in: scrollView) {
                 onVisibleLineChange?(line)
             }
@@ -1199,8 +1291,116 @@ enum NativeTextStorageUpdater {
     }
 }
 
+private struct NativeSourceHighlightPlan: Sendable {
+    enum Style: Sendable {
+        case java(JavaSyntaxHighlightStyle)
+        case xml(XMLSyntaxHighlightStyle)
+        case semantic(JavaSemanticTokenStyle)
+        case comment, markup, property, keyword
+    }
+    struct Span: Sendable {
+        let range: NSRange
+        let style: Style
+    }
+    let spans: [Span]
+
+    static func prepare(_ text: String, fileExtension: String, semanticTokens: [JavaSemanticToken]) -> Self {
+        guard !Task.isCancelled else { return Self(spans: []) }
+        var spans: [Span]
+        switch fileExtension {
+        case "java":
+            spans = JavaSyntaxHighlighter.highlights(in: text).map { Span(range: $0.range, style: .java($0.style)) }
+        case "xml":
+            spans = XMLSyntaxHighlighter.highlights(in: text).map { Span(range: $0.range, style: .xml($0.style)) }
+        default:
+            spans = genericSpans(in: text, fileExtension: fileExtension)
+        }
+        guard !Task.isCancelled else { return Self(spans: []) }
+        if fileExtension == "java", !semanticTokens.isEmpty {
+            let index = SourceLineIndex(text: text)
+            let source = text as NSString
+            for token in semanticTokens {
+                guard var range = index.utf16Range(for: token.range, in: text), range.length > 0 else { continue }
+                if token.style == .annotation, range.location > 0, source.character(at: range.location - 1) == 64 {
+                    range = NSRange(location: range.location - 1, length: range.length + 1)
+                }
+                spans.append(Span(range: range, style: .semantic(token.style)))
+            }
+        }
+        return Self(spans: spans)
+    }
+
+    private static func genericSpans(in text: String, fileExtension: String) -> [Span] {
+        let source = text as NSString
+        var result: [Span] = []
+        var start = 0
+        while start < source.length {
+            if Task.isCancelled { return [] }
+            let range = source.lineRange(for: NSRange(location: start, length: 0))
+            let line = source.substring(with: range).trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("//") || line.hasPrefix("#") || line.hasPrefix("<!--") {
+                result.append(Span(range: range, style: .comment))
+            } else if fileExtension == "html", line.hasPrefix("<") {
+                result.append(Span(range: range, style: .markup))
+            } else if ["json", "yaml", "yml", "properties"].contains(fileExtension), line.contains(":") || line.contains("=") {
+                result.append(Span(range: range, style: .property))
+            }
+            start = NSMaxRange(range)
+        }
+        let keywords: [String]
+        switch fileExtension {
+        case "swift": keywords = ["import", "struct", "class", "actor", "enum", "func", "let", "var", "if", "else", "guard", "return", "async", "await", "throws"]
+        case "kt": keywords = ["package", "import", "public", "private", "class", "interface", "fun", "return", "if", "else", "try", "catch"]
+        case "sh", "bash", "zsh": keywords = ["if", "then", "else", "fi", "for", "do", "done", "function", "case", "esac"]
+        default: keywords = []
+        }
+        if !keywords.isEmpty,
+           let regex = try? NSRegularExpression(pattern: "\\b(?:\(keywords.joined(separator: "|")))\\b") {
+            for match in regex.matches(in: text, range: NSRange(location: 0, length: source.length)) {
+                result.append(Span(range: match.range, style: .keyword))
+            }
+        }
+        return result
+    }
+}
+
 @MainActor
 private enum NativeTextStyler {
+    static func apply(_ plan: NativeSourceHighlightPlan, in range: NSRange, fontSize: CGFloat, to storage: NSTextStorage) {
+        storage.beginEditing()
+        storage.setAttributes(plainAttributes(fontSize: fontSize), range: range)
+        for span in plan.spans {
+            let intersection = NSIntersectionRange(span.range, range)
+            guard intersection.length > 0 else { continue }
+            let attributes: [NSAttributedString.Key: Any]
+            switch span.style {
+            case .java(let style): attributes = javaAttributes(for: style, fontSize: fontSize)
+            case .xml(let style): attributes = [.foregroundColor: XMLSyntaxColorPalette.color(for: style)]
+            case .semantic(let style): attributes = [.foregroundColor: JavaSemanticColorPalette.color(for: style)]
+            case .comment: attributes = [.foregroundColor: NSColor.systemGreen]
+            case .markup, .keyword: attributes = [.foregroundColor: NSColor.systemPurple]
+            case .property: attributes = [.foregroundColor: NSColor.systemBlue]
+            }
+            storage.addAttributes(attributes, range: intersection)
+        }
+        storage.endEditing()
+    }
+
+    private static func javaAttributes(for style: JavaSyntaxHighlightStyle, fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
+        switch style {
+        case .annotation: return [.foregroundColor: NSColor.systemBrown]
+        case .comment, .fieldDeclaration: return [.foregroundColor: NSColor.secondaryLabelColor]
+        case .constant, .methodCall:
+            let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            let italic = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+            return style == .constant
+                ? [.foregroundColor: NSColor.systemPurple, .font: italic] : [.font: italic]
+        case .fieldReference: return [.foregroundColor: NSColor.systemPurple]
+        case .keyword, .number: return [.foregroundColor: NSColor.systemBlue]
+        case .methodDeclaration: return [.foregroundColor: NSColor.systemTeal]
+        case .string: return [.foregroundColor: NSColor.systemGreen]
+        }
+    }
     private static func plainAttributes(fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
         [
             .font: NSFont.monospacedSystemFont(

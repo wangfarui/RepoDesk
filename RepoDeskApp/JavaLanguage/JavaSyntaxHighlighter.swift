@@ -1,6 +1,6 @@
 import Foundation
 
-enum JavaSyntaxHighlightStyle: Equatable {
+enum JavaSyntaxHighlightStyle: Equatable, Sendable {
     case annotation
     case comment
     case constant
@@ -13,7 +13,7 @@ enum JavaSyntaxHighlightStyle: Equatable {
     case string
 }
 
-struct JavaSyntaxHighlightSpan: Equatable {
+struct JavaSyntaxHighlightSpan: Equatable, Sendable {
     let range: NSRange
     let style: JavaSyntaxHighlightStyle
 }
@@ -59,6 +59,7 @@ enum JavaSyntaxHighlighter {
     ]
 
     static func highlights(in text: String) -> [JavaSyntaxHighlightSpan] {
+        guard !Task.isCancelled else { return [] }
         let tokens = tokenize(text)
         guard !tokens.isEmpty else { return [] }
 
@@ -79,6 +80,7 @@ enum JavaSyntaxHighlighter {
             spans.append(JavaSyntaxHighlightSpan(range: tokens[index].range, style: .methodDeclaration))
         }
         for (index, token) in tokens.enumerated() where token.kind == .identifier {
+            if index.isMultiple(of: 128), Task.isCancelled { return [] }
             if fields.contains(index) {
                 spans.append(JavaSyntaxHighlightSpan(range: token.range, style: .fieldDeclaration))
             } else if fieldNames.contains(token.text) {
@@ -297,6 +299,7 @@ enum JavaSyntaxHighlighter {
         var tokens: [Token] = []
         var offset = 0
         while offset < source.length {
+            if tokens.count.isMultiple(of: 128), Task.isCancelled { return [] }
             let unit = source.character(at: offset)
             if isWhitespace(unit) {
                 offset += 1

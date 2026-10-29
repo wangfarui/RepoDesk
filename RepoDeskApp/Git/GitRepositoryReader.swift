@@ -1,6 +1,10 @@
 import Foundation
 
 protocol GitRepositoryReading: Sendable {
+    func lineChangeBaseline(repositoryURL: URL, path: String, originalPath: String?) async throws -> String?
+    func lineChanges(
+        repositoryURL: URL, path: String, originalPath: String?, text: String
+    ) async throws -> [Int: GitLineChangeKind]
     func snapshot(repositoryURL: URL) async throws -> GitRepositorySnapshot
     func fileDiff(
         repositoryURL: URL,
@@ -61,6 +65,11 @@ protocol GitRepositoryReading: Sendable {
 }
 
 extension GitRepositoryReading {
+    func lineChangeBaseline(repositoryURL: URL, path: String, originalPath: String?) async throws -> String? { nil }
+    func lineChanges(
+        repositoryURL: URL, path: String, originalPath: String?, text: String
+    ) async throws -> [Int: GitLineChangeKind] { [:] }
+
     func containingBranches(repositoryURL: URL, hash: String) async throws -> [String] { [] }
 
     func searchHistory(
@@ -181,6 +190,55 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         self.commandRunner = commandRunner
         self.gitURL = gitURL
         self.diagnosticLogger = diagnosticLogger
+    }
+
+    func lineChangeBaseline(repositoryURL: URL, path: String, originalPath: String?) async throws -> String? {
+        var baseline = try await readBlob("HEAD:\(path)", repositoryURL: repositoryURL)
+        if baseline == nil, let originalPath, originalPath != path {
+            baseline = try await readBlob("HEAD:\(originalPath)", repositoryURL: repositoryURL)
+        }
+        if baseline == nil {
+            let ignored = try await runGitResult(["check-ignore", "--quiet", "--", path], in: repositoryURL)
+            if ignored.terminationStatus == 0 { return nil }
+            guard ignored.terminationStatus == 1 else {
+                throw GitRepositoryError.commandFailed(
+                    arguments: ["check-ignore", "--quiet", "--", path], message: decodedError(ignored)
+                )
+            }
+        }
+        guard let decoded = FileSystemDocumentStore.decodeText(baseline ?? Data()),
+              !decoded.text.contains("\0") else { return nil }
+        return GitLineChanges.normalized(decoded.text)
+    }
+
+    func lineChanges(
+        repositoryURL: URL, path: String, originalPath: String?, text: String
+    ) async throws -> [Int: GitLineChangeKind] {
+        guard let oldText = try await lineChangeBaseline(
+            repositoryURL: repositoryURL, path: path, originalPath: originalPath
+        ) else { return [:] }
+        let newText = GitLineChanges.normalized(text)
+        guard oldText != newText else { return [:] }
+        try Task.checkCancellation()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-LineChanges-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let oldURL = directory.appendingPathComponent("head")
+        let newURL = directory.appendingPathComponent("current")
+        try Data(oldText.utf8).write(to: oldURL)
+        try Data(newText.utf8).write(to: newURL)
+        let arguments = [
+            "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--text",
+            "--unified=0", "--diff-algorithm=myers", "--no-indent-heuristic",
+            "--", oldURL.path, newURL.path
+        ]
+        let result = try await runGitResult(arguments, in: repositoryURL)
+        guard result.terminationStatus == 0 || result.terminationStatus == 1 else {
+            throw GitRepositoryError.commandFailed(arguments: arguments, message: decodedError(result))
+        }
+        try Task.checkCancellation()
+        return GitLineChanges.markers(in: String(decoding: result.standardOutput, as: UTF8.self))
     }
 
     func snapshot(repositoryURL: URL) async throws -> GitRepositorySnapshot {

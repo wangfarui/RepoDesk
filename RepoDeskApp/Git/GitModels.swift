@@ -1,5 +1,10 @@
 import Foundation
 
+enum GitLineChangeKind: Equatable, Sendable {
+    case modified
+    case added
+}
+
 enum GitDiffPresentation: String, CaseIterable, Codable, Identifiable, Sendable {
     case unified = "Unified"
     case sideBySide = "Side-by-side"

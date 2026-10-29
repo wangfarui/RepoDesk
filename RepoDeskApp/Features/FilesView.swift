@@ -480,6 +480,9 @@ struct FilesView: View {
                         onNavigationForward: { appState.navigateFileForward() },
                         shortcuts: appState.shortcuts,
                         loadGitBlame: selectedFileGitBlameLoader,
+                        loadGitLineBaseline: selectedFileGitLineBaselineLoader,
+                        gitSnapshot: appState.selectedFileGitSnapshot,
+                        gitBaselineChange: appState.selectedFileGitChange,
                         onGitBlameCommitSelected: { hash in
                             guard let fileURL = appState.selectedFileURL else { return }
                             appState.showFileBlameCommitInHistory(hash, fileURL: fileURL)
@@ -595,6 +598,11 @@ struct FilesView: View {
     private var selectedFileGitBlameLoader: (() async throws -> [GitBlameLine])? {
         guard appState.canBlameSelectedFile else { return nil }
         return { try await appState.blameForSelectedFile() }
+    }
+
+    private var selectedFileGitLineBaselineLoader: (() async throws -> String?)? {
+        guard appState.canBlameSelectedFile else { return nil }
+        return { try await appState.lineChangeBaselineForSelectedFile() }
     }
 
     private var selectedFileImportsExpanded: Binding<Bool> {
@@ -1572,6 +1580,14 @@ private struct DirectoryLoadErrorView: View {
     }
 }
 
+private struct FileLineChangesRequest: Equatable {
+    let fileIdentity: String
+    let headRevision: String?
+    let originalPath: String?
+    let isUntracked: Bool
+    let canLoad: Bool
+}
+
 @MainActor
 struct SourceDocumentView: View {
     @Binding var text: String
@@ -1599,6 +1615,9 @@ struct SourceDocumentView: View {
     let onNavigationForward: () -> Void
     let shortcuts: [AppShortcutID: ShortcutBinding]
     let loadGitBlame: (() async throws -> [GitBlameLine])?
+    var loadGitLineBaseline: (() async throws -> String?)? = nil
+    var gitSnapshot: GitRepositorySnapshot? = nil
+    var gitBaselineChange: GitFileChange? = nil
     var onGitBlameCommitSelected: ((String) -> Void)? = nil
     var importsExpanded: Binding<Bool>? = nil
     @State private var showsGoToLine = false
@@ -1610,8 +1629,18 @@ struct SourceDocumentView: View {
     @State private var gitBlameErrorMessage: String?
     @State private var isLoadingGitBlame = false
     @State private var gitBlameRequestID = UUID()
+    @State private var gitLineChanges = FileGitLineChanges()
     @State private var contentFindState = ContentFindState()
     @FocusState private var isGoToLineFieldFocused: Bool
+
+    private var lineChangesRequest: FileLineChangesRequest {
+        FileLineChangesRequest(
+            fileIdentity: fileIdentity, headRevision: gitSnapshot?.lastCommit?.hash,
+            originalPath: gitBaselineChange?.originalPath,
+            isUntracked: gitBaselineChange?.isUntracked ?? false,
+            canLoad: loadGitLineBaseline != nil
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1696,6 +1725,8 @@ struct SourceDocumentView: View {
                         navigationRequest: goToLineNavigationRequest ?? navigationRequest,
                         showsLineNumbers: true,
                         gitBlame: gitBlame,
+                        gitLineChanges: loadGitLineBaseline == nil ? nil
+                            : (gitLineChanges.fileIdentity == fileIdentity ? gitLineChanges.markers : [:]),
                         canToggleGitBlame: loadGitBlame != nil && !isLoadingGitBlame,
                         onToggleGitBlame: toggleGitBlame,
                         onSelectGitBlameCommit: onGitBlameCommitSelected,
@@ -1723,7 +1754,8 @@ struct SourceDocumentView: View {
                         onNavigationForward: onNavigationForward,
                         shortcuts: shortcuts,
                         foldsJavaImports: fileExtension == "java",
-                        importsExpanded: importsExpanded
+                        importsExpanded: importsExpanded,
+                        usesIncrementalStyling: true
                     )
 
                     if let presentation = javaNavigationLoadingPresentation {
@@ -1782,6 +1814,10 @@ struct SourceDocumentView: View {
             requestFind: presentContentFind,
             navigateMatch: navigateContentFind
         ))
+        .task(id: lineChangesRequest) {
+            guard let loadGitLineBaseline else { return }
+            await gitLineChanges.load(fileIdentity: fileIdentity, text: text, using: loadGitLineBaseline)
+        }
         .onChange(of: fileIdentity) {
             dismissGoToLine()
             contentFindState.dismiss()
@@ -1790,6 +1826,7 @@ struct SourceDocumentView: View {
             resetGitBlame()
         }
         .onChange(of: text) {
+            gitLineChanges.update(text: text, fileIdentity: fileIdentity)
             if contentFindState.isPresented {
                 contentFindState.resetSelection()
             }

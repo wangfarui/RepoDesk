@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct CommandRequest: Sendable {
     let executableURL: URL
@@ -69,8 +70,6 @@ private final class CommandExecution: @unchecked Sendable {
     }
 
     func start(continuation: CheckedContinuation<CommandResult, any Error>) {
-        configureProcess()
-
         lock.lock()
         if didComplete {
             let error = pendingError ?? CancellationError()
@@ -80,6 +79,7 @@ private final class CommandExecution: @unchecked Sendable {
         }
         self.continuation = continuation
         do {
+            try configureProcess()
             try process.run()
             lock.unlock()
             scheduleTimeout()
@@ -97,7 +97,7 @@ private final class CommandExecution: @unchecked Sendable {
         finishAbnormally(with: CancellationError())
     }
 
-    private func configureProcess() {
+    private func configureProcess() throws {
         process.executableURL = request.executableURL
         process.arguments = request.arguments
         process.currentDirectoryURL = request.workingDirectoryURL
@@ -106,11 +106,13 @@ private final class CommandExecution: @unchecked Sendable {
         }
         process.standardOutput = standardOutputPipe
         process.standardError = standardErrorPipe
+        try standardOutput.prepare(standardOutputPipe.fileHandleForReading)
+        try standardError.prepare(standardErrorPipe.fileHandleForReading)
         standardOutputPipe.fileHandleForReading.readabilityHandler = { [standardOutput] handle in
-            standardOutput.append(handle.availableData)
+            standardOutput.readAvailable(from: handle)
         }
         standardErrorPipe.fileHandleForReading.readabilityHandler = { [standardError] handle in
-            standardError.append(handle.availableData)
+            standardError.readAvailable(from: handle)
         }
         process.terminationHandler = { [weak self] process in
             self?.processDidTerminate(process)
@@ -151,16 +153,16 @@ private final class CommandExecution: @unchecked Sendable {
         lock.unlock()
 
         timeoutTask?.cancel()
-        stopReadingOutput()
-        standardOutput.append(standardOutputPipe.fileHandleForReading.availableData)
-        standardError.append(standardErrorPipe.fileHandleForReading.availableData)
-        continuation?.resume(
-            returning: CommandResult(
-                standardOutput: standardOutput.data,
-                standardError: standardError.data,
-                terminationStatus: process.terminationStatus
-            )
-        )
+        do {
+            let output = try standardOutput.finishReading(from: standardOutputPipe.fileHandleForReading)
+            let errors = try standardError.finishReading(from: standardErrorPipe.fileHandleForReading)
+            continuation?.resume(returning: CommandResult(
+                standardOutput: output, standardError: errors, terminationStatus: process.terminationStatus
+            ))
+        } catch {
+            stopReadingOutput()
+            continuation?.resume(throwing: error)
+        }
     }
 
     private func finishAbnormally(with error: any Error) {
@@ -190,21 +192,76 @@ private final class CommandExecution: @unchecked Sendable {
     private func stopReadingOutput() {
         standardOutputPipe.fileHandleForReading.readabilityHandler = nil
         standardErrorPipe.fileHandleForReading.readabilityHandler = nil
+        standardOutput.stop()
+        standardError.stop()
     }
 }
 
 private final class OutputAccumulator: @unchecked Sendable {
+    // Darwin's _IOR('f', 127, int), declared as FIONREAD in sys/filio.h.
+    // Swift cannot import the sizeof-based C macro.
+    private static let bytesAvailableRequest: UInt = 0x4000_0000
+        | (UInt(MemoryLayout<CInt>.size) << 16) | (UInt(102) << 8) | 127
     private let lock = NSLock()
     private var storage = Data()
+    private var isFinished = false
 
-    var data: Data {
-        lock.withLock { storage }
+    func prepare(_ handle: FileHandle) throws {
+        let flags = fcntl(handle.fileDescriptor, F_GETFL)
+        guard flags != -1, fcntl(handle.fileDescriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
-    func append(_ data: Data) {
-        guard !data.isEmpty else { return }
+    func readAvailable(from handle: FileHandle) {
         lock.withLock {
-            storage.append(data)
+            guard !isFinished else { return }
+            _ = readChunk(from: handle)
+        }
+    }
+
+    func finishReading(from handle: FileHandle) throws -> Data {
+        handle.readabilityHandler = nil
+        return try lock.withLock {
+            // Serialize the read itself with callbacks, then drain every remaining
+            // byte before publishing the result. Queued callbacks cannot append later.
+            if !isFinished {
+                var available: Int32 = 0
+                guard ioctl(handle.fileDescriptor, Self.bytesAvailableRequest, &available) != -1 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                // Bound the final drain to bytes already buffered at process exit;
+                // a descendant that inherited the pipe must not prolong completion.
+                var remaining = Int(available)
+                while remaining > 0 {
+                    let count = readChunk(from: handle, limit: remaining)
+                    guard count > 0 else { break }
+                    remaining -= count
+                }
+                isFinished = true
+            }
+            return storage
+        }
+    }
+
+    func stop() {
+        lock.withLock { isFinished = true }
+    }
+
+    private func readChunk(from handle: FileHandle, limit: Int = 65_536) -> Int {
+        var buffer = [UInt8](repeating: 0, count: min(65_536, limit))
+        while true {
+            let count = buffer.withUnsafeMutableBytes {
+                Darwin.read(handle.fileDescriptor, $0.baseAddress, $0.count)
+            }
+            if count > 0 {
+                storage.append(contentsOf: buffer.prefix(count))
+                return count
+            }
+            if count < 0, errno == EINTR { continue }
+            // Nonblocking reads stop at EOF/EAGAIN, including when a descendant
+            // inherits a pipe. Cancellation and completion never wait for that child.
+            return 0
         }
     }
 }

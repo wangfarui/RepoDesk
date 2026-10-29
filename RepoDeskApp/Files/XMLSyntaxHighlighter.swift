@@ -1,6 +1,6 @@
 import Foundation
 
-enum XMLSyntaxHighlightStyle: Equatable {
+enum XMLSyntaxHighlightStyle: Equatable, Sendable {
     case attributeName
     case attributeValue
     case cdata
@@ -11,7 +11,7 @@ enum XMLSyntaxHighlightStyle: Equatable {
     case tagName
 }
 
-struct XMLSyntaxHighlightSpan: Equatable {
+struct XMLSyntaxHighlightSpan: Equatable, Sendable {
     let range: NSRange
     let style: XMLSyntaxHighlightStyle
 }
@@ -23,6 +23,7 @@ enum XMLSyntaxHighlighter {
         var offset = 0
 
         while offset < source.length {
+            if spans.count.isMultiple(of: 128), Task.isCancelled { return [] }
             if source.hasPrefix("<!--", at: offset) {
                 let end = scanUntil("-->", from: offset + 4, source: source)
                 spans.append(span(.comment, from: offset, to: end))

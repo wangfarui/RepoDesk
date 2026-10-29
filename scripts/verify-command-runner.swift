@@ -12,7 +12,42 @@ struct CommandRunnerVerifier {
         try await verifyCancellation()
         try await verifyTimeoutCancellationRace()
         try await verifySuccessfulCommand()
+        try await verifyConcurrentLargeUTF8Output()
         print("Command runner verification passed")
+    }
+
+    private static func verifyConcurrentLargeUTF8Output() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDesk-UTF8-output-\(UUID().uuidString).txt")
+        let expected = Data(String(repeating: "return \"抵扣\"; // 批次库存中文注释 😀\n", count: 6000).utf8)
+        try expected.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        var failures = 0
+        var invalidUTF8 = 0
+        try await withThrowingTaskGroup(of: (Bool, CommandResult).self) { group in
+            for stream in 0..<40 {
+                let usesStandardError = stream % 2 == 1
+                group.addTask {
+                    let result = try await SystemCommandRunner().run(CommandRequest(
+                        executableURL: URL(fileURLWithPath: usesStandardError ? "/bin/sh" : "/bin/cat"),
+                        arguments: usesStandardError
+                            ? ["-c", "exec /bin/cat \"$1\" >&2", "fixture", file.path] : [file.path],
+                        workingDirectoryURL: file.deletingLastPathComponent(), environment: nil
+                    ))
+                    return (usesStandardError, result)
+                }
+            }
+            for try await (usesStandardError, result) in group {
+                let output = usesStandardError ? result.standardError : result.standardOutput
+                let other = usesStandardError ? result.standardOutput : result.standardError
+                if result.terminationStatus != 0 || output != expected || !other.isEmpty {
+                    failures += 1
+                }
+                if String(data: result.standardOutput, encoding: .utf8) == nil
+                    || String(data: result.standardError, encoding: .utf8) == nil { invalidUTF8 += 1 }
+            }
+        }
+        try require(failures == 0, "Large output corrupted in \(failures)/40 commands (invalid UTF-8: \(invalidUTF8)); expected \(expected.count) exact bytes on stdout/stderr")
     }
 
     private static func verifyTimeout() async throws {

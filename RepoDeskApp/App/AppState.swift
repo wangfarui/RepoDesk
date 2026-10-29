@@ -2249,6 +2249,34 @@ final class AppState {
         )
     }
 
+    var selectedFileGitSnapshot: GitRepositorySnapshot? {
+        guard let selectedFileURL, let workspaceURL,
+              let target = GitFileBlameTarget.resolve(
+                fileURL: selectedFileURL, workspaceURL: workspaceURL, repositories: repositories
+              ) else { return nil }
+        return repositorySnapshots[target.repositoryID]
+    }
+
+    var selectedFileGitChange: GitFileChange? {
+        guard let selectedFileURL, let workspaceURL,
+              let target = GitFileBlameTarget.resolve(
+                fileURL: selectedFileURL, workspaceURL: workspaceURL, repositories: repositories
+              ) else { return nil }
+        return repositorySnapshots[target.repositoryID]?.changes.first { $0.path == target.path }
+    }
+
+    func lineChangeBaselineForSelectedFile() async throws -> String? {
+        guard let selectedFileURL, let workspaceURL,
+              let target = GitFileBlameTarget.resolve(
+                fileURL: selectedFileURL, workspaceURL: workspaceURL, repositories: repositories
+              ) else { return nil }
+        let change = repositorySnapshots[target.repositoryID]?.changes.first { $0.path == target.path }
+        return try await gitRepositoryReader.lineChangeBaseline(
+            repositoryURL: target.repositoryURL, path: target.path,
+            originalPath: change?.originalPath
+        )
+    }
+
     func blameForSelectedFile() async throws -> [GitBlameLine] {
         guard let selectedFileURL,
               let workspaceURL,

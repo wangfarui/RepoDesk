@@ -86,7 +86,7 @@ final class NativeJavaImportFolding: NSObject, @preconcurrency NSLayoutManagerDe
             hasConfiguredSource = true
         }
         isExpanded = expanded
-        if oldRegion != region || oldExpanded != expanded || sourceChanged {
+        if oldRegion != region || oldExpanded != expanded {
             invalidateLayout()
         }
         updatePlaceholder()
