@@ -31,22 +31,26 @@ struct GitCommitSummary: Equatable, Identifiable, Sendable {
     let author: String
     let authoredAt: Date?
     let refs: [String]
+    let parentHashes: [String]
 
     init(
         hash: String,
         subject: String,
         author: String,
         authoredAt: Date?,
-        refs: [String] = []
+        refs: [String] = [],
+        parentHashes: [String] = []
     ) {
         self.hash = hash
         self.subject = subject
         self.author = author
         self.authoredAt = authoredAt
         self.refs = refs
+        self.parentHashes = parentHashes
     }
 
     var id: String { hash }
+    var isMerge: Bool { parentHashes.count > 1 }
 }
 
 struct GitBranch: Equatable, Identifiable, Sendable {
@@ -159,15 +163,18 @@ struct GitCommitDetail: Equatable, Sendable {
     let summary: GitCommitSummary
     let files: [GitCommitFile]
     let parentHashes: [String]
+    let containingBranches: [String]
 
     init(
         summary: GitCommitSummary,
         files: [GitCommitFile],
-        parentHashes: [String] = []
+        parentHashes: [String] = [],
+        containingBranches: [String] = []
     ) {
         self.summary = summary
         self.files = files
         self.parentHashes = parentHashes
+        self.containingBranches = containingBranches
     }
 
     var isTwoParentMerge: Bool { parentHashes.count == 2 }

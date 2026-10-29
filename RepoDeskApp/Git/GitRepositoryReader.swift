@@ -35,6 +35,7 @@ protocol GitRepositoryReading: Sendable {
     func authors(repositoryURL: URL) async throws -> [String]
     func currentUserName(repositoryURL: URL) async throws -> String?
     func commit(repositoryURL: URL, hash: String) async throws -> GitCommitDetail
+    func containingBranches(repositoryURL: URL, hash: String) async throws -> [String]
     func pushPreparation(
         repositoryURL: URL,
         targetRemoteBranch: String?
@@ -60,6 +61,8 @@ protocol GitRepositoryReading: Sendable {
 }
 
 extension GitRepositoryReading {
+    func containingBranches(repositoryURL: URL, hash: String) async throws -> [String] { [] }
+
     func searchHistory(
         repositoryURL: URL,
         hashPrefix: String,
@@ -200,7 +203,7 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             )
             async let commitResult = runSnapshotGit(
                 operation: "last-commit",
-                arguments: ["log", "-1", "--format=%H%x00%s%x00%an%x00%aI"],
+                arguments: ["log", "-1", "--format=%H%x00%s%x00%an%x00%aI%x00%D%x00%P"],
                 repositoryURL: repositoryURL,
                 traceID: traceID,
                 allowsEmptyOutput: true
@@ -411,7 +414,7 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
         }
         arguments.append(contentsOf: [
             "--max-count=\(limit)", "--skip=\(skip)",
-            "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D"
+            "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D%x1f%P"
         ])
         if let author {
             arguments.append("--extended-regexp")
@@ -746,7 +749,7 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             .lazy.filter { $0.hasPrefix(prefix) }.dropFirst(skip).prefix(limit).map(String.init)
         guard !hashes.isEmpty else { return [] }
         let summaries = try await runGit(
-            ["show", "--no-patch", "--no-walk=unsorted", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D"]
+            ["show", "--no-patch", "--no-walk=unsorted", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D%x1f%P"]
                 + hashes + ["--"],
             in: repositoryURL,
             allowsEmptyOutput: true
@@ -888,7 +891,7 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             logRevision = [localRevision, "--not", "--remotes=\(remote)"]
         }
         let commitData = try await runGit(
-            ["log", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D"] + logRevision,
+            ["log", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D%x1f%P"] + logRevision,
             in: repositoryURL,
             allowsEmptyOutput: true
         )
@@ -998,12 +1001,34 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
                 "-M", "-C", "--find-copies-harder", hash
             ]
         }
-        let filesData = try await runGit(fileArguments, in: repositoryURL)
+        async let filesData = runGit(fileArguments, in: repositoryURL)
+        async let branches = containingBranches(repositoryURL: repositoryURL, hash: summary.hash)
         return GitCommitDetail(
             summary: summary,
-            files: parseCommitFiles(filesData),
-            parentHashes: parentHashes
+            files: parseCommitFiles(try await filesData),
+            parentHashes: parentHashes,
+            containingBranches: try await branches
         )
+    }
+
+    func containingBranches(repositoryURL: URL, hash: String) async throws -> [String] {
+        let branchData = try await runGit(
+            ["for-each-ref", "--contains=\(hash)",
+             "--format=%(refname)%00%(symref)", "refs/heads", "refs/remotes"],
+            in: repositoryURL
+        )
+        return String(decoding: branchData, as: UTF8.self)
+            .split(separator: "\n")
+            .compactMap { line -> String? in
+                let fields = line.split(separator: "\0", omittingEmptySubsequences: false)
+                // Remote HEAD aliases are symbolic refs, not additional branches.
+                guard fields.count == 2, fields[1].isEmpty else { return nil }
+                let ref = String(fields[0])
+                for prefix in ["refs/heads/", "refs/remotes/"] where ref.hasPrefix(prefix) {
+                    return String(ref.dropFirst(prefix.count))
+                }
+                return nil
+            }
     }
 
     private func makeFileDiff(
@@ -1187,7 +1212,8 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             subject: String(decoding: fields[1], as: UTF8.self),
             author: String(decoding: fields[2], as: UTF8.self),
             authoredAt: ISO8601DateFormatter().date(from: dateText),
-            refs: refs
+            refs: refs,
+            parentHashes: parseCommitParentHashes(data)
         )
     }
 

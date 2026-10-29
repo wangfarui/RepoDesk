@@ -341,13 +341,18 @@ struct HistoryView: View {
             appState.selectCommit(commit.hash)
         } label: {
             VStack(alignment: .leading, spacing: 4) {
-                Text(commit.subject).lineLimit(2)
+                Text(commit.subject)
+                    .foregroundStyle(commit.isMerge ? Color.secondary : Color.primary)
+                    .lineLimit(2)
                 HStack(spacing: 7) {
                     Text(String(commit.hash.prefix(8))).monospaced()
                     Text(commit.author).lineLimit(1)
                     Spacer(minLength: 4)
                     if let date = commit.authoredAt {
-                        Text(date, format: .relative(presentation: .named))
+                        TimelineView(.periodic(from: .now, by: 60)) { context in
+                            Text(HistoryCommitPresentation.dateLabel(date, now: context.date))
+                        }
+                        .fixedSize()
                     }
                 }
                 .font(.caption)
@@ -431,6 +436,8 @@ struct HistoryView: View {
                     .foregroundStyle(.tint)
                     .textSelection(.enabled)
             }
+            HistoryContainingBranchesView(branches: detail.containingBranches)
+                .id(detail.summary.hash)
         }
         .padding(10)
     }
@@ -514,7 +521,8 @@ struct HistoryView: View {
         return GitCommitDetail(
             summary: detail.summary,
             files: [selectedCommitFile],
-            parentHashes: detail.parentHashes
+            parentHashes: detail.parentHashes,
+            containingBranches: detail.containingBranches
         )
     }
 

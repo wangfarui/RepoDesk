@@ -18,7 +18,11 @@ enum GitHistoryParser {
                 subject: String(decoding: fields[1], as: UTF8.self),
                 author: String(decoding: fields[2], as: UTF8.self),
                 authoredAt: dateFormatter.date(from: dateText),
-                refs: refs
+                refs: refs,
+                parentHashes: fields.count > 5
+                    ? String(decoding: fields[5], as: UTF8.self)
+                        .split(whereSeparator: \.isWhitespace).map(String.init)
+                    : []
             )
         }
     }

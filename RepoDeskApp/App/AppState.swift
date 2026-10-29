@@ -4337,13 +4337,20 @@ final class AppState {
                     let hasVisibleDetail = selectedCommitHash == targetHash
                         && selectedCommitDetail?.summary.hash == targetHash
                     if hasVisibleDetail {
-                        if let refreshedSummary = history.first(where: { $0.hash == targetHash }),
+                        let containingBranches = try await gitRepositoryReader.containingBranches(
+                            repositoryURL: repositoryURL,
+                            hash: targetHash
+                        )
+                        guard historyRequestID == requestID else { return }
+                        if selectedCommitHash == targetHash,
+                           let refreshedSummary = history.first(where: { $0.hash == targetHash }),
                            let selectedCommitDetail,
-                           selectedCommitDetail.summary != refreshedSummary {
+                           selectedCommitDetail.summary.hash == targetHash {
                             self.selectedCommitDetail = GitCommitDetail(
                                 summary: refreshedSummary,
                                 files: selectedCommitDetail.files,
-                                parentHashes: selectedCommitDetail.parentHashes
+                                parentHashes: selectedCommitDetail.parentHashes,
+                                containingBranches: containingBranches
                             )
                         }
                     } else if selectedCommitHash != targetHash || !isLoadingCommit {
