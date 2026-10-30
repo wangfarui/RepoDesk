@@ -13,6 +13,17 @@ swiftc() {
 mkdir -p "${module_cache}"
 
 swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  "${project_dir}/RepoDeskApp/Features/BranchNameHoverHint.swift" \
+  "${project_dir}/scripts/verify-branch-name-hover.swift" \
+  -o "${project_dir}/build/verify-branch-name-hover"
+
+"${project_dir}/build/verify-branch-name-hover"
+
+swiftc \
   -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \

@@ -739,7 +739,7 @@ struct RootView: View {
     }
 
     private var branchPickerPopover: some View {
-        SearchableFilterPopover(query: $branchQuery, placeholder: "搜索 Branch") {
+        SearchableFilterPopover(query: $branchQuery, placeholder: "搜索 Branch", width: 400) {
             if appState.isLoadingBranches {
                 HStack(spacing: 7) {
                     ProgressView().controlSize(.small)
@@ -794,7 +794,17 @@ struct RootView: View {
                     .frame(width: 15)
                 Text(branch.name)
                     .lineLimit(1)
-                Spacer()
+                    .truncationMode(.tail)
+                    .background(BranchNameHoverHint(text: branch.name))
+                Spacer(minLength: 7)
+                if !branch.isRemote, let upstream = branch.upstream, !upstream.isEmpty {
+                    Text(upstream)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(width: 130, alignment: .trailing)
+                        .background(BranchNameHoverHint(text: upstream))
+                }
                 Image(systemName: "chevron.right")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)

@@ -4,6 +4,7 @@ struct SearchableFilterPopover<Content: View>: View {
     @Binding var query: String
     let placeholder: String
     let autoFocus: Bool
+    let width: CGFloat
     @ViewBuilder let content: Content
     @FocusState private var isQueryFocused: Bool
 
@@ -11,11 +12,13 @@ struct SearchableFilterPopover<Content: View>: View {
         query: Binding<String>,
         placeholder: String,
         autoFocus: Bool = false,
+        width: CGFloat = 300,
         @ViewBuilder content: () -> Content
     ) {
         _query = query
         self.placeholder = placeholder
         self.autoFocus = autoFocus
+        self.width = width
         self.content = content()
     }
 
@@ -30,7 +33,7 @@ struct SearchableFilterPopover<Content: View>: View {
             }
         }
         .padding(10)
-        .frame(width: 300, height: 340)
+        .frame(width: width, height: 340)
         .onAppear {
             if autoFocus { isQueryFocused = true }
         }
