@@ -562,6 +562,7 @@ final class NativeLineNumberRulerView: NSRulerView {
 /// A small AppKit-backed editor surface. The unbounded text container is intentional:
 /// code lines scroll horizontally instead of wrapping to the SwiftUI proposal width.
 struct NativeCodeEditor: NSViewRepresentable {
+    @Environment(\.isEnabled) private var isSectionActive
     @Binding var text: String
     let isEditable: Bool
     var style: NativeTextStyle = .plain
@@ -697,6 +698,13 @@ struct NativeCodeEditor: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NativeCodeTextView else { return }
+        guard isSectionActive else {
+            textView.isJavaNavigationEnabled = false
+            if scrollView.window?.firstResponder === textView {
+                scrollView.window?.makeFirstResponder(nil)
+            }
+            return
+        }
         context.coordinator.text = $text
         context.coordinator.gitBlame = gitBlame
         context.coordinator.gitLineChanges = gitLineChanges

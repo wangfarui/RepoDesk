@@ -10,7 +10,8 @@ struct FileSystemWorkspaceSearch: WorkspaceFileSearching {
     ]
 
     func search(in workspaceURL: URL, query: String, limit: Int = 100) async -> [WorkspaceFileEntry] {
-        await Task.detached(priority: .userInitiated) {
+        guard !Task.isCancelled else { return [] }
+        let worker = Task.detached(priority: .userInitiated) { () -> [WorkspaceFileEntry] in
             let normalizedQuery = query
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !normalizedQuery.isEmpty,
@@ -18,19 +19,20 @@ struct FileSystemWorkspaceSearch: WorkspaceFileSearching {
                   let enumerator = FileManager.default.enumerator(
                     at: workspaceURL,
                     includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
-                    options: [.skipsPackageDescendants],
+                    options: [],
                     errorHandler: { _, _ in true }
                   ) else {
                 return []
             }
             var matches: [(entry: WorkspaceFileEntry, score: Int)] = []
-            while let url = enumerator.nextObject() as? URL {
+            while !Task.isCancelled, let url = enumerator.nextObject() as? URL {
                 guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey]) else {
                     continue
                 }
                 if values.isDirectory == true {
                     if Self.skippedDirectories.contains(url.lastPathComponent)
-                        || url.lastPathComponent.hasPrefix(".") {
+                        || url.lastPathComponent.hasPrefix(".")
+                        || ["app", "framework", "bundle", "xcodeproj"].contains(url.pathExtension.lowercased()) {
                         enumerator.skipDescendants()
                     }
                     continue
@@ -46,16 +48,22 @@ struct FileSystemWorkspaceSearch: WorkspaceFileSearching {
                     score
                 ))
             }
-            return matches
-                .sorted {
+            guard !Task.isCancelled else { return [] }
+            let ranked = try? matches.sorted {
+                    try Task.checkCancellation()
                     if $0.score != $1.score { return $0.score > $1.score }
                     let nameOrder = $0.entry.name.localizedStandardCompare($1.entry.name)
                     if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
                     return $0.entry.url.path < $1.entry.url.path
                 }
-                .prefix(limit)
-                .map(\.entry)
-        }.value
+            return (ranked ?? []).prefix(limit).map(\.entry)
+        }
+        return await withTaskCancellationHandler {
+            if Task.isCancelled { worker.cancel() }
+            return await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     /// Returns a relevance score when every query character appears in order.

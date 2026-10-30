@@ -456,6 +456,36 @@ swiftc \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \
+  "${project_dir}/scripts/verify-interaction-responsiveness.swift" \
+  -o "${project_dir}/build/verify-interaction-responsiveness"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-interaction-responsiveness"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-file-tabs-repository-layout.swift" \
+  -o "${project_dir}/build/verify-file-tabs-repository-layout"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-file-tabs-repository-layout" --legacy-scrollers
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-file-tabs-repository-layout" --overlay-scrollers
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
   "${project_dir}/scripts/verify-performance-suite.swift" \
   -o "${project_dir}/build/verify-performance-suite"
 

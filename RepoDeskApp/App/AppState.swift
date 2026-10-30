@@ -236,6 +236,10 @@ final class AppState {
     var isSearchingFiles = false
     var textSearchResults: [WorkspaceTextSearchResult] = []
     var isSearchingText = false
+    var textSearchResultsAreStale = false
+    var fileSearchResultsAreStale = false
+    @ObservationIgnored private var fileSearchTask: Task<Void, Never>?
+    @ObservationIgnored private var textSearchTask: Task<Void, Never>?
     var rememberedChangeSelections: [RegisteredRepository.ID: GitChangeSelection] = [:]
     var rememberedHistoryBranchFilters: [RegisteredRepository.ID: GitHistoryBranchFilter] = [:]
     var rememberedHistoryAuthorFilters: [RegisteredRepository.ID: GitHistoryAuthorFilter] = [:]
@@ -270,6 +274,12 @@ final class AppState {
     private var diffRequestID: UUID?
     private var documentRequestID: UUID?
     private var historyRequestID: UUID?
+    @ObservationIgnored private var historyRefreshTask: Task<Void, Never>?
+    private var historyRefreshRepositoryID: RegisteredRepository.ID?
+    private var historyRefreshID: UUID?
+    private var historyLoadedRepositoryID: RegisteredRepository.ID?
+    private var historyInvalidationRevision = 0
+    private var historyLoadedRevision = -1
     @ObservationIgnored private var historyReloadTask: Task<Void, Never>?
     private var branchesRequestID: UUID?
     private var historyAuthorsRequestID: UUID?
@@ -637,6 +647,7 @@ final class AppState {
         } else {
             await refreshCurrentRepository()
         }
+        historyInvalidationRevision += 1
         if selectedSection == .history {
             await refreshHistory()
         }
@@ -702,6 +713,10 @@ final class AppState {
         loadedDocument = nil
         resetDocumentEditingState()
         fileTabSessionsByContext = [:]
+        historyRefreshTask?.cancel()
+        historyRefreshTask = nil
+        historyRefreshID = nil
+        historyLoadedRepositoryID = nil
         resetHistoryHashSearch()
         commitHistory = []
         branches = []
@@ -726,8 +741,7 @@ final class AppState {
         mavenProjectRevisions = [:]
         historyVerticalSplitFraction = HistorySplitLayout.defaultVerticalFraction
         historyHorizontalSplitFraction = HistorySplitLayout.defaultHorizontalFraction
-        fileSearchRequestID = nil
-        textSearchRequestID = nil
+        cancelSearches()
         fileSearchResults = []
         textSearchResults = []
         isSearchingFiles = false
@@ -990,6 +1004,7 @@ final class AppState {
     func selectRepository(_ id: RegisteredRepository.ID) {
         guard repositories.contains(where: { $0.id == id }) else { return }
         let repositoryChanged = selectedRepositoryID != id
+        if repositoryChanged { cancelSearches() }
         let rememberedSelection = rememberedChangeSelections[id]
         let changesSelectionChanged = selectedChangeRepositoryID != id
             || selectedChange != rememberedSelection
@@ -1005,6 +1020,10 @@ final class AppState {
             diffErrorMessage = nil
         }
         guard repositoryChanged else { return }
+        historyRefreshTask?.cancel()
+        historyRefreshTask = nil
+        historyRefreshID = nil
+        historyLoadedRepositoryID = nil
         resetHistoryHashSearch()
         commitHistory = []
         branches = []
@@ -1071,6 +1090,7 @@ final class AppState {
     }
 
     func selectWorkspaceContext() {
+        cancelSearches()
         let contextChanged = navigationContext != .workspace
         if contextChanged {
             persistWindowState()
@@ -2086,6 +2106,7 @@ final class AppState {
         }
         await refreshRepository(repository)
         guard selectedRepositoryID == repository.id else { return }
+        historyInvalidationRevision += 1
         if selectedSection == .history {
             await refreshHistory()
         } else {
@@ -2099,6 +2120,7 @@ final class AppState {
             await javaLanguageProvider.notifyFilesChanged([repositoryURL])
         }
         await refreshRepository(repository)
+        historyInvalidationRevision += 1
         if selectedSection == .history {
             await refreshHistory()
         } else {
@@ -4021,6 +4043,10 @@ final class AppState {
             )
         }
         await refreshRepositories(affectedRepositories)
+        if let selectedRepositoryID,
+           affectedRepositories.contains(where: { $0.id == selectedRepositoryID }) {
+            historyInvalidationRevision += 1
+        }
         if selectedSection == .history,
            let selectedRepositoryID,
            affectedRepositories.contains(where: { $0.id == selectedRepositoryID }) {
@@ -4135,62 +4161,133 @@ final class AppState {
         }
     }
 
+    func cancelSearches() {
+        fileSearchTask?.cancel()
+        textSearchTask?.cancel()
+        fileSearchRequestID = nil
+        textSearchRequestID = nil
+        isSearchingFiles = false
+        isSearchingText = false
+    }
+
     func searchFiles(query: String) {
+        fileSearchTask?.cancel()
         guard let searchRootURL = visibleWorkspaceRootURL else { return }
         let requestID = UUID()
         fileSearchRequestID = requestID
-        if query.isEmpty {
+        if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             fileSearchResults = []
+            fileSearchResultsAreStale = false
             isSearchingFiles = false
             return
         }
-        fileSearchResults = []
+        fileSearchResultsAreStale = !fileSearchResults.isEmpty
         isSearchingFiles = true
-        Task { [weak self] in
+        fileSearchTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                try await Task.sleep(for: .milliseconds(180))
-            } catch {
-                return
-            }
-            guard fileSearchRequestID == requestID else { return }
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            guard !Task.isCancelled, fileSearchRequestID == requestID else { return }
             let results = await workspaceFileSearch.search(in: searchRootURL, query: query, limit: 100)
-            guard fileSearchRequestID == requestID else { return }
+            guard !Task.isCancelled, fileSearchRequestID == requestID,
+                  visibleWorkspaceRootURL == searchRootURL else { return }
             fileSearchResults = results
+            fileSearchResultsAreStale = false
             isSearchingFiles = false
         }
     }
 
     func searchWorkspaceText(query: String) {
+        textSearchTask?.cancel()
         guard let searchRootURL = visibleWorkspaceRootURL else { return }
         let requestID = UUID()
         textSearchRequestID = requestID
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             textSearchResults = []
+            textSearchResultsAreStale = false
             isSearchingText = false
             return
         }
-        textSearchResults = []
+        textSearchResultsAreStale = !textSearchResults.isEmpty
         isSearchingText = true
-        Task { [weak self] in
+        textSearchTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                try await Task.sleep(for: .milliseconds(180))
-            } catch {
-                return
-            }
-            guard textSearchRequestID == requestID else { return }
-            let results = await workspaceTextSearch.search(in: searchRootURL, query: query, limit: 300)
-            guard textSearchRequestID == requestID else { return }
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            guard !Task.isCancelled, textSearchRequestID == requestID else { return }
+            let results = await workspaceTextSearch.search(
+                in: searchRootURL, query: query, limit: 300,
+                onUpdate: { [weak self] results in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.textSearchRequestID == requestID,
+                              self.isSearchingText, self.visibleWorkspaceRootURL == searchRootURL else { return }
+                        guard self.textSearchResultsAreStale || results.count >= self.textSearchResults.count else { return }
+                        self.textSearchResults = results
+                        self.textSearchResultsAreStale = false
+                    }
+                }
+            )
+            guard !Task.isCancelled, textSearchRequestID == requestID,
+                  visibleWorkspaceRootURL == searchRootURL else { return }
             textSearchResults = results
+            textSearchResultsAreStale = false
             isSearchingText = false
         }
     }
 
+    func ensureHistoryLoaded() async {
+        guard let selectedRepositoryID else { return }
+        guard historyLoadedRepositoryID != selectedRepositoryID
+            || historyLoadedRevision != historyInvalidationRevision else { return }
+        await refreshHistory()
+    }
+
     func refreshHistory() async {
-        await loadBranches()
-        await loadHistoryAuthors()
-        await loadHistory()
+        guard let repositoryID = selectedRepositoryID else { return }
+        if historyRefreshRepositoryID == repositoryID, let historyRefreshTask {
+            await historyRefreshTask.value
+            return
+        }
+        historyRefreshTask?.cancel()
+        let refreshID = UUID()
+        historyRefreshID = refreshID
+        historyRefreshRepositoryID = repositoryID
+        let workspacePath = workspace?.path
+        let invalidationRevision = historyInvalidationRevision
+        let task = Task { [weak self] in
+            guard let self, !Task.isCancelled, selectedRepositoryID == repositoryID,
+                  workspace?.path == workspacePath else { return }
+            // Only named branches/authors and Me require metadata validation first.
+            // The normal all/current + all-users path can show commits immediately.
+            let needsBranchValidation: Bool
+            if case .branch = historyBranchFilter { needsBranchValidation = true }
+            else { needsBranchValidation = false }
+            let needsAuthorValidation = historyAuthorFilter != .all
+            async let branchLoad: Void = loadBranches()
+            async let authorLoad: Void = loadHistoryAuthors()
+            if needsBranchValidation || needsAuthorValidation {
+                _ = await (branchLoad, authorLoad)
+                guard !Task.isCancelled, selectedRepositoryID == repositoryID,
+                      workspace?.path == workspacePath else { return }
+                await loadHistory()
+            } else {
+                await loadHistory()
+                _ = await (branchLoad, authorLoad)
+            }
+            guard !Task.isCancelled, selectedRepositoryID == repositoryID,
+                  workspace?.path == workspacePath, historyErrorMessage == nil else { return }
+            historyLoadedRepositoryID = repositoryID
+            historyLoadedRevision = invalidationRevision
+        }
+        historyRefreshTask = task
+        await task.value
+        if historyRefreshID == refreshID {
+            historyRefreshTask = nil
+            historyRefreshID = nil
+        }
+        if !Task.isCancelled, selectedRepositoryID == repositoryID,
+           historyLoadedRepositoryID == repositoryID,
+           historyLoadedRevision != historyInvalidationRevision {
+            await refreshHistory()
+        }
     }
 
     func loadBranches() async {
@@ -5213,6 +5310,11 @@ final class AppState {
                         event: "discarded-context"
                     )
                     break
+                }
+                if repository.id == selectedRepositoryID, let previousSnapshot,
+                   previousSnapshot.branch != snapshot.branch
+                    || previousSnapshot.lastCommit?.hash != snapshot.lastCommit?.hash {
+                    historyInvalidationRevision += 1
                 }
                 if previousSnapshot != snapshot {
                     repositorySnapshots[repository.id] = snapshot

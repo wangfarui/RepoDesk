@@ -73,7 +73,7 @@ struct HistoryView: View {
             }
         }
         .task(id: appState.selectedRepositoryID) {
-            await appState.refreshHistory()
+            await appState.ensureHistoryLoaded()
         }
         .toolbar {
             ToolbarItem {

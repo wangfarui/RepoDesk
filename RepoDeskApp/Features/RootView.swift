@@ -27,6 +27,7 @@ struct WorkspaceMonitorTaskID: Equatable {
 struct RootView: View {
     @Bindable var appState: AppState
     @Environment(\.scenePhase) private var scenePhase
+    @State private var hasOpenedFiles = false
     @State private var showsFileSearch = false
     @State private var showsFullTextSearch = false
     @State private var showsPushSheet = false
@@ -530,43 +531,61 @@ struct RootView: View {
                 }
             }
         } else {
-            switch appState.selectedSection {
-            case .overview: RepositoryOverviewView(appState: appState)
-            case .changes: ChangesView(appState: appState)
-            case .files: FilesView(appState: appState)
-            case .history: HistoryView(appState: appState)
-            case .tasks:
-                if let workspaceURL = visibleWorkspaceURL {
-                    MavenView(
-                        workspaceURL: workspaceURL,
-                        repositoryURL: selectedRepositoryURL,
-                        settings: Binding(
-                            get: { appState.mavenSettings },
-                            set: { appState.updateMavenSettings($0) }
-                        ),
-                        projectRevision: appState.mavenProjectRevision(for: selectedRepositoryURL),
-                        validationStore: appState.mavenEnvironmentValidationStore,
-                        execution: appState.mavenExecution,
-                        recentRuns: appState.recentMavenRuns,
-                        run: { appState.runMaven($0) },
-                        stop: { appState.stopMaven() },
-                        clearLog: { appState.clearMavenLog() },
-                        removeRun: { appState.removeMavenRun($0) },
-                        clearPersistedLogs: { appState.clearPersistedMavenLogs() },
-                        clearHistory: { appState.clearMavenRunHistory() },
-                        queueMessage: appState.mavenQueueMessage,
-                        duplicateMessage: { appState.mavenQueue.duplicateMessage(for: $0, repositoryURL: $1) },
-                        persistedSelection: selectedMavenRepositoryID.flatMap {
-                            appState.mavenSelection(for: $0)
-                        },
-                        updatePersistedSelection: { selection in
-                            guard let repositoryID = selectedMavenRepositoryID else { return }
-                            appState.updateMavenSelection(selection, for: repositoryID)
-                        }
-                    )
-                } else {
-                    ContentUnavailableView("没有工作区", systemImage: "folder")
+            ZStack {
+                if hasOpenedFiles || appState.selectedSection == .files {
+                    FilesView(appState: appState)
+                        .id(appState.workspace?.path)
+                        .opacity(appState.selectedSection == .files ? 1 : 0)
+                        .disabled(appState.selectedSection != .files)
+                        .allowsHitTesting(appState.selectedSection == .files)
+                        .accessibilityHidden(appState.selectedSection != .files)
+                        .onAppear { hasOpenedFiles = true }
                 }
+                if appState.selectedSection != .files {
+                    nonFilesSectionContent
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var nonFilesSectionContent: some View {
+        switch appState.selectedSection {
+        case .overview: RepositoryOverviewView(appState: appState)
+        case .changes: ChangesView(appState: appState)
+        case .files: EmptyView()
+        case .history: HistoryView(appState: appState)
+        case .tasks:
+            if let workspaceURL = visibleWorkspaceURL {
+                MavenView(
+                    workspaceURL: workspaceURL,
+                    repositoryURL: selectedRepositoryURL,
+                    settings: Binding(
+                        get: { appState.mavenSettings },
+                        set: { appState.updateMavenSettings($0) }
+                    ),
+                    projectRevision: appState.mavenProjectRevision(for: selectedRepositoryURL),
+                    validationStore: appState.mavenEnvironmentValidationStore,
+                    execution: appState.mavenExecution,
+                    recentRuns: appState.recentMavenRuns,
+                    run: { appState.runMaven($0) },
+                    stop: { appState.stopMaven() },
+                    clearLog: { appState.clearMavenLog() },
+                    removeRun: { appState.removeMavenRun($0) },
+                    clearPersistedLogs: { appState.clearPersistedMavenLogs() },
+                    clearHistory: { appState.clearMavenRunHistory() },
+                    queueMessage: appState.mavenQueueMessage,
+                    duplicateMessage: { appState.mavenQueue.duplicateMessage(for: $0, repositoryURL: $1) },
+                    persistedSelection: selectedMavenRepositoryID.flatMap {
+                        appState.mavenSelection(for: $0)
+                    },
+                    updatePersistedSelection: { selection in
+                        guard let repositoryID = selectedMavenRepositoryID else { return }
+                        appState.updateMavenSelection(selection, for: repositoryID)
+                    }
+                )
+            } else {
+                ContentUnavailableView("没有工作区", systemImage: "folder")
             }
         }
     }

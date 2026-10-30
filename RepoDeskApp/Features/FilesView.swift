@@ -34,6 +34,7 @@ struct DocumentHeaderActions: View {
 
 @MainActor
 struct FilesView: View {
+    @Environment(\.isEnabled) private var isSectionActive
     @Bindable var appState: AppState
     @State private var selectedTreeItem: FileTreeItemSelection?
     @State private var selectedTreeItems: Set<FileTreeItemSelection> = []
@@ -80,7 +81,7 @@ struct FilesView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                if appState.selectedFileURL?.pathExtension.lowercased() == "md" {
+                if isSectionActive, appState.selectedFileURL?.pathExtension.lowercased() == "md" {
                     Picker(
                         "Markdown 视图",
                         selection: Binding(
@@ -178,8 +179,8 @@ struct FilesView: View {
         } message: {
             Text(appState.fileDeletionRestoreErrorMessage ?? "文件恢复失败。")
         }
-        .task(id: appState.visibleWorkspaceRootURL?.path) {
-            guard let rootURL = appState.visibleWorkspaceRootURL else { return }
+        .task(id: isSectionActive ? appState.visibleWorkspaceRootURL?.path : nil) {
+            guard isSectionActive, let rootURL = appState.visibleWorkspaceRootURL else { return }
             if let selectedFileURL = appState.selectedFileURL,
                WorkspaceTreeRefreshPlanner.isSameOrDescendant(selectedFileURL, of: rootURL) {
                 let selection = FileTreeItemSelection(
@@ -303,11 +304,12 @@ struct FilesView: View {
 
                 Divider()
 
-                let contentWidth = fileTreeContentWidth(at: rootURL)
+                let rows = visibleTreeRows(at: rootURL)
+                let contentWidth = fileTreeContentWidth(rows: rows)
                 GeometryReader { geometry in
                     ScrollViewReader { proxy in
                         ScrollView([.horizontal, .vertical]) {
-                            VStack(alignment: .leading, spacing: 1) {
+                            LazyVStack(alignment: .leading, spacing: 1) {
                                 if let message = appState.workspaceMonitoringErrorMessage {
                                     Label(message, systemImage: "exclamationmark.triangle")
                                         .font(.caption)
@@ -324,11 +326,11 @@ struct FilesView: View {
                                         retry: { appState.retryDirectory(rootURL) }
                                     )
                                 }
-                                ForEach(visibleEntries(appState.fileChildren[rootURL] ?? [])) { entry in
+                                ForEach(rows) { row in
                                     FileTreeEntryView(
-                                        entry: entry,
+                                        entry: row.entry,
                                         appState: appState,
-                                        depth: 0,
+                                        depth: row.depth,
                                         minimumRowWidth: geometry.size.width - 12,
                                         selectedTreeItem: $selectedTreeItem,
                                         selectedTreeItems: selectedTreeItems,
@@ -341,7 +343,7 @@ struct FilesView: View {
                                         beginDeletingSelectedFileItems: beginDeletingSelectedFileItems,
                                         handleTreeItemClick: handleTreeItemClick,
                                         prepareContextMenu: prepareContextMenu,
-                                        viewGitHistory: { appState.showFileHistory(for: entry.url) }
+                                        viewGitHistory: { appState.showFileHistory(for: row.entry.url) }
                                     )
                                 }
                             }
@@ -513,75 +515,86 @@ struct FilesView: View {
     }
 
     private var fileTabsBar: some View {
-        FileTabFlowLayout(horizontalSpacing: 4, verticalSpacing: 4) {
-            ForEach(appState.openFileTabs) { tab in
-                HStack(spacing: 6) {
+        HStack(spacing: FileTabStripMetrics.spacing) {
+            FileTabStripScrollView(
+                contextID: appState.visibleWorkspaceRootURL?.path,
+                tabIDs: appState.openFileTabs.map(\.id),
+                selectedID: appState.selectedFileURL
+            ) {
+                HStack(spacing: FileTabStripMetrics.spacing) {
+                    ForEach(appState.openFileTabs) { tab in
+                        fileTab(tab)
+                            .frame(width: FileTabStripMetrics.tabWidth, height: FileTabStripMetrics.tabHeight)
+                    }
+                }
+                .padding(.horizontal, FileTabStripMetrics.inset)
+            }
+            .accessibilityIdentifier("RepoDesk.FileTabs.Scroll")
+            Menu {
+                ForEach(appState.openFileTabs) { tab in
                     Button {
                         appState.selectFileTab(tab)
                     } label: {
-                        HStack(spacing: 6) {
-                            FileTypeIcon(path: tab.url.path)
-                            Text(tab.url.lastPathComponent)
-                                .fixedSize(horizontal: true, vertical: false)
-                                .padding(.bottom, 13)
-                                .overlay(alignment: .bottomLeading) {
-                                    Text(fileTabPath(tab))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .help(tab.url.path)
-                    .accessibilityIdentifier("RepoDesk.FileTab.\(tab.url.lastPathComponent)")
-                    .accessibilityValue(appState.selectedFileURL == tab.url ? "selected" : "open")
-
-                    Button {
-                        appState.closeFileTab(id: tab.id)
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("关闭 \(tab.url.lastPathComponent)")
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(
-                    appState.selectedFileURL == tab.url
-                        ? Color.accentColor.opacity(0.16)
-                        : Color.secondary.opacity(0.08),
-                    in: .rect(cornerRadius: 5)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 5)
-                        .stroke(
-                            appState.selectedFileURL == tab.url
-                                ? Color.accentColor.opacity(0.5)
-                                : Color.clear,
-                            lineWidth: 1
+                        Label(
+                            "\(tab.url.lastPathComponent) — \(fileTabPath(tab))",
+                            systemImage: appState.selectedFileURL == tab.url ? "checkmark" : "doc.text"
                         )
-                }
-                .fixedSize(horizontal: true, vertical: false)
-                .contextMenu {
-                    Button("关闭当前", systemImage: "xmark") {
-                        appState.closeFileTab(id: tab.id)
-                    }
-                    Button("关闭其他", systemImage: "xmark.circle") {
-                        appState.closeOtherFileTabs(keeping: tab.id)
-                    }
-                    Button("关闭所有", systemImage: "xmark.circle.fill") {
-                        appState.closeAllFileTabs()
                     }
                 }
+            } label: {
+                Image(systemName: "list.bullet").frame(width: 28, height: 30)
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("所有打开的文件")
+            .accessibilityLabel("所有打开的文件")
+            .accessibilityIdentifier("RepoDesk.FileTabs.Overflow")
+            .padding(.trailing, 8)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: FileTabStripMetrics.stripHeight)
+    }
+
+    private func fileTab(_ tab: OpenFileTab) -> some View {
+        let isSelected = appState.selectedFileURL == tab.url
+        return HStack(spacing: 6) {
+            Button {
+                appState.selectFileTab(tab)
+            } label: {
+                HStack(spacing: 6) {
+                    FileTypeIcon(path: tab.url.path)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(tab.url.lastPathComponent).lineLimit(1)
+                        Text(fileTabPath(tab))
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+                .frame(width: 220, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .help(tab.url.path)
+            .accessibilityIdentifier("RepoDesk.FileTab.\(tab.url.lastPathComponent)")
+            .accessibilityValue(isSelected ? "selected" : "open")
+            Button { appState.closeFileTab(id: tab.id) } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("关闭 \(tab.url.lastPathComponent)")
+        }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(minHeight: 42)
+        .padding(.vertical, 5)
+        .background(isSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08),
+                    in: .rect(cornerRadius: 5))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(isSelected ? Color.accentColor.opacity(0.5) : Color.clear, lineWidth: 1)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .contextMenu {
+            Button("关闭当前", systemImage: "xmark") { appState.closeFileTab(id: tab.id) }
+            Button("关闭其他", systemImage: "xmark.circle") { appState.closeOtherFileTabs(keeping: tab.id) }
+            Button("关闭所有", systemImage: "xmark.circle.fill") { appState.closeAllFileTabs() }
+        }
     }
 
     private func fileTabPath(_ tab: OpenFileTab) -> String {
@@ -1102,27 +1115,39 @@ struct FilesView: View {
         return entries.filter { !$0.name.hasPrefix(".") }
     }
 
-    private func fileTreeContentWidth(at rootURL: URL) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: CGFloat(appState.interfaceFontSize))
-        var width: CGFloat = 0
+    private struct TreeRow: Identifiable {
+        let entry: WorkspaceFileEntry
+        let depth: Int
+        let widthDepth: Int
+        var id: URL { entry.url }
+    }
 
-        func visit(_ entries: [WorkspaceFileEntry], depth: Int) {
-            for entry in visibleEntries(entries) {
+    private func visibleTreeRows(at rootURL: URL) -> [TreeRow] {
+        var rows: [TreeRow] = []
+        func visit(_ directory: URL, depth: Int, widthDepth: Int) {
+            for entry in visibleEntries(appState.fileChildren[directory] ?? []) {
+                rows.append(TreeRow(entry: entry, depth: depth, widthDepth: widthDepth))
                 let displayed = FileTreeEntryView.displayedEntries(for: entry, appState: appState)
-                let title = displayed.map(\.name).joined(separator: "/")
-                let titleWidth = (title as NSString).size(withAttributes: [.font: font]).width
-                width = max(width, titleWidth + CGFloat(depth) * 14 + 52)
-
                 if entry.isDirectory, appState.expandedDirectoryURLs.contains(entry.url),
-                   let directoryURL = displayed.last?.url {
-                    visit(appState.fileChildren[directoryURL.standardizedFileURL] ?? [], depth: depth + displayed.count)
+                   let directory = displayed.last?.url {
+                    visit(directory, depth: depth + 1, widthDepth: widthDepth + displayed.count)
                 }
             }
         }
-
-        visit(appState.fileChildren[rootURL] ?? [], depth: 0)
-        return width
+        visit(rootURL, depth: 0, widthDepth: 0)
+        return rows
     }
+
+    private func fileTreeContentWidth(rows: [TreeRow]) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: CGFloat(appState.interfaceFontSize))
+        return rows.reduce(CGFloat.zero) { width, row in
+            let title = FileTreeEntryView.displayedEntries(for: row.entry, appState: appState)
+                .map(\.name).joined(separator: "/")
+            return max(width, FileTreeTitleWidthCache.shared.width(title, font: font)
+                + CGFloat(row.widthDepth) * 14 + 52)
+        }
+    }
+
 }
 
 @MainActor
@@ -1262,68 +1287,18 @@ private struct FileTreeItemSelection: Hashable {
     let isDirectory: Bool
 }
 
-private struct FileTabFlowLayout: Layout {
-    let horizontalSpacing: CGFloat
-    let verticalSpacing: CGFloat
+@MainActor
+private final class FileTreeTitleWidthCache {
+    static let shared = FileTreeTitleWidthCache()
+    private var widths: [String: CGFloat] = [:]
 
-    func sizeThatFits(
-        proposal: ProposedViewSize,
-        subviews: Subviews,
-        cache: inout ()
-    ) -> CGSize {
-        let availableWidth = proposal.width ?? .infinity
-        var rowWidth: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var contentWidth: CGFloat = 0
-        var contentHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            let nextWidth = rowWidth == 0 ? size.width : rowWidth + horizontalSpacing + size.width
-            if rowWidth > 0, nextWidth > availableWidth {
-                contentWidth = max(contentWidth, rowWidth)
-                contentHeight += rowHeight + verticalSpacing
-                rowWidth = size.width
-                rowHeight = size.height
-            } else {
-                rowWidth = nextWidth
-                rowHeight = max(rowHeight, size.height)
-            }
-        }
-
-        contentWidth = max(contentWidth, rowWidth)
-        contentHeight += rowHeight
-        return CGSize(
-            width: availableWidth.isFinite ? min(contentWidth, availableWidth) : contentWidth,
-            height: contentHeight
-        )
-    }
-
-    func placeSubviews(
-        in bounds: CGRect,
-        proposal: ProposedViewSize,
-        subviews: Subviews,
-        cache: inout ()
-    ) {
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + size.width > bounds.maxX {
-                x = bounds.minX
-                y += rowHeight + verticalSpacing
-                rowHeight = 0
-            }
-            subview.place(
-                at: CGPoint(x: x, y: y),
-                anchor: .topLeading,
-                proposal: ProposedViewSize(size)
-            )
-            x += size.width + horizontalSpacing
-            rowHeight = max(rowHeight, size.height)
-        }
+    func width(_ title: String, font: NSFont) -> CGFloat {
+        let key = "\(font.fontName):\(font.pointSize):\(title)"
+        if let width = widths[key] { return width }
+        if widths.count >= 10_000 { widths.removeAll(keepingCapacity: true) }
+        let width = (title as NSString).size(withAttributes: [.font: font]).width
+        widths[key] = width
+        return width
     }
 }
 
@@ -1347,106 +1322,83 @@ private struct FileTreeEntryView: View {
     let viewGitHistory: () -> Void
 
     var body: some View {
-        Button {
-            handleTreeItemClick(commandItemURL, entry.isDirectory, entry.url, siblingURLs)
-        } label: {
-            HStack(spacing: 5) {
-                if entry.isDirectory {
-                    Image(systemName: appState.expandedDirectoryURLs.contains(entry.url) ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                        .frame(width: 10)
-                } else {
-                    Color.clear.frame(width: 10, height: 1)
+        VStack(alignment: .leading, spacing: 1) {
+            Button {
+                handleTreeItemClick(commandItemURL, entry.isDirectory, entry.url, siblingURLs)
+            } label: {
+                HStack(spacing: 5) {
+                    if entry.isDirectory {
+                        Image(systemName: appState.expandedDirectoryURLs.contains(entry.url) ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                            .frame(width: 10)
+                    } else {
+                        Color.clear.frame(width: 10, height: 1)
+                    }
+                    if entry.isDirectory {
+                        Image(systemName: "folder").foregroundStyle(.blue)
+                    } else {
+                        FileTypeIcon(path: entry.url.path)
+                    }
+                    Text(displayName)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 2)
+                    if displayedEntries.contains(where: { appState.loadingDirectoryURLs.contains($0.url) }) {
+                        ProgressView().controlSize(.mini)
+                    }
                 }
-                if entry.isDirectory {
-                    Image(systemName: "folder").foregroundStyle(.blue)
-                } else {
-                    FileTypeIcon(path: entry.url.path)
+                .padding(.leading, CGFloat(depth) * 14)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .frame(minWidth: minimumRowWidth, alignment: .leading)
+                .frame(height: max(26, appState.interfaceFontSize + 14))
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .background(
+                rowBackgroundColor,
+                in: .rect(cornerRadius: 5)
+            )
+            .focusable()
+            .focusEffectDisabled()
+            .focused(focusedFileTreeURL, equals: commandItemURL)
+            .onKeyPress(phases: .down) { keyPress in
+                if matchesFileTreeShortcut(keyPress, id: .copyFileTreeItem) {
+                    copySelectedItems()
+                    return .handled
                 }
-                Text(displayName)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                Spacer(minLength: 2)
-                if displayedEntries.contains(where: { appState.loadingDirectoryURLs.contains($0.url) }) {
-                    ProgressView().controlSize(.mini)
+                if matchesFileTreeShortcut(keyPress, id: .pasteFileTreeItem) {
+                    requestPaste(commandItemURL, entry.isDirectory)
+                    return .handled
                 }
+                return .ignored
             }
-            .padding(.leading, CGFloat(depth) * 14)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .frame(minWidth: minimumRowWidth, alignment: .leading)
-            .contentShape(.rect)
-        }
-        .buttonStyle(.plain)
-        .background(
-            rowBackgroundColor,
-            in: .rect(cornerRadius: 5)
-        )
-        .focusable()
-        .focusEffectDisabled()
-        .focused(focusedFileTreeURL, equals: commandItemURL)
-                .onKeyPress(phases: .down) { keyPress in
-            if matchesFileTreeShortcut(keyPress, id: .copyFileTreeItem) {
-                copySelectedItems()
-                return .handled
-            }
-            if matchesFileTreeShortcut(keyPress, id: .pasteFileTreeItem) {
-                requestPaste(commandItemURL, entry.isDirectory)
-                return .handled
-            }
-            return .ignored
-        }
-        .id(entry.url.standardizedFileURL)
-        .fileSystemPathCopyMenu(
-            isMultiSelection ? nil : pathCopyValues,
-            copyItem: { copySelectedItems() },
-            pasteItem: isMultiSelection ? nil : { requestPaste(commandItemURL, entry.isDirectory) },
-            newFileItem: isMultiSelection ? nil : (entry.isDirectory
-                ? { beginCreatingFileItem(commandItemURL, false) }
-                : nil),
-            newDirectoryItem: isMultiSelection ? nil : (entry.isDirectory
-                ? { beginCreatingFileItem(commandItemURL, true) }
-                : nil),
-            renameItem: isMultiSelection ? nil : {
-                beginRenamingFileItem(commandItemURL, entry.isDirectory)
-            },
-            deleteItem: { beginDeletingFileItem(commandItemURL, entry.isDirectory) },
-            viewGitHistoryItem: entry.isDirectory || isMultiSelection ? nil : viewGitHistory,
-            openInFinderItem: isMultiSelection ? nil : {
-                openFileSystemItemInFinder(at: commandItemURL, isDirectory: entry.isDirectory)
-            },
-            isContextMenuPresented: contextMenuPresentationBinding
-        )
+            .id(entry.url.standardizedFileURL)
+            .fileSystemPathCopyMenu(
+                isMultiSelection ? nil : pathCopyValues,
+                copyItem: { copySelectedItems() },
+                pasteItem: isMultiSelection ? nil : { requestPaste(commandItemURL, entry.isDirectory) },
+                newFileItem: isMultiSelection ? nil : (entry.isDirectory
+                    ? { beginCreatingFileItem(commandItemURL, false) }
+                    : nil),
+                newDirectoryItem: isMultiSelection ? nil : (entry.isDirectory
+                    ? { beginCreatingFileItem(commandItemURL, true) }
+                    : nil),
+                renameItem: isMultiSelection ? nil : {
+                    beginRenamingFileItem(commandItemURL, entry.isDirectory)
+                },
+                deleteItem: { beginDeletingFileItem(commandItemURL, entry.isDirectory) },
+                viewGitHistoryItem: entry.isDirectory || isMultiSelection ? nil : viewGitHistory,
+                openInFinderItem: isMultiSelection ? nil : {
+                    openFileSystemItemInFinder(at: commandItemURL, isDirectory: entry.isDirectory)
+                },
+                isContextMenuPresented: contextMenuPresentationBinding
+            )
 
-        if entry.isDirectory, appState.expandedDirectoryURLs.contains(entry.url) {
-            if let message = appState.directoryLoadErrors[displayedDirectoryURL] {
-                DirectoryLoadErrorView(
-                    message: message,
-                    retry: { appState.retryDirectory(displayedDirectoryURL) }
-                )
-                .padding(.leading, CGFloat(depth + 1) * 14)
-            }
-            VStack(alignment: .leading, spacing: 1) {
-                ForEach(visibleChildren) { child in
-                    FileTreeEntryView(
-                        entry: child,
-                        appState: appState,
-                        depth: depth + 1,
-                        minimumRowWidth: minimumRowWidth,
-                        selectedTreeItem: $selectedTreeItem,
-                        selectedTreeItems: selectedTreeItems,
-                        contextMenuTreeItemURL: $contextMenuTreeItemURL,
-                        focusedFileTreeURL: focusedFileTreeURL,
-                        requestPaste: requestPaste,
-                        beginCreatingFileItem: beginCreatingFileItem,
-                        beginRenamingFileItem: beginRenamingFileItem,
-                        beginDeletingFileItem: beginDeletingFileItem,
-                        beginDeletingSelectedFileItems: beginDeletingSelectedFileItems,
-                        handleTreeItemClick: handleTreeItemClick,
-                        prepareContextMenu: prepareContextMenu,
-                        viewGitHistory: { appState.showFileHistory(for: child.url) }
-                    )
-                }
+            if entry.isDirectory, appState.expandedDirectoryURLs.contains(entry.url),
+               let message = appState.directoryLoadErrors[displayedDirectoryURL] {
+                DirectoryLoadErrorView(message: message, retry: { appState.retryDirectory(displayedDirectoryURL) })
+                    .padding(.leading, CGFloat(depth + 1) * 14)
             }
         }
     }
@@ -1590,6 +1542,7 @@ private struct FileLineChangesRequest: Equatable {
 
 @MainActor
 struct SourceDocumentView: View {
+    @Environment(\.isEnabled) private var isSectionActive
     @Binding var text: String
     let isLarge: Bool
     let fileIdentity: String
@@ -1814,8 +1767,8 @@ struct SourceDocumentView: View {
             requestFind: presentContentFind,
             navigateMatch: navigateContentFind
         ))
-        .task(id: lineChangesRequest) {
-            guard let loadGitLineBaseline else { return }
+        .task(id: isSectionActive ? lineChangesRequest : nil) {
+            guard isSectionActive, let loadGitLineBaseline else { return }
             await gitLineChanges.load(fileIdentity: fileIdentity, text: text, using: loadGitLineBaseline)
         }
         .onChange(of: fileIdentity) {
@@ -2083,6 +2036,18 @@ struct FileNameSearchSheet: View {
                 }
                 .onSubmit { openSelectedResult() }
 
+            HStack(spacing: 8) {
+                if appState.isSearchingFiles {
+                    ProgressView().controlSize(.small)
+                    Text(appState.fileSearchResultsAreStale ? "正在更新，暂保留上次结果…" : "正在搜索…")
+                } else if !query.isEmpty {
+                    Text("\(appState.fileSearchResults.count) 个结果")
+                }
+                Spacer()
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(height: 18)
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 3) {
@@ -2114,16 +2079,15 @@ struct FileNameSearchSheet: View {
                     .padding(.horizontal, 2)
                 }
                 .onChange(of: selection.index) {
-                    guard appState.fileSearchResults.indices.contains(selection.index) else { return }
+                    guard !appState.fileSearchResultsAreStale, appState.fileSearchResults.indices.contains(selection.index) else { return }
                     withAnimation(.easeOut(duration: 0.12)) {
                         proxy.scrollTo(appState.fileSearchResults[selection.index].id, anchor: .center)
                     }
                 }
             }
+            .disabled(appState.fileSearchResultsAreStale)
             .overlay {
-                if appState.isSearchingFiles {
-                    ProgressView()
-                } else if !query.isEmpty, appState.fileSearchResults.isEmpty {
+                if !appState.isSearchingFiles, !query.isEmpty, appState.fileSearchResults.isEmpty {
                     ContentUnavailableView("没有匹配的文件", systemImage: "magnifyingglass")
                 }
             }
@@ -2134,6 +2098,7 @@ struct FileNameSearchSheet: View {
             appState.searchFiles(query: "")
             isQueryFocused = true
         }
+        .onDisappear { appState.cancelSearches() }
         .onChange(of: appState.fileSearchResults) {
             selection.clamp(toCount: appState.fileSearchResults.count)
         }
@@ -2189,6 +2154,18 @@ struct FullTextSearchSheet: View {
                 }
                 .onSubmit { openSelectedResult() }
 
+            HStack(spacing: 8) {
+                if appState.isSearchingText {
+                    ProgressView().controlSize(.small)
+                    Text(appState.textSearchResultsAreStale ? "正在更新，暂保留上次结果…" : "正在搜索…")
+                } else if !query.isEmpty {
+                    Text("\(appState.textSearchResults.count) 个结果")
+                }
+                Spacer()
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(height: 18)
+
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 3) {
@@ -2231,16 +2208,15 @@ struct FullTextSearchSheet: View {
                     .padding(.horizontal, 2)
                 }
                 .onChange(of: selection.index) {
-                    guard appState.textSearchResults.indices.contains(selection.index) else { return }
+                    guard !appState.textSearchResultsAreStale, appState.textSearchResults.indices.contains(selection.index) else { return }
                     withAnimation(.easeOut(duration: 0.12)) {
                         proxy.scrollTo(appState.textSearchResults[selection.index].id, anchor: .center)
                     }
                 }
             }
+            .disabled(appState.textSearchResultsAreStale)
             .overlay {
-                if appState.isSearchingText {
-                    ProgressView()
-                } else if !query.isEmpty, appState.textSearchResults.isEmpty {
+                if !appState.isSearchingText, !query.isEmpty, appState.textSearchResults.isEmpty {
                     ContentUnavailableView("没有匹配的内容", systemImage: "text.magnifyingglass")
                 }
             }
@@ -2251,6 +2227,7 @@ struct FullTextSearchSheet: View {
             appState.searchWorkspaceText(query: "")
             isQueryFocused = true
         }
+        .onDisappear { appState.cancelSearches() }
         .onChange(of: appState.textSearchResults) {
             selection.clamp(toCount: appState.textSearchResults.count)
         }

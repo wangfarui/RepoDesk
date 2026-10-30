@@ -311,17 +311,20 @@ struct ContentFindBar: View {
 
 @MainActor
 struct ContentFindCommandListener: NSViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
     let requestFind: () -> Void
     var navigateMatch: (Int) -> Void = { _ in }
 
     func makeNSView(context: Context) -> ContentFindCommandListenerView {
         let view = ContentFindCommandListenerView()
+        view.isListening = isEnabled
         view.requestFind = requestFind
         view.navigateMatch = navigateMatch
         return view
     }
 
     func updateNSView(_ view: ContentFindCommandListenerView, context: Context) {
+        view.isListening = isEnabled
         view.requestFind = requestFind
         view.navigateMatch = navigateMatch
     }
@@ -332,6 +335,9 @@ final class ContentFindCommandListenerView: NSView {
     var requestFind: (() -> Void)?
     var navigateMatch: ((Int) -> Void)?
     private weak var registeredWindow: NSWindow?
+    var isListening = true {
+        didSet { if oldValue != isListening { updateRegistration() } }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -359,11 +365,15 @@ final class ContentFindCommandListenerView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateRegistration()
+    }
+
+    private func updateRegistration() {
         if let registeredWindow {
             ContentFindWindowRegistry.shared.unregister(registeredWindow)
         }
-        registeredWindow = window
-        if let window {
+        registeredWindow = isListening ? window : nil
+        if let window = registeredWindow {
             ContentFindWindowRegistry.shared.register(window)
         }
     }
@@ -373,13 +383,13 @@ final class ContentFindCommandListenerView: NSView {
     }
 
     @objc private func findRequested(_ notification: Notification) {
-        guard let requestedWindow = notification.object as? NSWindow,
+        guard isListening, let requestedWindow = notification.object as? NSWindow,
               requestedWindow === window else { return }
         requestFind?()
     }
 
     @objc private func findNavigationRequested(_ notification: Notification) {
-        guard let requestedWindow = notification.object as? NSWindow,
+        guard isListening, let requestedWindow = notification.object as? NSWindow,
               requestedWindow === window,
               let offset = notification.userInfo?[contentFindNavigationOffsetKey] as? Int else {
             return

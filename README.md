@@ -37,6 +37,16 @@ The final local artifact is `build/RepoDesk.app`. Release contents, accepted rep
 
 Use “按 Commit Hash 筛选…” above the commit list to filter by a short or full hash prefix. Matching ignores case and surrounding whitespace, searches the complete history within the selected Branch and User filters, and preserves the file scope when viewing file History. A single result is selected automatically; ambiguous prefixes show matching commits in history order with normal pagination. Clear the field to restore the unfiltered list. The search is cleared when switching repositories.
 
+### Files, search and navigation responsiveness
+
+Open files use a fixed single-row tab bar with horizontal scrolling and an “所有打开的文件” menu. Selecting a file from search, navigation or that menu scrolls its tab into view. Closing tabs keeps the editor at the same vertical position. Files retains its editor, caret and selection when visiting another section; the inactive editor releases keyboard focus and Find commands.
+
+The file tree lazily renders visible rows, including expanded directory descendants, and reuses filename width measurements for horizontal scrolling. Filename and content searches include source repositories ending in `.service`, while still skipping generated directories and known application bundles. Content search publishes partial results, cancels obsolete scans and preserves the previous results with an updating indicator until the new query produces results. Previous-query results cannot be opened while marked as stale.
+
+Re-entering unchanged History reuses its loaded data. Explicit refresh, repository HEAD changes, workspace events and foreground consistency checks invalidate it. The default commit list can load while branch and author metadata are read; named branch/author and “Select Me” filters still resolve their metadata before loading commits.
+
+`scripts/verify-interaction-responsiveness.swift` verifies source-package searches, partial results and cancellation, History caching and filter validation, retained editor focus/selection, and single-row scrolling tab geometry. It runs as part of `verify-local.sh`.
+
 ### JAR changes in History
 
 Select a changed `.jar` in History to compare its internal files. The upper list shows added, deleted and modified entries; enable “显示未改动文件” to browse everything. Select a `.class` to compare Java decompiled with the bundled CFR runtime, or select a text resource for a direct side-by-side diff. The lower pane supports search, selection, copying and ignoring whitespace. For merge commits, choose which parent to compare against.
