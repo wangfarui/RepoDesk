@@ -1876,6 +1876,13 @@ private struct ChangesWindowAnchor: NSViewRepresentable {
 private final class ChangesWindowAnchorView: NSView {
     var onWindow: ((NSWindow?) -> Void)?
 
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         onWindow?(window)
