@@ -61,6 +61,32 @@ swiftc \
   -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
+  -I "${project_dir}/build" -L "${project_dir}/build" -lRepoDesk \
+  "${project_dir}/scripts/verify-idea-merge-interaction.swift" \
+  -o "${project_dir}/build/verify-idea-merge-interaction"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-idea-merge-interaction" --verify
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" \
+  -L "${project_dir}/build" \
+  -lRepoDesk \
+  "${project_dir}/scripts/verify-three-way-merge.swift" \
+  -o "${project_dir}/build/verify-three-way-merge"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-three-way-merge"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \
@@ -555,6 +581,8 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Features/ChangesOutline.swift" \
   "${project_dir}/RepoDeskApp/Settings/ChangesAutoExpansionSettings.swift" \
   "${project_dir}/scripts/verify-changes-outline.swift" \
@@ -568,6 +596,8 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
@@ -584,6 +614,8 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
@@ -600,6 +632,8 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
@@ -616,6 +650,8 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
@@ -633,6 +669,8 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Git/GitDiffParser.swift" \
   "${project_dir}/scripts/verify-git-diff-crlf.swift" \
   -o "${project_dir}/build/verify-git-diff-crlf"
@@ -645,6 +683,8 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Features/ContentFind.swift" \
   "${project_dir}/RepoDeskApp/Features/GitDiffLayoutMetrics.swift" \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
@@ -717,6 +757,8 @@ swiftc \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Features/JavaImportFolding.swift" \
   "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
   "${project_dir}/RepoDeskApp/Features/StreamingOutputView.swift" \
@@ -739,6 +781,8 @@ swiftc \
   "${project_dir}/RepoDeskApp/Features/GitBlameColorScale.swift" \
   "${project_dir}/RepoDeskApp/Features/NativeCodeEditor.swift" \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Features/JavaImportFolding.swift" \
   "${project_dir}/RepoDeskApp/Settings/ShortcutSettings.swift" \
   "${project_dir}/scripts/verify-source-editor-scroll-performance.swift" \
@@ -840,6 +884,8 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Git/GitBlameParser.swift" \
   "${project_dir}/scripts/verify-git-blame.swift" \
   -o "${project_dir}/build/verify-git-blame"
@@ -868,6 +914,8 @@ swiftc \
   "${project_dir}/RepoDeskApp/Process/CommandRunner.swift" \
   "${project_dir}/RepoDeskApp/Diagnostics/AppDiagnosticLogger.swift" \
   "${project_dir}/RepoDeskApp/Git/GitModels.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitThreeWayMergeDocument.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitMergeTextResolver.swift" \
   "${project_dir}/RepoDeskApp/Git/GitPushModels.swift" \
   "${project_dir}/RepoDeskApp/Git/GitBlameParser.swift" \
   "${project_dir}/RepoDeskApp/Git/GitDiffParser.swift" \

@@ -89,7 +89,7 @@ struct GitBranchComparison: Equatable, Sendable {
     let diffText: String
 }
 
-struct GitConflictFile: Equatable, Identifiable, Sendable {
+struct GitConflictFile: Equatable, Identifiable, Codable, Sendable {
     let path: String
     let ours: String
     let theirs: String
@@ -107,6 +107,11 @@ struct GitConflictFile: Equatable, Identifiable, Sendable {
     let hasOurs: Bool
     let hasTheirs: Bool
     let isBinary: Bool
+    var mergeDocument: GitThreeWayMergeDocument? = nil
+    var expectedWorktreeData: Data? = nil
+    var expectedIndex: Data? = nil
+    var deletesResult = false
+    var unsupportedReason: String? = nil
 
     init(
         path: String,
@@ -440,4 +445,9 @@ enum GitStatusCode: Character, Codable, Sendable {
     init(character: Character?) {
         self = character.flatMap(Self.init(rawValue:)) ?? .unknown
     }
+}
+
+struct GitMergeSessionSnapshot: Codable, Equatable, Sendable {
+    let identity: String
+    var files: [GitConflictFile]
 }

@@ -30,6 +30,7 @@ swiftc \
 
 cp "${project_dir}/Support/Info.plist" "${contents_dir}/Info.plist"
 cp "${project_dir}/Support/Resources/RepoDesk.icns" "${contents_dir}/Resources/RepoDesk.icns"
+ditto "${project_dir}/Support/Resources/MergeFonts" "${contents_dir}/Resources/MergeFonts"
 rm -rf "${contents_dir}/Resources/JavaLanguage"
 ditto "${project_dir}/build/JavaLanguageRuntime" "${contents_dir}/Resources/JavaLanguage"
 rm -rf "${contents_dir}/Resources/JarDecompiler"

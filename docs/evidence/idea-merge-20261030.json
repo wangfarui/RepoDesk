@@ -1,0 +1,748 @@
+{
+  "date": "2026-10-30",
+  "target": {
+    "name": "IntelliJ IDEA",
+    "version": "2025.2.1",
+    "build": "IU-252.25557.131"
+  },
+  "method": "REA package inventory and byte identity; bundled Fernflower JVM decompilation; selected javap verification. Inventory alone does not establish semantics or runtime behavior.",
+  "rea_summaries": [
+    {
+      "analysis_profile": null,
+      "authority": "shipped-artifact",
+      "confidence": "derived",
+      "environment": null,
+      "evidence_id": "ev_b7a70a2dd3b7f45c13697b824ac8fcd1eeac57c0b7f7d93b1eda635b048287c4",
+      "evidence_links": [
+        "ev_91d973f567494099e3308e11d5d7d38ccd6dc7a19b6d2174efa8e722979e24d4"
+      ],
+      "limitations": [
+        "Inspection derives bounded static hypotheses and next probes; it does not execute the artifact or claim format-specific semantics.",
+        "ZIP inventory lists central-directory entries only. Non-entry bytes, including an APK Signing Block before the central directory or a ZIP comment after it, are not occurrences."
+      ],
+      "locations": [
+        {
+          "kind": "artifact-path",
+          "path": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar"
+        }
+      ],
+      "normalized_result": {
+        "artifact": {
+          "path": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+          "sha256": "3f0965e21c373574b7a838033acc65f313a7afdd6aa9e775f2d0090baa51038e"
+        },
+        "coverage": {
+          "examined": 7859,
+          "exhausted": true,
+          "next_offset": null,
+          "status": "complete-within-view",
+          "total": 7859
+        },
+        "kind": "summary",
+        "limitations": [
+          "Inspection derives bounded static hypotheses and next probes; it does not execute the artifact or claim format-specific semantics.",
+          "ZIP inventory lists central-directory entries only. Non-entry bytes, including an APK Signing Block before the central directory or a ZIP comment after it, are not occurrences."
+        ],
+        "parent_digest": "91d973f567494099e3308e11d5d7d38ccd6dc7a19b6d2174efa8e722979e24d4",
+        "parent_evidence_id": "ev_91d973f567494099e3308e11d5d7d38ccd6dc7a19b6d2174efa8e722979e24d4",
+        "parent_operation": "inspect_artifact",
+        "summary": {
+          "available_counts": {
+            "edges": 2619,
+            "integrity_contradictions": 0,
+            "nodes": 2620,
+            "occurrences": 2620
+          },
+          "inspection": {
+            "coverage": {
+              "hypotheses_omitted": 0,
+              "hypotheses_retained": 0,
+              "next_probes_omitted": 0,
+              "next_probes_retained": 0,
+              "observations_omitted": 0,
+              "observations_retained": 1,
+              "status": "complete-within-substeps",
+              "substeps_completed": 1,
+              "unexplored_branches_omitted": 0,
+              "unexplored_branches_retained": 0
+            },
+            "unexplored_branches": []
+          },
+          "inventory_evidence_ids": [
+            "ev_fe674a1ba02cebf793ce9f6c775aae8af4f8293625ec6f2aad102dafa999a481"
+          ],
+          "limitation_count": 2,
+          "manifest": {
+            "edge_count": 2619,
+            "graph_sha256": "674e5408ccb985a68ab805f2edbdd984bc8b379e96ff9b5495502027747e61df",
+            "manifest_id": "agm_078a64c5f6be5d21c6a5c08607c117a90dd6b78279533960ece8cf7f7a4bb35d",
+            "node_count": 2620,
+            "occurrence_count": 2620,
+            "root_artifact_id": "art_fc10ef494ddd8c39cef96529a3d40ad90df0ac4a532a5efab98312c4eada23ea",
+            "root_format": "zip",
+            "root_sha256": "3f0965e21c373574b7a838033acc65f313a7afdd6aa9e775f2d0090baa51038e"
+          },
+          "observed_entry_kind_counts": {
+            "directory": 0,
+            "file": 2620,
+            "slice": 0,
+            "symlink": 0
+          },
+          "source_complete": true
+        },
+        "unknowns": [
+          "Inventory does not establish application runtime behavior or complete format-specific analysis."
+        ],
+        "view": {
+          "kind": "summary"
+        },
+        "view_digest": "69434c30fe70efc72dc665699564c7f135ea89c15f060171dc2286a06ca97c89"
+      },
+      "operation": "inspect_analysis_view",
+      "parameters": {
+        "parent_evidence_id": "ev_91d973f567494099e3308e11d5d7d38ccd6dc7a19b6d2174efa8e722979e24d4",
+        "view": {
+          "kind": "summary"
+        }
+      },
+      "predicate_type": "rea.analysis-view",
+      "provider": {
+        "id": "rea-analysis-view",
+        "name": "REA analysis view projection",
+        "version": "1"
+      },
+      "raw_result": null,
+      "relationship_coverage": null,
+      "subject": {
+        "architecture": null,
+        "digest": {
+          "sha256": "3f0965e21c373574b7a838033acc65f313a7afdd6aa9e775f2d0090baa51038e"
+        },
+        "format": "zip",
+        "local_path": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+        "name": "vcs-git.jar"
+      }
+    },
+    {
+      "analysis_profile": null,
+      "authority": "shipped-artifact",
+      "confidence": "derived",
+      "environment": null,
+      "evidence_id": "ev_8aaab0f3e43c286c4e76db5fdb927749b458276ec5f9b7aef0a063c7bb912bed",
+      "evidence_links": [
+        "ev_03e86b8fe1e5de6740a8dcbe9871d4df15ab95ab23f38bd6c9169fb1e49a7dc0"
+      ],
+      "limitations": [
+        "Inspection derives bounded static hypotheses and next probes; it does not execute the artifact or claim format-specific semantics.",
+        "ZIP inventory lists central-directory entries only. Non-entry bytes, including an APK Signing Block before the central directory or a ZIP comment after it, are not occurrences."
+      ],
+      "locations": [
+        {
+          "kind": "artifact-path",
+          "path": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar"
+        }
+      ],
+      "normalized_result": {
+        "artifact": {
+          "path": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+          "sha256": "9d6e8d7198460116f944e9604222ff124474c36979e3e3fdcddc12d8eb3a23f1"
+        },
+        "coverage": {
+          "examined": 154281,
+          "exhausted": true,
+          "next_offset": null,
+          "status": "complete-within-view",
+          "total": 154281
+        },
+        "kind": "summary",
+        "limitations": [
+          "Inspection derives bounded static hypotheses and next probes; it does not execute the artifact or claim format-specific semantics.",
+          "ZIP inventory lists central-directory entries only. Non-entry bytes, including an APK Signing Block before the central directory or a ZIP comment after it, are not occurrences."
+        ],
+        "parent_digest": "03e86b8fe1e5de6740a8dcbe9871d4df15ab95ab23f38bd6c9169fb1e49a7dc0",
+        "parent_evidence_id": "ev_03e86b8fe1e5de6740a8dcbe9871d4df15ab95ab23f38bd6c9169fb1e49a7dc0",
+        "parent_operation": "inspect_artifact",
+        "summary": {
+          "available_counts": {
+            "edges": 51465,
+            "integrity_contradictions": 0,
+            "nodes": 51350,
+            "occurrences": 51466
+          },
+          "inspection": {
+            "coverage": {
+              "hypotheses_omitted": 0,
+              "hypotheses_retained": 0,
+              "next_probes_omitted": 0,
+              "next_probes_retained": 0,
+              "observations_omitted": 0,
+              "observations_retained": 1,
+              "status": "complete-within-substeps",
+              "substeps_completed": 1,
+              "unexplored_branches_omitted": 0,
+              "unexplored_branches_retained": 0
+            },
+            "unexplored_branches": []
+          },
+          "inventory_evidence_ids": [
+            "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8"
+          ],
+          "limitation_count": 2,
+          "manifest": {
+            "edge_count": 51465,
+            "graph_sha256": "031b66c1d89f8f281db29dbae3c2b60c2d627d251c01bd8563e79564f4c63cd9",
+            "manifest_id": "agm_90a5f37be313f95205bcdafe88922554a1c0e209fca0ab9531ddf9bfb34bea75",
+            "node_count": 51350,
+            "occurrence_count": 51466,
+            "root_artifact_id": "art_523022ac808bdac0bf25b38da362d765c2b1c5dd10fa744144889cf1550a743e",
+            "root_format": "zip",
+            "root_sha256": "9d6e8d7198460116f944e9604222ff124474c36979e3e3fdcddc12d8eb3a23f1"
+          },
+          "observed_entry_kind_counts": {
+            "directory": 0,
+            "file": 51466,
+            "slice": 0,
+            "symlink": 0
+          },
+          "source_complete": true
+        },
+        "unknowns": [
+          "Inventory does not establish application runtime behavior or complete format-specific analysis."
+        ],
+        "view": {
+          "kind": "summary"
+        },
+        "view_digest": "1bab99cc659e82688d4c988e85cce4cf9462263f8932d8149bbda3491ddaf74b"
+      },
+      "operation": "inspect_analysis_view",
+      "parameters": {
+        "parent_evidence_id": "ev_03e86b8fe1e5de6740a8dcbe9871d4df15ab95ab23f38bd6c9169fb1e49a7dc0",
+        "view": {
+          "kind": "summary"
+        }
+      },
+      "predicate_type": "rea.analysis-view",
+      "provider": {
+        "id": "rea-analysis-view",
+        "name": "REA analysis view projection",
+        "version": "1"
+      },
+      "raw_result": null,
+      "relationship_coverage": null,
+      "subject": {
+        "architecture": null,
+        "digest": {
+          "sha256": "9d6e8d7198460116f944e9604222ff124474c36979e3e3fdcddc12d8eb3a23f1"
+        },
+        "format": "zip",
+        "local_path": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+        "name": "app-client.jar"
+      }
+    },
+    {
+      "analysis_profile": null,
+      "authority": "shipped-artifact",
+      "confidence": "derived",
+      "environment": null,
+      "evidence_id": "ev_4f72d775bc1ce109b5f63f8da26ed24e9aecd0c013d13e38d42705adfc6db811",
+      "evidence_links": [
+        "ev_6bc8947b201e4ff84fb0f8cd6fedeef0fda9ef1c334e23503f44f4cff8df1bda"
+      ],
+      "limitations": [
+        "Inspection derives bounded static hypotheses and next probes; it does not execute the artifact or claim format-specific semantics.",
+        "ZIP inventory lists central-directory entries only. Non-entry bytes, including an APK Signing Block before the central directory or a ZIP comment after it, are not occurrences."
+      ],
+      "locations": [
+        {
+          "kind": "artifact-path",
+          "path": "/Applications/IntelliJ IDEA.app/Contents/lib/modules/intellij.platform.vcs.impl.jar"
+        }
+      ],
+      "normalized_result": {
+        "artifact": {
+          "path": "/Applications/IntelliJ IDEA.app/Contents/lib/modules/intellij.platform.vcs.impl.jar",
+          "sha256": "6540096394ca5d5448376ed96c6fd1f9863ebbfaae1ca33c93537848e73bc613"
+        },
+        "coverage": {
+          "examined": 8078,
+          "exhausted": true,
+          "next_offset": null,
+          "status": "complete-within-view",
+          "total": 8078
+        },
+        "kind": "summary",
+        "limitations": [
+          "Inspection derives bounded static hypotheses and next probes; it does not execute the artifact or claim format-specific semantics.",
+          "ZIP inventory lists central-directory entries only. Non-entry bytes, including an APK Signing Block before the central directory or a ZIP comment after it, are not occurrences."
+        ],
+        "parent_digest": "6bc8947b201e4ff84fb0f8cd6fedeef0fda9ef1c334e23503f44f4cff8df1bda",
+        "parent_evidence_id": "ev_6bc8947b201e4ff84fb0f8cd6fedeef0fda9ef1c334e23503f44f4cff8df1bda",
+        "parent_operation": "inspect_artifact",
+        "summary": {
+          "available_counts": {
+            "edges": 2692,
+            "integrity_contradictions": 0,
+            "nodes": 2693,
+            "occurrences": 2693
+          },
+          "inspection": {
+            "coverage": {
+              "hypotheses_omitted": 0,
+              "hypotheses_retained": 0,
+              "next_probes_omitted": 0,
+              "next_probes_retained": 0,
+              "observations_omitted": 0,
+              "observations_retained": 1,
+              "status": "complete-within-substeps",
+              "substeps_completed": 1,
+              "unexplored_branches_omitted": 0,
+              "unexplored_branches_retained": 0
+            },
+            "unexplored_branches": []
+          },
+          "inventory_evidence_ids": [
+            "ev_e2e06f117f601f6de625c6e7d929ee64adc3a08404308394dda2d254570e7e1b"
+          ],
+          "limitation_count": 2,
+          "manifest": {
+            "edge_count": 2692,
+            "graph_sha256": "e1da2ececa74b129e57867bdef054c4c0f475cfe4e8c25eda37c6a73da6f5f69",
+            "manifest_id": "agm_2890d8f0bd9c5872ab8a85b969a332ef14eab44fdc7b55783a0f2fdbbdcd7ffc",
+            "node_count": 2693,
+            "occurrence_count": 2693,
+            "root_artifact_id": "art_82cee8e5fe91156089f5f53a97fb7799a5963df5ef14b79749e0c82bea0b94f8",
+            "root_format": "zip",
+            "root_sha256": "6540096394ca5d5448376ed96c6fd1f9863ebbfaae1ca33c93537848e73bc613"
+          },
+          "observed_entry_kind_counts": {
+            "directory": 0,
+            "file": 2693,
+            "slice": 0,
+            "symlink": 0
+          },
+          "source_complete": true
+        },
+        "unknowns": [
+          "Inventory does not establish application runtime behavior or complete format-specific analysis."
+        ],
+        "view": {
+          "kind": "summary"
+        },
+        "view_digest": "02067d8413d43d9a4c6e451252523083b70a23a93907cbe3139ae9f1af3c689b"
+      },
+      "operation": "inspect_analysis_view",
+      "parameters": {
+        "parent_evidence_id": "ev_6bc8947b201e4ff84fb0f8cd6fedeef0fda9ef1c334e23503f44f4cff8df1bda",
+        "view": {
+          "kind": "summary"
+        }
+      },
+      "predicate_type": "rea.analysis-view",
+      "provider": {
+        "id": "rea-analysis-view",
+        "name": "REA analysis view projection",
+        "version": "1"
+      },
+      "raw_result": null,
+      "relationship_coverage": null,
+      "subject": {
+        "architecture": null,
+        "digest": {
+          "sha256": "6540096394ca5d5448376ed96c6fd1f9863ebbfaae1ca33c93537848e73bc613"
+        },
+        "format": "zip",
+        "local_path": "/Applications/IntelliJ IDEA.app/Contents/lib/modules/intellij.platform.vcs.impl.jar",
+        "name": "intellij.platform.vcs.impl.jar"
+      }
+    }
+  ],
+  "verified_top_level_classes": [
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+      "entry": "git4idea/merge/GitConflictResolver.class",
+      "sha256": "8724c62733814c66c59c0deff19c013518b7662ae34a9912d22f0c08e420600f",
+      "rea_inventory_evidence_id": "ev_fe674a1ba02cebf793ce9f6c775aae8af4f8293625ec6f2aad102dafa999a481",
+      "occurrence_id": "occ_5460e9bed96b6647eb6af2aefa86d031ad8228a11288f477e8c7533c8b9ebbd2",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+      "entry": "git4idea/merge/GitMergeProvider.class",
+      "sha256": "9b011444212c75c437f5f2ec735457517166f8bc968a39d192e0e6f712fe3bfe",
+      "rea_inventory_evidence_id": "ev_fe674a1ba02cebf793ce9f6c775aae8af4f8293625ec6f2aad102dafa999a481",
+      "occurrence_id": "occ_7eb71065b41c1596eec33cc7fc7fb66f160df55e0e70e788e01f3819d9ccb868",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+      "entry": "git4idea/merge/GitMergeUtil.class",
+      "sha256": "d6c6586a9ce40a4089dd3ccf47f8e0989048eb39208c850c92100d1aab510ca8",
+      "rea_inventory_evidence_id": "ev_fe674a1ba02cebf793ce9f6c775aae8af4f8293625ec6f2aad102dafa999a481",
+      "occurrence_id": "occ_75fdd7fb6e5ca24c81435bd7cdae90bfcb9303894f48f43a20a8e28365b4a0c3",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+      "entry": "git4idea/repo/GitConflict.class",
+      "sha256": "b9e05f6a182a5f735f3c702a8328ba5d62a3143b221b4d9a6c847d3e6151085e",
+      "rea_inventory_evidence_id": "ev_fe674a1ba02cebf793ce9f6c775aae8af4f8293625ec6f2aad102dafa999a481",
+      "occurrence_id": "occ_166ad3f0f25cd140d3665abe79e45f92ca2a2815c0384f978e7056374ac25ec7",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+      "entry": "git4idea/branch/GitMergeOperation.class",
+      "sha256": "e4e3debc003440bd73d473b1e1c6588b880aad62755613552a708df48e7b7169",
+      "rea_inventory_evidence_id": "ev_fe674a1ba02cebf793ce9f6c775aae8af4f8293625ec6f2aad102dafa999a481",
+      "occurrence_id": "occ_583928190974ba92ce150b634db607cc17417c8a86f22cae0ca0e416c626b0c4",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+      "entry": "git4idea/merge/GitMergeCommittingConflictResolver.class",
+      "sha256": "64902dfa8d0ac19fd715040edd5d5e2cfe207a41653988229f3f3ebec77f62b1",
+      "rea_inventory_evidence_id": "ev_fe674a1ba02cebf793ce9f6c775aae8af4f8293625ec6f2aad102dafa999a481",
+      "occurrence_id": "occ_654fa9ec786b972922178074e80912d5bd41e4162add273d453b30e52ee78580",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/plugins/vcs-git/lib/vcs-git.jar",
+      "entry": "git4idea/merge/GitMerger.class",
+      "sha256": "6470bd352a98fb763d056bd10cca952713de1c40f670093adbc981515f947fe7",
+      "rea_inventory_evidence_id": "ev_fe674a1ba02cebf793ce9f6c775aae8af4f8293625ec6f2aad102dafa999a481",
+      "occurrence_id": "occ_f7f1e5ee8f3505a6c25066d75d3b13d540168dc8737bc229d5f330bc071785fb",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/BinaryMergeRequest.class",
+      "sha256": "737b5702906987cf99b505c2151f79e0bd90077b40979f583b38f0bcaa61ac99",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_3ce763625ef2167906d7106e6b2a4ed6114e0bc987d7543a7b0c2e3267fc48c9",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/ConflictType.class",
+      "sha256": "818108d6c4f12539c89f4d2b355e3ed45852f7afa156f1ec870ec009e37877bd",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_fb538fdd393db7f10218620e23156e3bb39a54b89d3a46998455d38fe03de01b",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeCallback.class",
+      "sha256": "c609a406d55867527510d52898855a8c3e3c7544317dc1bef73e4d33bf5a12ae",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_b783376a5f8cba7451897e5df87123c5f6274a3b61283b4b1cdb1fec833128ec",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeContext.class",
+      "sha256": "493408cf43ed77e6b12b44903d3d4ed2b8ed1b6a0ec047ed11569a982f0f18c4",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_fc1e8b16889a23f24fafc8bd12d5b4796c43649e99a0ce304c88d42bff950a36",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeRequest.class",
+      "sha256": "cc8a3145ac12e842221eb0e0a79f5a6de21487c5ea08274efb6fc83f53bee961",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_8e47ac404ba5b8c820746d8ab24ea66f62a8eda618d3b368ad7812283a6eb683",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeRequestProducer.class",
+      "sha256": "8f1b3303676da4f091fe518236f517d597b90d9ce99c36a44151e533eb34c758",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_eb560d6cf3872cc904084c34d92adb0b6228956d032cc0dbb36cdc106f499464",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeResult.class",
+      "sha256": "4b5414c0ef547f51823edb129fea8ab3745f2aeacd71e91312c5a7cb8c5d28bd",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_9facee320f593ae4bc85c7c02b3345842c1394b9180356d7e7c02f31493687da",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeTool.class",
+      "sha256": "569beeba94f6861a79c9522840e91bff57fdbc92cee0bc86b7adc12b94ec4f83",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_c9536ab045d26c9cf71300ebbacefa37a735e58ac74fb132681081394a44f190",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/TextMergeRequest.class",
+      "sha256": "46012088929873616f0b941f24e01e7694503d9d564a532adcc7b5a824ed77a8",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_50492e937826ab74a3c70d23086a70a5b9d7cfe592abe2f0e268aefa7e9773f8",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/ThreesideMergeRequest.class",
+      "sha256": "05bc78a45a6c5c0cb1e8f1216e6b22a91e68022e36eddf52fe10c48243c4954d",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_74fc22a3c0e483211cf150876e5e859bdcabbf5c494aca8cef4dfb553e97ce87",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/external/AutomaticExternalMergeTool.class",
+      "sha256": "ca012b7dd7ee64122b27b36d4054386ba471266722145bcd3212e664a0dadd1c",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_9af0dbf97ab64422464a7826ab5299a096ffb52e73e0ded88f42a53b8f189740",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/BinaryMergeTool.class",
+      "sha256": "68f36994ad3b2fe8641671010e4a95eaf3b128c854b747dc956a2bf085a6d753",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_1127d150cb70a9ca3e512e634f782c18bb52ad4ac7176b1576006e906413cb0d",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/ChangeReferenceProcessor.class",
+      "sha256": "33196b3756d0b658e5eb8d98d4f6fbad92bf7cacd6a6fc47e28d48844428a90b",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_c71a9e8cd7ca57ca5260039245933f4af850621ea32b27f79bccca2b5ad3d544",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/ErrorMergeTool.class",
+      "sha256": "ee78ccddbf50d97b52cbd49d8070147c05c54d781c1d7dc9c8451137940c317e",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_13e4566fe01b1cc90db392c034680bb15df717fc7c9b743aefb4d22c0851d289",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/LangSpecificMergeConflictResolver.class",
+      "sha256": "438c4c9d9f4303fbbfe15be2fd4901a64bca185bca6dc5634e62e2185f417eeb",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_e4fac4e201779dbedebf431f0d907483e927908d2ab8f6a0bd2a600c897eeccd",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/LangSpecificMergeConflictResolverWrapper.class",
+      "sha256": "88565215846d703bb136f243c43c90e045b1a5083691b73a7b3139003a6dce26",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_9b190174fce2481d2a022b6e4a30a6a8eec6c174f0d2303fa994055b4e1883bc",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/LangSpecificMergeContext.class",
+      "sha256": "44ea85b1f20697f262ae24f5e196d192b35107a8b54e8bc73caa35c8d8a71034",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_f0af9213b152326048609ec242e20b61cf05f2c89af16c836e58bc862e68a595",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeContextEx.class",
+      "sha256": "ad6a4fcafc02acfbcb8a1feb4f1af53fdccc96d4e45428dfef042925edf8f30c",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_0f8898dc99c9048672434cd9569e2de7af2a2a08d4f02f637c064d420df949fe",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeImportUtil.class",
+      "sha256": "dbc9670750ebf153db26a01a5528299f582173dbfc6e7311cf599d2882dfc7ec",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_117f9ac9158545157b97febb2ee4fa0b90c91ab15c709f055ed658850c22d299",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeLineFragmentsWithImportMetadata.class",
+      "sha256": "ae0d3b0c446a123e9e49974f25f9d7441032d474ff7f07608c43466b4201fb9c",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_ba7d7017c84c129f13b17e82961a1947a9c46f468f6403501b7d11501c7750d3",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeModelBase.class",
+      "sha256": "04d7ce51cd13264c6d6eeac3b197feadbff8b599486fcb71a6d2da0fc734847a",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_e9ddb54b676a462fac7ae1775e619d2d526059279a36a1384e22aedcb27f4594",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeReferenceData.class",
+      "sha256": "86359ca027b83861a340e2bc3bde70c5db83a6e73fb90a05ec4ada068fb03955",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_1f60310a6ef93017d9bb07f33454d159b4f84308a77733e66ce96d41460d4af2",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeRequestProcessor.class",
+      "sha256": "55a0bd87257edd716340a71add7934b6538bd77ce89a77d8bb1afd0d659b7ef8",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_238253799f7f55822189d20b0e7f6c561f510efa0f55f56d3b7a2269745d7f6d",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeStatisticsAggregator.class",
+      "sha256": "aad1bed72ddb9de9801a4da38b8f1c20bae00adee26f497dbf67d9f20a86ccd1",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_45bfb40c4749f6bb90c2b375133c0eb719c87c1c1e51af0dddf8fd9f104717d0",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeThreesideViewer.class",
+      "sha256": "e0586b10d271bddf854a6775eba61200cf453f0fa4544fe8980771a1766f2201",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_a3024b8a886a5dc68f4a154bdc6cb58a9cfdd5e471823b03a4c82d86e575e44f",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeUtil.class",
+      "sha256": "c917baf1572fa3c936e2b6c8d24ca9f86abd6964758fd553da5a68dbe373eaaf",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_c69ce9ceb8d7a7066efffc7e61c7b84608256f4a1fd38d861b9f36e0d8c63fe0",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MergeWindow.class",
+      "sha256": "9680762c181d1bd5ab6e637a932e85f143c34895f67ff4abea099d838a667db2",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_3561719183a0578bb62defbe7fdc9c343f4a3d3713e1a7965838465b43acb4d2",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/MessageMergeViewer.class",
+      "sha256": "12221d48e66f614c1a1e04823585bd167d05409475587a2f7a6b37742cd90d9f",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_8c70d50256a26aea97127a269c15082a2f503df0c80e4d971c2b76250fdc4b29",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/ProcessorData.class",
+      "sha256": "24aa683315c6283adfdc5b046cc5b22984ad983397dacf3200d517a186f560c5",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_682253c58f34d2a10e080eff86ce230590437fdf3453d904ae83580233d52f94",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/ResolveConflictsInImportsToggleAction.class",
+      "sha256": "29577cdb0e031368b25f6deffda9c06866e55bcbe78569877b46cead49170853",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_2e4f42fc4b19f5d62714167bd2bf1258a8de52459c6b841fa516e4e67545588c",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/TextMergeChange.class",
+      "sha256": "f1a03460361083f678541f073ede720bf9e5f589b186f23654d450484d4217fe",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_45dbb1dace42c6f14a020a07b1ddbce15291c1a947c392954104a9cb9848a2e2",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/TextMergeTool.class",
+      "sha256": "e207fb929f9837347cf512bfa7c7c77a0f8d2228061ebf7bf43811cc897497df",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_e76a59e2bd8848a1c108a25c328cf18bbc2c64bc91996f08181d875577bab394",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/merge/TextMergeViewer.class",
+      "sha256": "c0104ffc004229ff82ec87463472aa885ab8f20d0e2b4f1e8eff21006ba6d4a4",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_37cd6e15914789ccf513a8eb8c11cc591f64d8e0e3f1714bc7f41ceaa3851084",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/comparison/ComparisonMergeUtil.class",
+      "sha256": "096abd131f8ee106bff485451a8eaf3705bb7b65b30f3d1d198742dae91fe601",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_90f67f1fe01e9c21569f0508fc35569f32404f9ab12b2ad71fe1a88e8a306f61",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/requests/BinaryMergeRequestImpl.class",
+      "sha256": "33da856447e47825afab0a565d4e8d24b3e2643a259b23a2f1bb3134026d9cc8",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_11bf352f3f063992c96c4d6e195e6499c98d9426397650ea366f56817a3badf8",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/requests/TextMergeRequestImpl.class",
+      "sha256": "bb418ef52f57ff0a79b8df69f5e70d28a9f527f0612fa5b62dbd6a699a3cb1d4",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_d002a53f34f9ee16ef8943a0165b139bb5a774debfbbd8f8e0577dc18815896b",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/app-client.jar",
+      "entry": "com/intellij/diff/tools/simple/ThreesideTextDiffViewerEx.class",
+      "sha256": "7c556c723553b3971d0894e110eb185486aa982a5d30f63b084b9b1e89abf091",
+      "rea_inventory_evidence_id": "ev_4100207fd98062a1e1be00817e83764216dcb6f758704ecb203723c0dd7adeb8",
+      "occurrence_id": "occ_2acde029795a3a18edef6ce846855140041ff5131e3de5ac67dac58cde052450",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/modules/intellij.platform.vcs.impl.jar",
+      "entry": "com/intellij/openapi/vcs/merge/MergeConflictManager.class",
+      "sha256": "55115032f5fea641b98e5d5026a5fd5bad79e24b6510df1e0a2aabce1dcf4759",
+      "rea_inventory_evidence_id": "ev_e2e06f117f601f6de625c6e7d929ee64adc3a08404308394dda2d254570e7e1b",
+      "occurrence_id": "occ_5d202f18a11f099d9c0aeeba230e7412f955ba6a55c720b9a89d84eb6ea4bedf",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/modules/intellij.platform.vcs.impl.jar",
+      "entry": "com/intellij/openapi/vcs/merge/MergeConflictsTreeTable.class",
+      "sha256": "ad41a22c81964bde6b7cc9abe674374ac12a83d9f0aa729a606ff98a6173135c",
+      "rea_inventory_evidence_id": "ev_e2e06f117f601f6de625c6e7d929ee64adc3a08404308394dda2d254570e7e1b",
+      "occurrence_id": "occ_54d6cb22d26e05230366d02fdc623c3ae3f99670eacbdfd61fac1603bd9298ab",
+      "hash_status": "verified"
+    },
+    {
+      "jar": "/Applications/IntelliJ IDEA.app/Contents/lib/modules/intellij.platform.vcs.impl.jar",
+      "entry": "com/intellij/openapi/vcs/merge/MultipleFileMergeDialog.class",
+      "sha256": "4706fb9d2eb8156bb7e2bb7a60ce196d629114792291be764ff828f01723028d",
+      "rea_inventory_evidence_id": "ev_e2e06f117f601f6de625c6e7d929ee64adc3a08404308394dda2d254570e7e1b",
+      "occurrence_id": "occ_240ecaf56c45961e260593f130cefff8cd179b4c5653976480110add041274eb",
+      "hash_status": "verified"
+    }
+  ],
+  "local_analysis_directory": "/private/tmp/repodesk-idea-merge-20261030",
+  "raw_evidence_bundles": [
+    "/private/tmp/repodesk-idea-git-rea-20261030.json",
+    "/private/tmp/repodesk-idea-platform-rea-20261030.json",
+    "/private/tmp/repodesk-idea-vcs-rea-20261030.json"
+  ],
+  "limitations": [
+    "Static analysis only; no interactive IDE replay.",
+    "One Fernflower enum simplification diagnostic was emitted. Critical viewer and dialog entry points additionally inspected with javap.",
+    "2026.2 documented workflow is not assumed to exist in installed 2025.2.1."
+  ]
+}

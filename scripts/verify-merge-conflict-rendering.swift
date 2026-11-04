@@ -10,6 +10,8 @@ private struct VerificationError: Error {
 @MainActor
 enum VerifyMergeConflictRendering {
     static func main() throws {
+        _ = NSApplication.shared
+        GitMergeAppearance.registerFonts(in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Support/Resources/MergeFonts"))
         let repository = RegisteredRepository(
             displayName: "online.base.item.service",
             relativePath: ".",
@@ -59,8 +61,98 @@ enum VerifyMergeConflictRendering {
             filename: "merge-conflict-editor.png",
             minimumByteCount: 45_000
         )
+        try render(
+            MergeConflictEditorSheet(
+                file: longConflictFile,
+                yoursBranch: "test",
+                theirsBranch: "uat",
+                fontSize: 13,
+                apply: { _ in true }
+            ),
+            size: NSSize(width: 1100, height: 600),
+            filename: "merge-conflict-editor-minimum.png",
+            minimumByteCount: 30_000
+        )
+        try verifyResizablePresentation(
+            MergeConflictResolverSheet(appState: state),
+            minimumSize: NSSize(width: 780, height: 520)
+        )
+        try verifyResizablePresentation(
+            MergeConflictEditorSheet(
+                file: longConflictFile,
+                yoursBranch: "test",
+                theirsBranch: "uat",
+                fontSize: 13,
+                apply: { _ in true }
+            ),
+            minimumSize: NSSize(width: 1100, height: 600)
+        )
         try verifyHorizontalScrollingPerformance()
         print("Merge conflict rendering verification passed")
+    }
+
+    private static func verifyResizablePresentation<Content: View>(
+        _ content: Content,
+        minimumSize: NSSize
+    ) throws {
+        let controller = NSHostingController(rootView: content)
+        let parent = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1400, height: 850),
+            styleMask: [.titled, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        parent.isReleasedWhenClosed = false
+        parent.alphaValue = 0.01
+        parent.contentView = NSView(frame: parent.contentLayoutRect)
+        let sheet = NSWindow(
+            contentRect: NSRect(origin: .zero, size: minimumSize),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        sheet.isReleasedWhenClosed = false
+        sheet.animationBehavior = .none
+        sheet.contentViewController = controller
+        sheet.alphaValue = 0.01
+        parent.beginSheet(sheet)
+        defer {
+            parent.endSheet(sheet)
+            sheet.close()
+            parent.close()
+        }
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
+        guard sheet.sheetParent === parent,
+              let sheetContent = sheet.contentView else {
+            throw VerificationError(message: "Conflict sheet was not presented.")
+        }
+        guard sheet.styleMask.contains(.resizable),
+              sheet.contentMinSize == minimumSize else {
+            throw VerificationError(message: "Conflict sheet has no native resizing or minimum size.")
+        }
+
+        // Verify layout proposals on the same content without relying on sheet animations in a CLI process.
+        let expandedSize = NSSize(width: minimumSize.width + 200, height: minimumSize.height + 120)
+        for size in [
+            minimumSize,
+            NSSize(width: expandedSize.width, height: minimumSize.height),
+            expandedSize,
+            NSSize(width: minimumSize.width, height: expandedSize.height),
+            minimumSize
+        ] {
+            let fittedSize = controller.sizeThatFits(in: size)
+            sheetContent.setFrameSize(size)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.1))
+            sheetContent.layoutSubtreeIfNeeded()
+            guard fittedSize.width <= size.width + 1,
+                  fittedSize.height <= size.height + 1 else {
+                throw VerificationError(message: "Conflict sheet content did not fit \(size): \(fittedSize).")
+            }
+        }
+        guard sheet.sheetParent === parent, sheet.contentView === sheetContent else {
+            throw VerificationError(message: "Resizing replaced the presented conflict sheet.")
+        }
+        print("Merge conflict sheet configuration and flexible layout passed (minimum \(minimumSize))")
     }
 
     private static var longConflictFile: GitConflictFile {
@@ -103,7 +195,8 @@ enum VerifyMergeConflictRendering {
         filename: String,
         minimumByteCount: Int
     ) throws {
-        let hostingView = NSHostingView(rootView: content)
+        let hostingController = NSHostingController(rootView: content)
+        let hostingView = hostingController.view
         hostingView.frame = NSRect(origin: .zero, size: size)
         let window = NSWindow(
             contentRect: hostingView.frame,
@@ -111,15 +204,16 @@ enum VerifyMergeConflictRendering {
             backing: .buffered,
             defer: false
         )
-        window.contentView = hostingView
+        window.contentViewController = hostingController
         hostingView.layoutSubtreeIfNeeded()
         window.layoutIfNeeded()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
         hostingView.layoutSubtreeIfNeeded()
         hostingView.displayIfNeeded()
-        guard hostingView.fittingSize.width <= size.width + 1,
-              hostingView.fittingSize.height <= size.height + 1 else {
-            throw VerificationError(message: "\(filename) overflowed its target size.")
+        let fittedSize = hostingController.sizeThatFits(in: size)
+        guard fittedSize.width <= size.width + 1,
+              fittedSize.height <= size.height + 1 else {
+            throw VerificationError(message: "\(filename) overflowed its target size: \(fittedSize).")
         }
         guard let bitmap = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds) else {
             throw VerificationError(message: "Could not create \(filename).")
@@ -134,7 +228,7 @@ enum VerifyMergeConflictRendering {
                 .appendingPathComponent("build/\(filename)"),
             options: .atomic
         )
-        window.contentView = nil
+        window.contentViewController = nil
     }
 
     private static func verifyHorizontalScrollingPerformance() throws {
@@ -162,44 +256,26 @@ enum VerifyMergeConflictRendering {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.15))
         hostingView.layoutSubtreeIfNeeded()
 
-        let conflictScrollers = descendants(of: hostingView).compactMap { $0 as? NSScrollView }
-            .filter { $0.identifier?.rawValue.contains(".Conflict.") == true }
-        guard conflictScrollers.count == 3,
-              conflictScrollers.allSatisfy({ ($0.documentView?.frame.height ?? .infinity) < 100 }) else {
-            throw VerificationError(message: "Single-line conflicts expanded to the entire ancestor file height.")
+        let panes = descendants(of: hostingView).compactMap { $0 as? NSScrollView }.filter {
+            $0.identifier?.rawValue.hasPrefix("RepoDesk.MergeConflictEditor.") == true
         }
-
-        let scrollViewsByPane = Dictionary(uniqueKeysWithValues: [
-            "yours",
-            "result",
-            "theirs"
-        ].map { pane in
-            (
-                pane,
-                descendants(of: hostingView)
-                    .compactMap { $0 as? NSScrollView }
-                    .filter {
-                        $0.identifier?.rawValue.contains(
-                            "MergeConflictEditor.\(pane)."
-                        ) == true
-                    }
-            )
-        })
-        guard let yoursScrollViews = scrollViewsByPane["yours"],
-              let resultScrollViews = scrollViewsByPane["result"],
-              let theirsScrollViews = scrollViewsByPane["theirs"],
-              yoursScrollViews.count >= 10,
-              !resultScrollViews.isEmpty,
-              !theirsScrollViews.isEmpty,
-              let source = yoursScrollViews.max(by: {
-                  ($0.documentView?.frame.width ?? 0) < ($1.documentView?.frame.width ?? 0)
-              }) else {
-            throw VerificationError(message: "Could not find merge conflict horizontal scrollers.")
+        guard panes.count == 3,
+              let source = panes.first(where: { $0.identifier?.rawValue.contains(".yours.") == true }),
+              let resultPane = panes.first(where: { $0.identifier?.rawValue.contains(".result.") == true }),
+              let theirsPane = panes.first(where: { $0.identifier?.rawValue.contains(".theirs.") == true }),
+              let yoursText = source.documentView as? NSTextView,
+              let resultText = resultPane.documentView as? NSTextView,
+              let theirsText = theirsPane.documentView as? NSTextView else {
+            throw VerificationError(message: "Expected three continuous merge documents.")
         }
-        let maximumOffset = max(
-            0,
-            (source.documentView?.frame.width ?? 0) - source.contentView.bounds.width
-        )
+        let fixture = conflictFile(totalLineCount: performanceLineCount)
+        guard yoursText.string == fixture.ours, theirsText.string == fixture.theirs,
+              resultText.string == fixture.base, resultText.isEditable,
+              !yoursText.isEditable, !theirsText.isEditable else {
+            throw VerificationError(message: "Merge sources or result editability are incorrect.")
+        }
+        let minimumOffset: CGFloat = 0
+        let maximumOffset = max(minimumOffset, yoursText.frame.maxX - source.contentView.bounds.width)
         guard maximumOffset > 100 else {
             throw VerificationError(message: "Merge conflict scrolling fixture did not overflow.")
         }
@@ -207,18 +283,17 @@ enum VerifyMergeConflictRendering {
         let startedAt = ProcessInfo.processInfo.systemUptime
         for step in 0..<6 {
             let progress = CGFloat(step) / 5
-            source.contentView.scroll(to: NSPoint(x: maximumOffset * progress, y: 0))
+            source.contentView.scroll(to: NSPoint(x: minimumOffset + (maximumOffset - minimumOffset) * progress, y: 0))
             source.reflectScrolledClipView(source.contentView)
             hostingView.layoutSubtreeIfNeeded()
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.001))
-            let synchronizedOffsets = (yoursScrollViews + resultScrollViews + theirsScrollViews)
-                .map { $0.contentView.bounds.origin.x }
-            guard let minimumOffset = synchronizedOffsets.min(),
-                  let maximumSynchronizedOffset = synchronizedOffsets.max(),
-                  maximumSynchronizedOffset - minimumOffset < 1 else {
-                throw VerificationError(
-                    message: "Merge conflict panes did not share a horizontal offset."
-                )
+            for pane in panes {
+                let minOffset: CGFloat = 0
+                let maxOffset = max(minOffset, (pane.documentView?.frame.maxX ?? 0) - pane.contentView.bounds.width)
+                let expected = max(minOffset, min(minimumOffset + (maximumOffset - minimumOffset) * progress, maxOffset))
+                guard abs(pane.contentView.bounds.minX - expected) < 1 else {
+                    throw VerificationError(message: "Continuous merge panes did not share clamped horizontal scrolling.")
+                }
             }
         }
         hostingView.displayIfNeeded()
@@ -235,6 +310,36 @@ enum VerifyMergeConflictRendering {
                     elapsed
                 )
             )
+        }
+        source.contentView.scroll(to: NSPoint(x: minimumOffset, y: 200))
+        source.reflectScrolledClipView(source.contentView)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.03))
+        guard panes.allSatisfy({ abs($0.contentView.bounds.minY - 200) < 1 }) else {
+            throw VerificationError(message: "Source-aware vertical scroll lost the within-line offset.")
+        }
+        resultText.setSelectedRange(NSRange(location: 0, length: 0))
+        resultText.insertText("edited\n", replacementRange: NSRange(location: 0, length: 0))
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        guard resultText.string.hasPrefix("edited\n"), yoursText.string == fixture.ours, theirsText.string == fixture.theirs,
+              resultText.undoManager?.canUndo == true else {
+            throw VerificationError(message: "Continuous edit did not preserve sources or register undo.")
+        }
+        resultText.undoManager?.undo()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        guard resultText.string == fixture.base else {
+            throw VerificationError(message: "Native editor undo did not restore the continuous result.")
+        }
+        resultText.setSelectedRange(NSRange(location: 0, length: 0))
+        resultText.setMarkedText("中文", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: 0, length: 0))
+        resultText.unmarkText()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        guard resultText.string.hasPrefix("中文"), resultText.undoManager?.canUndo == true else {
+            throw VerificationError(message: "Input method completion was not committed to merge state.")
+        }
+        resultText.undoManager?.undo()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        guard resultText.string == fixture.base else {
+            throw VerificationError(message: "Input method undo did not restore merge state.")
         }
         window.contentView = nil
     }

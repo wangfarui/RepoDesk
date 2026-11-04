@@ -1,6 +1,7 @@
 import Foundation
 
 protocol GitRepositoryOperating: Sendable {
+    var supportsMergeSessions: Bool { get }
     func createCommit(repositoryURL: URL, message: String) async throws -> GitCreatedCommit
     func createCommit(
         repositoryURL: URL,
@@ -28,6 +29,7 @@ protocol GitRepositoryOperating: Sendable {
     func abortMerge(repositoryURL: URL) async throws
     func continueMerge(repositoryURL: URL) async throws
     func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile]
+    func mergeSession(repositoryURL: URL) async throws -> GitMergeSessionSnapshot?
     func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws
     func saveConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws
     func restoreConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws
@@ -39,6 +41,7 @@ protocol GitRepositoryOperating: Sendable {
 }
 
 extension GitRepositoryOperating {
+    var supportsMergeSessions: Bool { false }
     func createCommit(
         repositoryURL: URL,
         message: String,
@@ -71,6 +74,7 @@ extension GitRepositoryOperating {
     func deleteBranch(repositoryURL: URL, branch: GitBranch) async throws {}
     func abortMerge(repositoryURL: URL) async throws {}
     func continueMerge(repositoryURL: URL) async throws {}
+    func mergeSession(repositoryURL: URL) async throws -> GitMergeSessionSnapshot? { nil }
     func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile] { [] }
     func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws {}
     func saveConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws {}
@@ -168,6 +172,7 @@ enum GitRepositoryOperationError: LocalizedError, Equatable, Sendable {
 }
 
 struct SystemGitRepositoryOperator: GitRepositoryOperating {
+    var supportsMergeSessions: Bool { true }
     private let commandRunner: any CommandRunning
     private let gitURL: URL
 
@@ -524,11 +529,18 @@ struct SystemGitRepositoryOperator: GitRepositoryOperating {
     }
 
     func abortMerge(repositoryURL: URL) async throws {
+        let storeURL = try await mergeStoreURL(repositoryURL)
         _ = try await runGit(["merge", "--abort"], operation: .abortMerge, repositoryURL: repositoryURL)
+        try? FileManager.default.removeItem(at: storeURL)
     }
 
     func continueMerge(repositoryURL: URL) async throws {
+        guard try await conflictFiles(repositoryURL: repositoryURL).isEmpty else {
+            throw mergeError("仍有未解决的 Git index 冲突，请刷新后继续。")
+        }
+        let storeURL = try await mergeStoreURL(repositoryURL)
         _ = try await runGit(["-c", "core.editor=true", "merge", "--continue"], operation: .continueMerge, repositoryURL: repositoryURL)
+        try? FileManager.default.removeItem(at: storeURL)
     }
 
     func conflictFiles(repositoryURL: URL) async throws -> [GitConflictFile] {
@@ -544,54 +556,187 @@ struct SystemGitRepositoryOperator: GitRepositoryOperating {
             let oursData = try await conflictBlob(stage: 2, path: path, repositoryURL: repositoryURL)
             let theirsData = try await conflictBlob(stage: 3, path: path, repositoryURL: repositoryURL)
             let fileURL = repositoryURL.appendingPathComponent(path)
-            let resultData = try? Data(contentsOf: fileURL)
+            let resultData = try mergeWorktreeData(fileURL)
             let isBinary = [baseData, oursData, theirsData, resultData]
                 .compactMap { $0 }
                 .contains(where: Self.isBinaryData)
             let result = resultData.flatMap(Self.text(from:)) ?? ""
-            files.append(
-                GitConflictFile(
+            var file = GitConflictFile(
                     path: path,
                     ours: Self.text(from: oursData) ?? "",
                     theirs: Self.text(from: theirsData) ?? "",
                     result: result,
                     isResolved: false,
                     base: Self.text(from: baseData),
-                    baseData: isBinary ? baseData : nil,
-                    oursData: isBinary ? oursData : nil,
-                    theirsData: isBinary ? theirsData : nil,
+                    baseData: baseData,
+                    oursData: oursData,
+                    theirsData: theirsData,
                     resultData: isBinary ? resultData : nil,
                     hasBase: baseData != nil,
                     hasOurs: oursData != nil,
                     hasTheirs: theirsData != nil,
                     isBinary: isBinary
                 )
-            )
+            file.expectedWorktreeData = resultData
+            file.expectedIndex = try await indexEntry(path, repositoryURL)
+            let indexText = String(decoding: file.expectedIndex ?? Data(), as: UTF8.self)
+            let modes = indexText.split(separator: "\0").compactMap { $0.split(separator: " ").first.map(String.init) }
+            if modes.contains(where: { $0 != "100644" && $0 != "100755" }) {
+                file.unsupportedReason = "文件类型或子模块冲突，请使用外部 Git 工具处理。"
+            } else if [baseData, oursData, theirsData, resultData].compactMap({ $0 }).contains(where: { $0.count > 8_000_000 }) {
+                file.unsupportedReason = "文件超过 8 MB，请使用外部合并工具处理。"
+            }
+            files.append(file)
+        }
+        // Rename conflicts can span several index paths. Do not treat one half
+        // as an ordinary missing-side deletion.
+        let status = try await runGit(["status", "--porcelain=v1", "-z"], operation: .resolveConflict, repositoryURL: repositoryURL)
+        let complexRename = status.standardOutput.split(separator: 0).contains { record in
+            ["DD", "AU", "UA"].contains(String(decoding: record.prefix(2), as: UTF8.self))
+        }
+        let renames = try await runGit(["diff", "--name-status", "-M", "-z", "HEAD", "MERGE_HEAD"], operation: .resolveConflict, repositoryURL: repositoryURL, allowedStatuses: [0, 128])
+        let fields = renames.standardOutput.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
+        var renamePaths = Set<String>(), cursor = 0
+        while cursor < fields.count {
+            let kind = fields[cursor]; cursor += 1
+            let count = kind.hasPrefix("R") || kind.hasPrefix("C") ? 2 : 1
+            if kind.hasPrefix("R"), cursor + 1 < fields.count { renamePaths.formUnion(fields[cursor...cursor + 1]) }
+            cursor += count
+        }
+        for i in files.indices where complexRename || renamePaths.contains(files[i].path) {
+            files[i].unsupportedReason = "重命名冲突可能涉及多个路径，请使用外部 Git 工具处理后刷新。"
+        }
+        if let saved = try await storedMergeSession(repositoryURL) {
+            for i in files.indices {
+                if let previous = saved.files.first(where: { $0.path == files[i].path }),
+                   previous.baseData == files[i].baseData, previous.oursData == files[i].oursData,
+                   previous.theirsData == files[i].theirsData,
+                   previous.expectedWorktreeData == files[i].expectedWorktreeData,
+                   previous.expectedIndex == files[i].expectedIndex {
+                    if let document = previous.mergeDocument, document.isValid,
+                       document.base == (files[i].base ?? ""), document.ours == files[i].ours,
+                       document.theirs == files[i].theirs, document.result == files[i].result {
+                        files[i].mergeDocument = document
+                    }
+                }
+            }
         }
         return files
     }
 
     func resolveConflict(repositoryURL: URL, file: GitConflictFile) async throws {
+        try await validateMergeFile(file, repositoryURL)
         let fileURL = repositoryURL.appendingPathComponent(file.path)
-        if let resultData = file.resultData {
+        if file.deletesResult {
+            if FileManager.default.fileExists(atPath: fileURL.path) { try FileManager.default.removeItem(at: fileURL) }
+        } else if let resultData = file.resultData {
             try resultData.write(to: fileURL, options: .atomic)
         } else {
-            try file.result.write(to: fileURL, atomically: true, encoding: .utf8)
+            try Data(file.result.utf8).write(to: fileURL, options: .atomic)
         }
+        // Keep provenance even when add fails, so the continuous draft can be reopened.
+        var saved = file
+        saved.expectedWorktreeData = try mergeWorktreeData(fileURL)
+        saved.isResolved = false
+        try await persistMergeFile(saved, repositoryURL)
         _ = try await runGit(["add", "--", file.path], operation: .resolveConflict, repositoryURL: repositoryURL)
+        saved.isResolved = true
+        saved.expectedIndex = try await indexEntry(file.path, repositoryURL)
+        try await persistMergeFile(saved, repositoryURL)
     }
 
     func saveConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws {
+        try await validateMergeFile(file, repositoryURL)
         let fileURL = repositoryURL.appendingPathComponent(file.path)
-        try file.result.write(to: fileURL, atomically: true, encoding: .utf8)
+        try Data(file.result.utf8).write(to: fileURL, options: .atomic)
+        var saved = file
+        saved.expectedWorktreeData = Data(file.result.utf8)
+        try await persistMergeFile(saved, repositoryURL)
     }
 
     func restoreConflictProgress(repositoryURL: URL, file: GitConflictFile) async throws {
-        _ = try await runGit(
-            ["checkout", "--conflict=merge", "--", file.path],
-            operation: .resolveConflict,
-            repositoryURL: repositoryURL
-        )
+        try await validateMergeFile(file, repositoryURL)
+        _ = try await runGit(["checkout", "--conflict=merge", "--", file.path], operation: .resolveConflict, repositoryURL: repositoryURL)
+        let url = try await mergeStoreURL(repositoryURL)
+        if var session = try await storedMergeSession(repositoryURL) {
+            session.files.removeAll { $0.path == file.path }
+            try JSONEncoder().encode(session).write(to: url, options: .atomic)
+        }
+    }
+
+    func mergeSession(repositoryURL: URL) async throws -> GitMergeSessionSnapshot? {
+        guard let identity = try await mergeIdentity(repositoryURL) else { return nil }
+        let pending = try await conflictFiles(repositoryURL: repositoryURL)
+        let saved = try await storedMergeSession(repositoryURL)
+        var resolved: [GitConflictFile] = []
+        for var file in saved?.files ?? [] where !pending.contains(where: { $0.path == file.path }) {
+            let data = try mergeWorktreeData(repositoryURL.appendingPathComponent(file.path))
+            let externallyChanged = data != file.expectedWorktreeData
+            if externallyChanged {
+                file.result = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                file.mergeDocument = nil
+                file.resultData = file.isBinary ? data : nil
+                file.expectedWorktreeData = data
+            }
+            file.expectedIndex = try await indexEntry(file.path, repositoryURL)
+            file.isResolved = !externallyChanged
+            if file.mergeDocument?.isValid == false { file.mergeDocument = nil }
+            resolved.append(file)
+        }
+        return GitMergeSessionSnapshot(identity: identity, files: pending + resolved)
+    }
+
+    private func validateMergeFile(_ file: GitConflictFile, _ repositoryURL: URL) async throws {
+        guard file.unsupportedReason == nil else { throw mergeError(file.unsupportedReason!) }
+        guard try await mergeIdentity(repositoryURL) != nil else { throw mergeError("本次合并已在外部结束，请刷新。") }
+        guard try mergeWorktreeData(repositoryURL.appendingPathComponent(file.path)) == file.expectedWorktreeData,
+              try await indexEntry(file.path, repositoryURL) == file.expectedIndex else {
+            throw mergeError("文件或 Git index 已被外部修改，请退出编辑器并刷新后重新打开。")
+        }
+    }
+
+    private func indexEntry(_ path: String, _ repositoryURL: URL) async throws -> Data {
+        try await runGit(["ls-files", "--stage", "-z", "--", path], operation: .resolveConflict, repositoryURL: repositoryURL).standardOutput
+    }
+
+    private func mergeIdentity(_ repositoryURL: URL) async throws -> String? {
+        let result = try await runGit(["rev-parse", "--verify", "MERGE_HEAD"], operation: .resolveConflict, repositoryURL: repositoryURL, allowedStatuses: [0, 128])
+        guard result.terminationStatus == 0 else { return nil }
+        let head = try await runGit(["rev-parse", "HEAD"], operation: .resolveConflict, repositoryURL: repositoryURL)
+        return String(decoding: head.standardOutput + result.standardOutput, as: UTF8.self)
+    }
+
+    private func mergeStoreURL(_ repositoryURL: URL) async throws -> URL {
+        let result = try await runGit(["rev-parse", "--git-path", "repodesk-merge-state.json"], operation: .resolveConflict, repositoryURL: repositoryURL)
+        let path = String(decoding: result.standardOutput, as: UTF8.self).trimmingCharacters(in: .newlines)
+        return URL(fileURLWithPath: path, relativeTo: repositoryURL).standardizedFileURL
+    }
+
+    private func storedMergeSession(_ repositoryURL: URL) async throws -> GitMergeSessionSnapshot? {
+        guard let identity = try await mergeIdentity(repositoryURL) else { return nil }
+        let url = try await mergeStoreURL(repositoryURL)
+        guard let data = try? Data(contentsOf: url),
+              let saved = try? JSONDecoder().decode(GitMergeSessionSnapshot.self, from: data),
+              saved.identity == identity else { return nil }
+        return saved
+    }
+
+    private func persistMergeFile(_ file: GitConflictFile, _ repositoryURL: URL) async throws {
+        guard let identity = try await mergeIdentity(repositoryURL) else { throw mergeError("本次合并已结束。") }
+        var session = try await storedMergeSession(repositoryURL) ?? GitMergeSessionSnapshot(identity: identity, files: [])
+        session.files.removeAll { $0.path == file.path }
+        session.files.append(file)
+        let url = try await mergeStoreURL(repositoryURL)
+        try JSONEncoder().encode(session).write(to: url, options: .atomic)
+    }
+
+    private func mergeWorktreeData(_ url: URL) throws -> Data? {
+        do { return try Data(contentsOf: url) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile { return nil }
+    }
+
+    private func mergeError(_ message: String) -> GitRepositoryOperationError {
+        .commandFailed(operation: .resolveConflict, message: message)
     }
 
     private func conflictBlob(stage: Int, path: String, repositoryURL: URL) async throws -> Data? {

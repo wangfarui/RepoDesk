@@ -1630,11 +1630,11 @@ final class AppState {
     }
 
     @discardableResult
-    func resolveConflict(path: String, result: String, resultData: Data? = nil) async -> Bool {
-        guard let file = conflictFiles.first(where: { $0.path == path }),
+    func resolveConflict(path: String, result: String, resultData: Data? = nil, document: GitThreeWayMergeDocument? = nil, deletesResult: Bool = false) async -> Bool {
+        guard let file = (conflictFiles + resolvedConflictFiles).first(where: { $0.path == path }),
               let repositoryURL = activeRepositoryURL,
               !isResolvingMergeConflict else { return false }
-        guard GitConflictParser.blocks(in: result).isEmpty else {
+        guard file.isBinary || GitConflictParser.blocks(in: result).isEmpty else {
             branchOperationErrorMessage = "合并结果中仍包含未解决的冲突标记。"
             return false
         }
@@ -1647,11 +1647,19 @@ final class AppState {
         resolvedFile.result = result
         resolvedFile.isResolved = true
         resolvedFile.resultData = resultData
+        resolvedFile.mergeDocument = document
+        resolvedFile.deletesResult = deletesResult
         do {
             try await gitRepositoryOperator.resolveConflict(repositoryURL: repositoryURL, file: resolvedFile)
             conflictFiles.removeAll { $0.path == path }
             resolvedConflictFiles.removeAll { $0.path == path }
             resolvedConflictFiles.append(resolvedFile)
+            await reloadMergeSession()
+            if conflictFiles.isEmpty, mergeSourceBranch != nil {
+                isResolvingMergeConflict = false
+                await continueMerge()
+                return mergeSourceBranch == nil
+            }
             return true
         } catch {
             branchOperationErrorMessage = error.localizedDescription
@@ -1660,24 +1668,25 @@ final class AppState {
     }
 
     @discardableResult
-    func saveConflictProgress(path: String, result: String) async -> Bool {
+    func saveConflictProgress(path: String, result: String, document: GitThreeWayMergeDocument? = nil) async -> Bool {
+        if resolvedConflictFiles.contains(where: { $0.path == path }) {
+            guard await revertConflictResolution(path: path) else { return false }
+        }
         guard let fileIndex = conflictFiles.firstIndex(where: { $0.path == path }),
               let repositoryURL = activeRepositoryURL,
               !isResolvingMergeConflict else { return false }
-        guard GitConflictParser.blocks(in: result).isEmpty == false else {
-            branchOperationErrorMessage = "保存进度前仍需保留冲突块，或选择完成当前文件。"
-            return false
-        }
         isResolvingMergeConflict = true
         branchOperationErrorMessage = nil
         defer { isResolvingMergeConflict = false }
         var savedFile = conflictFiles[fileIndex]
         savedFile.result = result
+        savedFile.mergeDocument = document
         do {
             try await gitRepositoryOperator.saveConflictProgress(
                 repositoryURL: repositoryURL,
                 file: savedFile
             )
+            savedFile.expectedWorktreeData = Data(result.utf8)
             conflictFiles[fileIndex] = savedFile
             return true
         } catch {
@@ -1702,7 +1711,13 @@ final class AppState {
                 file: file
             )
             resolvedConflictFiles.remove(at: resolvedIndex)
-            conflictFiles.append(file)
+            if let restored = try await gitRepositoryOperator.conflictFiles(repositoryURL: repositoryURL).first(where: { $0.path == path }) {
+                conflictFiles.append(restored)
+            } else if !gitRepositoryOperator.supportsMergeSessions {
+                conflictFiles.append(file)
+            } else {
+                throw GitRepositoryOperationError.commandFailed(operation: .resolveConflict, message: "未能恢复 Git index 冲突，请刷新检查。")
+            }
             conflictFiles.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
             return true
         } catch {
@@ -1713,11 +1728,11 @@ final class AppState {
 
     @discardableResult
     func acceptConflictFile(path: String, side: GitConflictSide) async -> Bool {
-        guard let file = conflictFiles.first(where: { $0.path == path }) else { return false }
+        guard let file = (conflictFiles + resolvedConflictFiles).first(where: { $0.path == path }) else { return false }
         var selected = file
         selected.result = side == .ours ? file.ours : file.theirs
         selected.resultData = side == .ours ? file.oursData : file.theirsData
-        return await resolveConflict(path: path, result: selected.result, resultData: selected.resultData)
+        return await resolveConflict(path: path, result: selected.result, resultData: selected.resultData, deletesResult: side == .ours ? !file.hasOurs : !file.hasTheirs)
     }
 
     @discardableResult
@@ -1754,8 +1769,32 @@ final class AppState {
         conflictFiles[fileIndex].result = resolved
     }
 
+    func reloadMergeSession(repositoryURL explicitURL: URL? = nil) async {
+        guard gitRepositoryOperator.supportsMergeSessions,
+              let repositoryURL = explicitURL ?? activeRepositoryURL else { return }
+        let repositoryID = selectedRepositoryID
+        do {
+            let session = try await gitRepositoryOperator.mergeSession(repositoryURL: repositoryURL)
+            guard repositoryID == selectedRepositoryID,
+                  activeRepositoryURL?.standardizedFileURL == repositoryURL.standardizedFileURL else { return }
+            if let session {
+                conflictFiles = session.files.filter { !$0.isResolved }
+                resolvedConflictFiles = session.files.filter(\.isResolved)
+                if conflictFiles.isEmpty, !isResolvingMergeConflict, branchOperationErrorMessage == nil {
+                    mergeSourceBranch = nil
+                } else if mergeSourceBranch == nil { mergeSourceBranch = "MERGE_HEAD" }
+            } else {
+                conflictFiles = []
+                resolvedConflictFiles = []
+                mergeSourceBranch = nil
+            }
+        } catch {
+            branchOperationErrorMessage = error.localizedDescription
+        }
+    }
+
     func closeMergeConflictResolution() async {
-        guard !conflictFiles.isEmpty else { return }
+        guard mergeSourceBranch != nil else { return }
         await abortMerge()
     }
 
@@ -5326,6 +5365,9 @@ final class AppState {
                 }
                 if repositorySnapshotErrors[repository.id] != nil {
                     repositorySnapshotErrors[repository.id] = nil
+                }
+                if repository.id == selectedRepositoryID, !isResolvingMergeConflict {
+                    await reloadMergeSession(repositoryURL: repositoryURL)
                 }
                 lastRefreshed = .now
                 if attempt > 1 {

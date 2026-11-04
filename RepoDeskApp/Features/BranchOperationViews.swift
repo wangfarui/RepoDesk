@@ -1,6 +1,52 @@
 import AppKit
 import SwiftUI
 
+private struct MergeConflictResizableSheet: NSViewRepresentable {
+    let minimumSize: NSSize
+    var title: String? = nil
+
+    func makeNSView(context: Context) -> MergeConflictSheetWindowView {
+        MergeConflictSheetWindowView(minimumSize: minimumSize, title: title)
+    }
+
+    func updateNSView(_ nsView: MergeConflictSheetWindowView, context: Context) {
+        nsView.title = title
+        nsView.configureSheetWindow()
+    }
+}
+
+private final class MergeConflictSheetWindowView: NSView {
+    private let minimumSize: NSSize
+    var title: String?
+
+    init(minimumSize: NSSize, title: String?) {
+        self.minimumSize = minimumSize
+        self.title = title
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        configureSheetWindow()
+    }
+
+    func configureSheetWindow() {
+        // Wait until SwiftUI has attached and configured the sheet. Never change its parent window.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window, window.sheetParent != nil else { return }
+            if let title = self.title { window.title = title; window.titleVisibility = .visible }
+            if !window.styleMask.contains(.resizable) {
+                window.styleMask.insert(.resizable)
+            }
+            if window.contentMinSize != self.minimumSize {
+                window.contentMinSize = self.minimumSize
+            }
+        }
+    }
+}
+
 @MainActor
 struct BranchComparisonSheet: View {
     let comparison: GitBranchComparison
@@ -56,9 +102,9 @@ struct BranchComparisonSheet: View {
 @MainActor
 struct MergeConflictResolverSheet: View {
     @Bindable var appState: AppState
-    @State private var selectedPath: String?
+    @State private var selectedPaths = Set<String>()
+    @State private var mergeQueue: [String] = []
     @State private var groupsFilesByDirectory = false
-    @State private var showsResolvedFiles = false
     @State private var editorSelection: MergeConflictEditorSelection?
 
     var body: some View {
@@ -69,6 +115,13 @@ struct MergeConflictResolverSheet: View {
                 Text(mergeDescription)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                if let message = selectedFile?.unsupportedReason ?? appState.branchOperationErrorMessage {
+                    Text(message).font(.caption).foregroundStyle(.red)
+                    if appState.conflictFiles.isEmpty {
+                        Button("Retry Merge") { Task { await appState.continueMerge() } }
+                            .disabled(appState.isResolvingMergeConflict)
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
@@ -83,31 +136,25 @@ struct MergeConflictResolverSheet: View {
                         resolveSelected(with: .ours)
                     }
                     .frame(maxWidth: .infinity)
-                    .disabled(selectedUnresolvedFile == nil || appState.isResolvingMergeConflict)
+                    .disabled(selectedFiles.isEmpty || selectedFiles.contains { $0.unsupportedReason != nil } || appState.isResolvingMergeConflict)
 
                     Button("Accept Theirs") {
                         resolveSelected(with: .theirs)
                     }
                     .frame(maxWidth: .infinity)
-                    .disabled(selectedUnresolvedFile == nil || appState.isResolvingMergeConflict)
+                    .disabled(selectedFiles.isEmpty || selectedFiles.contains { $0.unsupportedReason != nil } || appState.isResolvingMergeConflict)
 
                     Button("Merge...", systemImage: "arrow.triangle.merge") {
                         presentEditor()
                     }
                     .frame(maxWidth: .infinity)
                     .buttonStyle(.borderedProminent)
-                    .disabled(selectedFile == nil || selectedFile?.isBinary == true || appState.isResolvingMergeConflict)
+                    .disabled(selectedFiles.isEmpty || selectedFiles.contains { $0.isBinary || $0.unsupportedReason != nil } || appState.isResolvingMergeConflict)
                     .accessibilityIdentifier("RepoDesk.MergeConflicts.Merge")
-
-                    Button("Revert Resolution", systemImage: "arrow.uturn.backward") {
-                        revertSelectedResolution()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .disabled(selectedResolvedFile == nil || appState.isResolvingMergeConflict)
 
                     Spacer()
                 }
-                .controlSize(.large)
+                .buttonStyle(MergeDialogButtonStyle())
                 .frame(width: 132)
             }
             .padding(16)
@@ -116,62 +163,57 @@ struct MergeConflictResolverSheet: View {
             HStack {
                 Toggle("Group files by directory", isOn: $groupsFilesByDirectory)
                     .toggleStyle(.checkbox)
-                    .disabled(appState.conflictFiles.isEmpty && appState.resolvedConflictFiles.isEmpty)
-                Toggle("显示已解决文件", isOn: $showsResolvedFiles)
-                    .toggleStyle(.checkbox)
-                    .accessibilityIdentifier("RepoDesk.MergeConflicts.ShowResolved")
+                    .disabled(appState.conflictFiles.isEmpty)
                 Spacer()
                 if appState.isResolvingMergeConflict {
                     ProgressView()
                         .controlSize(.small)
                 }
-                if appState.conflictFiles.isEmpty {
-                    Button("Continue Merge", systemImage: "checkmark.circle") {
-                        performFooterAction()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(appState.isResolvingMergeConflict)
-                } else {
-                    Button("Close", systemImage: "xmark") {
+                Button("Close") {
                         Task { await appState.closeMergeConflictResolution() }
                     }
                     .disabled(appState.isResolvingMergeConflict)
-                }
+                    .help("Abort this merge and close")
+                    .keyboardShortcut(.cancelAction)
+                    .buttonStyle(MergeDialogButtonStyle())
             }
             .padding(.horizontal, 16)
             .frame(height: 58)
         }
-        .frame(width: 780, height: 520)
+        .frame(
+            minWidth: 780, idealWidth: 780, maxWidth: .infinity,
+            minHeight: 520, idealHeight: 520, maxHeight: .infinity
+        )
         .background(Color(nsColor: .windowBackgroundColor))
+        .background(MergeConflictResizableSheet(minimumSize: NSSize(width: 780, height: 520)))
         .interactiveDismissDisabled(true)
         .onAppear { selectFirstFileIfNeeded() }
         .onChange(of: visibleFilePaths) { _, _ in
             selectFirstFileIfNeeded()
         }
-        .sheet(item: $editorSelection) { selection in
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await appState.reloadMergeSession() }
+        }
+        .sheet(item: $editorSelection, onDismiss: showNextQueuedFile) { selection in
             MergeConflictEditorSheet(
                 file: selection.file,
                 yoursBranch: targetBranchName,
                 theirsBranch: appState.mergeSourceBranch ?? "Incoming Branch",
                 fontSize: appState.fileContentFontSize,
-                apply: { result in
-                    if appState.conflictFiles.contains(where: { $0.path == selection.file.path }) {
-                        return await appState.resolveConflict(path: selection.file.path, result: result)
-                    }
-                    return await appState.updateResolvedConflict(path: selection.file.path, result: result)
+                apply: { document in
+                    await appState.resolveConflict(path: selection.file.path, result: document.result, document: document)
                 },
-                saveProgress: { result in
-                    if appState.conflictFiles.contains(where: { $0.path == selection.file.path }) {
-                        return await appState.saveConflictProgress(path: selection.file.path, result: result)
-                    }
-                    return await appState.updateResolvedConflict(path: selection.file.path, result: result)
+                saveProgress: { document in
+                    await appState.saveConflictProgress(path: selection.file.path, result: document.result, document: document)
                 },
                 loadBlame: { result in
                     try await appState.blameForMergeConflict(
                         file: selection.file,
                         resultContent: result
                     )
-                }
+                },
+                operationError: { appState.branchOperationErrorMessage },
+                acceptFile: { side in await appState.acceptConflictFile(path: selection.file.path, side: side) }
             )
         }
     }
@@ -181,6 +223,7 @@ struct MergeConflictResolverSheet: View {
             HStack(spacing: 0) {
                 Text("Name")
                     .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Type").frame(width: 65, alignment: .leading)
                 Text("Yours")
                     .frame(width: 92, alignment: .leading)
                 Text("Theirs")
@@ -194,50 +237,19 @@ struct MergeConflictResolverSheet: View {
             Divider()
 
             if visibleFilePaths.isEmpty {
-                ContentUnavailableView(
-                    appState.resolvedConflictFiles.isEmpty ? "No conflict files" : "所有冲突已解决",
-                    systemImage: "checkmark.circle",
-                    description: Text(appState.resolvedConflictFiles.isEmpty
-                        ? "The merge operation has no files to review."
-                        : "勾选「显示已解决文件」可查看已解决的文件。")
-                )
+                ContentUnavailableView("No conflict files", systemImage: "checkmark.circle",
+                                       description: Text("The merge operation has no files to review."))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(selection: $selectedPath) {
+                List(selection: $selectedPaths) {
                     if groupsFilesByDirectory {
-                        if !appState.conflictFiles.isEmpty {
-                            ForEach(conflictFileGroups) { group in
-                                Section("Unresolved · \(group.directory)") {
-                                    ForEach(group.files) { file in
-                                        conflictFileRow(file, showsDirectory: false, isResolved: false)
-                                    }
-                                }
-                            }
-                        }
-                        if !sortedResolvedConflictFiles.isEmpty {
-                            ForEach(resolvedConflictFileGroups) { group in
-                                Section("Resolved · \(group.directory)") {
-                                    ForEach(group.files) { file in
-                                        conflictFileRow(file, showsDirectory: false, isResolved: true)
-                                    }
-                                }
+                        ForEach(conflictFileGroups) { group in
+                            Section(group.directory) {
+                                ForEach(group.files) { file in conflictFileRow(file, showsDirectory: false) }
                             }
                         }
                     } else {
-                        if !sortedConflictFiles.isEmpty {
-                            Section("Unresolved") {
-                                ForEach(sortedConflictFiles) { file in
-                                    conflictFileRow(file, showsDirectory: true, isResolved: false)
-                                }
-                            }
-                        }
-                        if !sortedResolvedConflictFiles.isEmpty {
-                            Section("Resolved") {
-                                ForEach(sortedResolvedConflictFiles) { file in
-                                    conflictFileRow(file, showsDirectory: true, isResolved: true)
-                                }
-                            }
-                        }
+                        ForEach(sortedConflictFiles) { file in conflictFileRow(file, showsDirectory: true) }
                     }
                 }
                 .listStyle(.inset)
@@ -252,8 +264,7 @@ struct MergeConflictResolverSheet: View {
 
     private func conflictFileRow(
         _ file: GitConflictFile,
-        showsDirectory: Bool,
-        isResolved: Bool
+        showsDirectory: Bool
     ) -> some View {
         HStack(spacing: 0) {
             HStack(spacing: 6) {
@@ -268,22 +279,20 @@ struct MergeConflictResolverSheet: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(isResolved ? "Resolved" : "Modified")
+            Text(file.isBinary ? "Binary" : "Text").frame(width: 65, alignment: .leading)
+            Text(file.hasOurs ? (file.hasBase ? "Modified" : "Added") : "Deleted")
                 .frame(width: 92, alignment: .leading)
-            Text(isResolved ? "Resolved" : "Modified")
+            Text(file.hasTheirs ? (file.hasBase ? "Modified" : "Added") : "Deleted")
                 .frame(width: 92, alignment: .leading)
         }
         .font(.callout)
         .contentShape(.rect)
         .tag(file.path)
         .onTapGesture(count: 2) {
-            selectedPath = file.path
-            editorSelection = MergeConflictEditorSelection(file: file)
+            if !selectedPaths.contains(file.path) { selectedPaths = [file.path] }
+            presentEditor()
         }
-        .onTapGesture {
-            selectedPath = file.path
-        }
-        .help(file.path)
+        .help(file.unsupportedReason ?? (file.isBinary ? "Binary file — use Accept Yours / Theirs" : file.path))
         .accessibilityIdentifier("RepoDesk.MergeConflicts.Row.\(file.path)")
     }
 
@@ -291,41 +300,14 @@ struct MergeConflictResolverSheet: View {
         appState.conflictFiles.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
     }
 
-    private var sortedResolvedConflictFiles: [GitConflictFile] {
-        guard showsResolvedFiles else { return [] }
-        return appState.resolvedConflictFiles.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-    }
-
-    private var visibleFilePaths: [String] {
-        sortedConflictFiles.map(\.path) + sortedResolvedConflictFiles.map(\.path)
-    }
+    private var visibleFilePaths: [String] { sortedConflictFiles.map(\.path) }
+    private var selectedFiles: [GitConflictFile] { sortedConflictFiles.filter { selectedPaths.contains($0.path) } }
+    private var selectedFile: GitConflictFile? { selectedFiles.first }
 
     private var conflictFileGroups: [MergeConflictFileGroup] {
         Dictionary(grouping: sortedConflictFiles) { directoryName($0.path) ?? "." }
             .map { MergeConflictFileGroup(directory: $0.key, files: $0.value) }
             .sorted { $0.directory.localizedStandardCompare($1.directory) == .orderedAscending }
-    }
-
-    private var resolvedConflictFileGroups: [MergeConflictFileGroup] {
-        Dictionary(grouping: sortedResolvedConflictFiles) { directoryName($0.path) ?? "." }
-            .map { MergeConflictFileGroup(directory: $0.key, files: $0.value) }
-            .sorted { $0.directory.localizedStandardCompare($1.directory) == .orderedAscending }
-    }
-
-    private var selectedFile: GitConflictFile? {
-        guard let selectedPath else { return nil }
-        return appState.conflictFiles.first { $0.path == selectedPath }
-            ?? sortedResolvedConflictFiles.first { $0.path == selectedPath }
-    }
-
-    private var selectedResolvedFile: GitConflictFile? {
-        guard let selectedPath else { return nil }
-        return sortedResolvedConflictFiles.first { $0.path == selectedPath }
-    }
-
-    private var selectedUnresolvedFile: GitConflictFile? {
-        guard let selectedPath else { return nil }
-        return appState.conflictFiles.first { $0.path == selectedPath }
     }
 
     private var targetBranchName: String {
@@ -341,34 +323,34 @@ struct MergeConflictResolverSheet: View {
     }
 
     private func selectFirstFileIfNeeded() {
-        guard !visibleFilePaths.isEmpty else {
-            selectedPath = nil
-            return
-        }
-        if selectedFile == nil {
-            selectedPath = sortedConflictFiles.first?.path ?? sortedResolvedConflictFiles.first?.path
-        }
+        selectedPaths.formIntersection(visibleFilePaths)
+        if selectedPaths.isEmpty, let first = sortedConflictFiles.first { selectedPaths = [first.path] }
     }
 
     private func resolveSelected(with side: GitConflictSide) {
-        guard let path = selectedPath else { return }
+        let paths = selectedFiles.map(\.path)
         Task {
-            _ = await appState.acceptConflictFile(path: path, side: side)
+            for path in paths {
+                guard await appState.acceptConflictFile(path: path, side: side) else { break }
+            }
         }
     }
 
-    private func revertSelectedResolution() {
-        guard let path = selectedResolvedFile?.path else { return }
-        Task { _ = await appState.revertConflictResolution(path: path) }
-    }
-
     private func presentEditor() {
-        guard let selectedFile else { return }
-        editorSelection = MergeConflictEditorSelection(file: selectedFile)
+        let files = selectedFiles
+        guard !files.isEmpty, files.allSatisfy({ !$0.isBinary && $0.unsupportedReason == nil }) else { return }
+        mergeQueue = files.map(\.path)
+        showNextQueuedFile()
     }
 
-    private func performFooterAction() {
-        Task { await appState.continueMerge() }
+    private func showNextQueuedFile() {
+        while !mergeQueue.isEmpty {
+            let path = mergeQueue.removeFirst()
+            if let file = appState.conflictFiles.first(where: { $0.path == path }) {
+                editorSelection = MergeConflictEditorSelection(file: file)
+                return
+            }
+        }
     }
 
     private func fileName(_ path: String) -> String {
@@ -400,1216 +382,303 @@ struct MergeConflictEditorSheet: View {
     let yoursBranch: String
     let theirsBranch: String
     let fontSize: CGFloat
-    let apply: (String) async -> Bool
-    let saveProgress: (String) async -> Bool
+    let apply: (GitThreeWayMergeDocument) async -> Bool
+    let saveProgress: (GitThreeWayMergeDocument) async -> Bool
     let loadBlame: (String) async throws -> GitMergeConflictBlame
-
+    let operationError: () -> String?
+    let acceptFile: ((GitConflictSide) async -> Bool)?
     @Environment(\.dismiss) private var dismiss
-    @State private var document: GitConflictResolutionDocument
-    @State private var customDrafts: [Int: String] = [:]
-    @State private var selectedConflictID: Int?
-    @State private var navigationScope = MergeConflictNavigationScope.unresolved
-    @State private var expandedUnchangedSegments: Set<Int> = []
-    @State private var horizontalScroll = GitDiffHorizontalScrollSynchronization()
-    @State private var horizontalOffset: CGFloat = 0
-    @State private var resultContentWidth: CGFloat
-    @State private var blameAnnotations: GitMergeConflictBlame?
-    @State private var blameColorScales: [MergeConflictPane: GitBlameColorScale] = [:]
-    @State private var isLoadingBlame = false
-    private let yoursContentWidth: CGFloat
-    private let theirsContentWidth: CGFloat
+    @AppStorage("mergeAutomaticallyApplyNonConflicting") private var automaticallyApply = false
+    @State private var editor: GitMergeEditorState
+    @State private var initialDocument: GitThreeWayMergeDocument
+    @State private var selectedID: Int?
+    @State private var viewSettings = GitMergeViewSettings()
+    @State private var collapsed = false
+    @State private var syncScroll = true
     @State private var isApplying = false
+    @State private var confirmsApply = false
+    @State private var confirmsCancel = false
+    @State private var pendingWholeSide: GitConflictSide?
+    @State private var confirmsWholeSide = false
+    @State private var pendingWhitespace: GitMergeWhitespacePolicy?
+    @State private var confirmsRestart = false
+    @State private var errorMessage: String?
+    @State private var comparison: MergeContentsComparison?
+    @State private var showsBlame = false
+    @State private var isLoadingBlame = false
+    @State private var blame = GitMergeConflictBlame()
 
-    init(
-        file: GitConflictFile,
-        yoursBranch: String,
-        theirsBranch: String,
-        fontSize: CGFloat,
-        apply: @escaping (String) async -> Bool,
-        saveProgress: @escaping (String) async -> Bool = { _ in false },
-        loadBlame: @escaping (String) async throws -> GitMergeConflictBlame = { _ in GitMergeConflictBlame() }
-    ) {
-        self.file = file
-        self.yoursBranch = yoursBranch
-        self.theirsBranch = theirsBranch
-        self.fontSize = fontSize
-        self.apply = apply
-        self.saveProgress = saveProgress
-        self.loadBlame = loadBlame
-        let document = GitConflictResolutionDocument(text: file.result, base: file.base)
-        let contentWidths = Self.initialContentWidths(
-            document: document,
-            fontSize: fontSize
-        )
-        yoursContentWidth = contentWidths.yours
-        theirsContentWidth = contentWidths.theirs
-        _document = State(initialValue: document)
-        _selectedConflictID = State(initialValue: document.unresolvedBlockIDs.first)
-        _resultContentWidth = State(initialValue: contentWidths.result)
+    init(file: GitConflictFile, yoursBranch: String, theirsBranch: String, fontSize: CGFloat,
+         apply: @escaping (GitThreeWayMergeDocument) async -> Bool,
+         saveProgress: @escaping (GitThreeWayMergeDocument) async -> Bool = { _ in false },
+         loadBlame: @escaping (String) async throws -> GitMergeConflictBlame = { _ in GitMergeConflictBlame() },
+         operationError: @escaping () -> String? = { nil },
+         acceptFile: ((GitConflictSide) async -> Bool)? = nil) {
+        self.file = file; self.yoursBranch = yoursBranch; self.theirsBranch = theirsBranch
+        self.fontSize = fontSize; self.apply = apply; self.saveProgress = saveProgress
+        self.loadBlame = loadBlame; self.operationError = operationError; self.acceptFile = acceptFile
+        let auto = UserDefaults.standard.object(forKey: "mergeAutomaticallyApplyNonConflicting") as? Bool ?? false
+        var document = file.mergeDocument ?? GitThreeWayMergeDocument(base: file.base ?? "", ours: file.ours, theirs: file.theirs, automaticallyApply: auto)
+        if file.mergeDocument == nil, GitConflictParser.blocks(in: file.result).isEmpty,
+           file.isResolved || file.expectedWorktreeData != nil {
+            document.editResult(file.result)
+            if file.isResolved { for change in document.changes { document.markResolved(change.id) } }
+        }
+        _editor = State(initialValue: GitMergeEditorState(document: document))
+        _initialDocument = State(initialValue: document)
+        _selectedID = State(initialValue: document.unresolvedIDs.first ?? document.changes.first?.id)
     }
-
     var body: some View {
-        GeometryReader { geometry in
-            let editorHeight = max(
-                0,
-                geometry.size.height
-                    - 46
-                    - 32
-                    - horizontalScrollerHeight
-                    - 58
-                    - 4
-            )
-            let visibleLineCounts = automaticVisibleLineCounts(
-                viewportHeight: editorHeight
-            )
-
-            ScrollViewReader { scrollProxy in
-                VStack(alignment: .leading, spacing: 0) {
-                    editorToolbar(scrollProxy: scrollProxy)
-                    Divider()
-                    paneHeaders
-                    Divider()
-                    ZStack {
-                        paneBackground
-                        ScrollView(.vertical) {
-                            LazyVStack(spacing: 0) {
-                                ForEach(
-                                    Array(document.segments.enumerated()),
-                                    id: \.offset
-                                ) { index, segment in
-                                    switch segment {
-                                    case .unchanged(let id, let text):
-                                        unchangedSegment(
-                                            id: id,
-                                            text: text,
-                                            segmentIndex: index,
-                                            visibleLineCount: visibleLineCounts[id] ?? 0
-                                        )
-                                    case .conflict(let block):
-                                        conflictSegment(block, segmentIndex: index)
-                                    }
-                                }
-                            }
-                        }
-                        .accessibilityIdentifier(
-                            "RepoDesk.MergeConflictEditor.SynchronizedScroll"
-                        )
-                    }
-                    paneHorizontalScrollers
-                    Divider()
-                    editorFooter
-                }
-                .onChange(of: selectedConflictID) { _, conflictID in
-                    guard let conflictID else { return }
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        scrollProxy.scrollTo(conflictAnchor(conflictID), anchor: .center)
-                    }
-                }
-                .onChange(of: navigationScope) { _, _ in
-                    selectAvailableConflict()
-                }
-                .onAppear {
-                    horizontalScroll.onOffsetChange = { offset in
-                        horizontalOffset = offset
-                    }
-                    selectAvailableConflict()
-                    guard let selectedConflictID else { return }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        scrollProxy.scrollTo(
-                            conflictAnchor(selectedConflictID),
-                            anchor: .center
-                        )
-                    }
-                }
-                .onDisappear {
-                    horizontalScroll.onOffsetChange = nil
-                }
-            }
-        }
-        .frame(minWidth: 1240, minHeight: 720)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .interactiveDismissDisabled(isApplying)
-    }
-
-    private func editorToolbar(scrollProxy: ScrollViewProxy) -> some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Merge Revisions")
-                    .font(.callout.weight(.semibold))
-                Text(file.path)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer()
-            Text("\(document.unresolvedBlockIDs.count) / \(document.blocks.count) unresolved")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Picker("Conflict navigation", selection: $navigationScope) {
-                ForEach(MergeConflictNavigationScope.allCases) { scope in
-                    Text(scope.title).tag(scope)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .frame(width: 154)
-            Button("Previous conflict", systemImage: "chevron.up") {
-                navigateConflict(offset: -1, scrollProxy: scrollProxy)
-            }
-            .labelStyle(.iconOnly)
-            .controlSize(.small)
-            .disabled(previousConflictID == nil)
-            .help(navigationScope == .unresolved ? "Previous unresolved conflict" : "Previous conflict")
-            Button("Next conflict", systemImage: "chevron.down") {
-                navigateConflict(offset: 1, scrollProxy: scrollProxy)
-            }
-            .labelStyle(.iconOnly)
-            .controlSize(.small)
-            .disabled(nextConflictID == nil)
-            .help(navigationScope == .unresolved ? "Next unresolved conflict" : "Next conflict")
-            Button(
-                expandedUnchangedSegments.isEmpty ? "Expand unchanged lines" : "Collapse unchanged lines",
-                systemImage: expandedUnchangedSegments.isEmpty
-                    ? "rectangle.expand.vertical"
-                    : "rectangle.compress.vertical"
-            ) {
-                toggleAllUnchangedSegments()
-            }
-            .labelStyle(.iconOnly)
-            .controlSize(.small)
-            .help(expandedUnchangedSegments.isEmpty
-                ? "Expand all unchanged lines"
-                : "Collapse all unchanged lines")
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 46)
-    }
-
-    private var paneHeaders: some View {
-        HStack(spacing: 0) {
-            paneHeader(
-                title: "Yours",
-                subtitle: yoursBranch,
-                icon: "arrow.left",
-                color: .blue
-            )
+        VStack(spacing: 0) {
+            toolbar
             Divider()
-            paneHeader(
-                title: "Result",
-                subtitle: file.base == nil ? file.path : "Base → \(file.path)",
-                icon: "arrow.triangle.merge",
-                color: .orange
-            )
-            Divider()
-            paneHeader(
-                title: "Theirs",
-                subtitle: theirsBranch,
-                icon: "arrow.right",
-                color: .purple
-            )
-        }
-        .frame(height: 32)
-        .background(Color(nsColor: .controlBackgroundColor))
-    }
-
-    private func paneHeader(
-        title: String,
-        subtitle: String,
-        icon: String,
-        color: Color
-    ) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: icon)
-                .foregroundStyle(color)
-            Text(title)
-                .font(.caption.weight(.semibold))
-            Text(subtitle)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity)
-    }
-
-    private var paneBackground: some View {
-        HStack(spacing: 0) {
-            Color(nsColor: .textBackgroundColor)
-            Divider()
-            Color(nsColor: .textBackgroundColor)
-            Divider()
-            Color(nsColor: .textBackgroundColor)
-        }
-        .allowsHitTesting(false)
-    }
-
-    private var paneHorizontalScrollers: some View {
-        HStack(spacing: 0) {
-            paneHorizontalScroller(.yours)
-            Divider()
-            paneHorizontalScroller(.result)
-            Divider()
-            paneHorizontalScroller(.theirs)
-        }
-        .frame(height: horizontalScrollerHeight)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .accessibilityIdentifier("RepoDesk.MergeConflictEditor.HorizontalScrollers")
-    }
-
-    private func paneHorizontalScroller(_ pane: MergeConflictPane) -> some View {
-        MergeConflictHorizontalBar(
-            offset: horizontalOffsetBinding(for: pane),
-            contentWidth: paneContentWidth(pane)
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    @ViewBuilder
-    private func unchangedSegment(
-        id: Int,
-        text: String,
-        segmentIndex: Int,
-        visibleLineCount: Int
-    ) -> some View {
-        let lines = Self.lines(in: text)
-        let parts = unchangedDisplayParts(
-            id: id,
-            lineCount: lines.count,
-            segmentIndex: segmentIndex,
-            visibleLineCount: visibleLineCount
-        )
-        let starts = lineStarts(for: segmentIndex)
-        ForEach(parts) { part in
-            switch part {
-            case .line(let index):
-                synchronizedRow(
-                    left: lines[index],
-                    result: lines[index],
-                    right: lines[index],
-                    leftLine: starts.left + index,
-                    resultLine: starts.result + index,
-                    rightLine: starts.right + index
-                )
-            case .fold(let hiddenRange):
-                foldRow(
-                    segmentID: id,
-                    hiddenLineCount: hiddenRange.count
-                )
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12)).padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.yellow.opacity(0.10))
             }
-        }
-    }
-
-    private func synchronizedRow(
-        left: String,
-        result: String,
-        right: String,
-        leftLine: Int,
-        resultLine: Int,
-        rightLine: Int
-    ) -> some View {
-        HStack(spacing: 0) {
-            codeLine(left, lineNumber: leftLine, pane: .yours)
+            headers
+            if viewSettings.breadcrumbs == "Top" { breadcrumbs }
+            GitMergeTextPanes(state: editor, selectedID: selectedID, fontSize: fontSize,
+                              collapsed: collapsed, syncScroll: syncScroll, onSelect: { selectedID = $0 },
+                              onExpand: { collapsed = false }, settings: viewSettings,
+                              fileExtension: (file.path as NSString).pathExtension,
+                              onNavigate: navigate, onCompareClipboard: compareClipboard, onAnnotate: annotate)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .accessibilityIdentifier("RepoDesk.MergeConflictEditor.SynchronizedScroll")
+            if viewSettings.breadcrumbs == "Bottom" { breadcrumbs }
             Divider()
-            codeLine(result, lineNumber: resultLine, pane: .result)
-            Divider()
-            codeLine(right, lineNumber: rightLine, pane: .theirs)
+            footer
         }
-        .frame(height: codeLineHeight)
-    }
-
-    private func foldRow(segmentID: Int, hiddenLineCount: Int) -> some View {
-        Button {
-            expandedUnchangedSegments.insert(segmentID)
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "chevron.up.chevron.down")
-                Text("\(hiddenLineCount) unchanged lines")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
-            .frame(height: 26)
-            .background(Color(nsColor: .controlBackgroundColor))
-        }
-        .buttonStyle(.plain)
-        .help("Expand unchanged lines")
-        .accessibilityIdentifier("RepoDesk.MergeConflictEditor.Fold.\(segmentID)")
-    }
-
-    private func conflictSegment(
-        _ block: GitConflictDocumentBlock,
-        segmentIndex: Int
-    ) -> some View {
-        let isResolved = document.resolution(for: block.id) != nil
-        let starts = lineStarts(for: segmentIndex)
-        let resultText = displayedResult(for: block)
-        let height = conflictContentHeight(block)
-
-        return VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Text("Conflict \(block.id + 1)")
-                    .font(.caption2.weight(.semibold))
-                Label(
-                    isResolved ? "Resolved" : "Unresolved",
-                    systemImage: isResolved ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
-                )
-                .font(.caption2)
-                .foregroundStyle(isResolved ? Color.green : Color.orange)
-                Spacer()
-                if isResolved {
-                    Button("Mark unresolved", systemImage: "arrow.uturn.backward") {
-                        reopen(block.id)
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Mark this conflict unresolved")
-                }
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 24)
-            .background(isResolved
-                ? Color.green.opacity(0.08)
-                : Color.orange.opacity(0.10))
-
-            HStack(spacing: 0) {
-                conflictCodeCell(
-                    block.ours,
-                    startingLine: starts.left,
-                    background: isResolved
-                        ? Color(nsColor: .textBackgroundColor)
-                        : Color.red.opacity(0.07),
-                    pane: .yours,
-                    blockID: block.id,
-                    height: height
-                )
-                .overlay(alignment: .trailing) {
-                    applyBlockButton(block.id, side: .ours)
-                        .offset(x: 13)
-                        .zIndex(2)
-                }
+        .disabled(isApplying)
+        .frame(minWidth: 1100, idealWidth: 1240, maxWidth: .infinity, minHeight: 600, idealHeight: 720, maxHeight: .infinity)
+        .background(Color(nsColor: .textBackgroundColor))
+        .background(MergeConflictResizableSheet(minimumSize: NSSize(width: 1100, height: 600), title: "Merge \(file.path)"))
+        .interactiveDismissDisabled(true)
+        .alert("Apply Changes", isPresented: $confirmsApply) {
+            Button("Continue Merge", role: .cancel) { }
+            Button("Apply Changes and Mark Resolved") { submit() }
+        } message: { Text("There are \(editor.document.unresolvedChangeCount) changes and \(editor.document.unresolvedConflictCount) conflicts left unprocessed. Apply the current result and mark the file resolved?") }
+        .alert("Cancel Merge", isPresented: $confirmsCancel) {
+            Button("Continue Merge", role: .cancel) { }
+            Button("Discard Changes and Cancel Merge", role: .destructive) { dismiss() }
+        } message: { Text("There are unsaved changes in the result file. Discard changes and cancel merge anyway?") }
+        .alert("Discard Changes?", isPresented: $confirmsWholeSide) {
+            Button("Continue Merge", role: .cancel) { pendingWholeSide = nil }
+            Button("Discard Changes and Accept") { if let side = pendingWholeSide { submit(side: side) } }
+        } message: { Text("The current merge result will be replaced with the selected file version.") }
+        .alert("Update Highlighting Settings", isPresented: $confirmsRestart) {
+            Button("Continue Merge", role: .cancel) { pendingWhitespace = nil }
+            Button("Discard Changes and Restart Merge") { if let policy = pendingWhitespace { restart(policy) } }
+        } message: { Text("Changing whitespace comparison requires restarting the file merge.") }
+        .sheet(item: $comparison) { value in
+            VStack(spacing: 0) {
+                HStack { Text(value.title).font(.headline); Spacer(); Button("Close") { comparison = nil }.buttonStyle(MergeDialogButtonStyle()) }.padding(12)
                 Divider()
-                resultEditor(
-                    block,
-                    text: resultText,
-                    startingLine: starts.result,
-                    height: height
-                )
-                Divider()
-                conflictCodeCell(
-                    block.theirs,
-                    startingLine: starts.right,
-                    background: isResolved
-                        ? Color(nsColor: .textBackgroundColor)
-                        : Color.red.opacity(0.07),
-                    pane: .theirs,
-                    blockID: block.id,
-                    height: height
-                )
-                .overlay(alignment: .leading) {
-                    applyBlockButton(block.id, side: .theirs)
-                        .offset(x: -13)
-                        .zIndex(2)
-                }
-            }
-            .frame(height: height)
-        }
-        .id(conflictAnchor(block.id))
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(selectedConflictID == block.id ? Color.accentColor : Color.clear)
-                .frame(width: 2)
-        }
-        .overlay(alignment: .top) {
-            Divider()
-        }
-        .overlay(alignment: .bottom) {
-            Divider()
-        }
-        .contentShape(.rect)
-        .onTapGesture {
-            selectedConflictID = block.id
-        }
-        .accessibilityIdentifier("RepoDesk.MergeConflictEditor.Conflict.\(block.id)")
-    }
-
-    private func conflictCodeCell(
-        _ text: String,
-        startingLine: Int,
-        background: Color,
-        pane: MergeConflictPane,
-        blockID: Int,
-        height: CGFloat
-    ) -> some View {
-        let lines = Self.lines(in: text)
-        let displayLines = lines.isEmpty ? [""] : lines
-        return GitDiffHorizontalScrollView(
-            identifier: "RepoDesk.MergeConflictEditor.\(pane.rawValue).Conflict.\(blockID)",
-            contentWidth: paneContentWidth(pane),
-            contentHeight: height,
-            synchronization: horizontalSynchronization(for: pane),
-            showsHorizontalScroller: false
-        ) {
-            HStack(spacing: 0) {
-                if blameIsVisible {
+                HStack(spacing: 1) {
                     VStack(spacing: 0) {
-                        ForEach(displayLines.indices, id: \.self) { index in
-                            blameCell(startingLine + index, pane: pane)
-                        }
+                        Text(value.leftTitle).font(.system(size: 12)).padding(6)
+                        NativeCodeEditor(text: .constant(value.left), isEditable: false, style: .source(fileExtension: (file.path as NSString).pathExtension), showsLineNumbers: true, fontSize: fontSize)
                     }
-                }
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(displayLines.indices, id: \.self) { index in
-                        HStack(spacing: 9) {
-                            Text(String(startingLine + index))
-                                .font(.system(size: max(9, fontSize - 2), design: .monospaced))
-                                .foregroundStyle(.tertiary)
-                                .frame(width: 38, alignment: .trailing)
-                            Divider()
-                            Text(displayLines[index].isEmpty ? " " : displayLines[index])
-                                .font(.system(size: fontSize, design: .monospaced))
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
-                        .frame(height: codeLineHeight, alignment: .leading)
-                        .contextMenu { blameContextMenu() }
-                    }
-                }
-            }
-            .padding(.horizontal, 7)
-                .frame(
-                    width: paneContentWidth(pane),
-                    height: height,
-                    alignment: .topLeading
-                )
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(background)
-    }
-
-    private func resultEditor(
-        _ block: GitConflictDocumentBlock,
-        text: String,
-        startingLine: Int,
-        height: CGFloat
-    ) -> some View {
-        let contentWidth = paneContentWidth(.result)
-        let resultText = customDrafts[block.id] ?? text
-        let resultLines = Self.lines(in: resultText)
-        let displayLines = resultLines.isEmpty ? [""] : resultLines
-        let blameWidth = blameIsVisible ? GitBlameAnnotationCell.width : 0
-        let editorWidth = max(1, contentWidth - blameWidth)
-        return GitDiffHorizontalScrollView(
-            identifier: "RepoDesk.MergeConflictEditor.Result.Conflict.\(block.id)",
-            contentWidth: contentWidth,
-            contentHeight: height,
-            synchronization: horizontalSynchronization(for: .result),
-            showsHorizontalScroller: false
-        ) {
-            ZStack(alignment: .topLeading) {
-                if blameIsVisible {
+                    Divider()
                     VStack(spacing: 0) {
-                        ForEach(displayLines.indices, id: \.self) { index in
-                            blameCell(startingLine + index, pane: .result)
-                        }
-                    }
-                    .frame(width: blameWidth, alignment: .topLeading)
-                }
-                TextField("", text: customDraftBinding(for: block), axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: fontSize, design: .monospaced))
-                    .padding(.leading, 56)
-                    .padding(.trailing, 7)
-                    .padding(.vertical, 7)
-                    .frame(
-                        width: editorWidth,
-                        height: height,
-                        alignment: .topLeading
-                    )
-                    .offset(x: blameWidth)
-                VStack(spacing: 0) {
-                    ForEach(displayLines.indices, id: \.self) { index in
-                        Text(String(startingLine + index))
-                            .font(.system(size: max(9, fontSize - 2), design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 42, height: codeLineHeight, alignment: .trailing)
-                            .contextMenu { blameContextMenu() }
+                        Text(value.rightTitle).font(.system(size: 12)).padding(6)
+                        NativeCodeEditor(text: .constant(value.right), isEditable: false, style: .source(fileExtension: (file.path as NSString).pathExtension), showsLineNumbers: true, fontSize: fontSize)
                     }
                 }
-                .padding(.top, 7)
-                .offset(x: blameWidth)
-                if text.isEmpty {
-                        Text("Base revision")
-                        .font(.system(size: max(11, fontSize - 1), design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 58 + blameWidth)
-                        .padding(.top, 7)
-                        .allowsHitTesting(false)
+            }.frame(minWidth: 900, minHeight: 550)
+        }
+        .sheet(isPresented: $showsBlame) { blameView }
+    }
+    private var toolbar: some View {
+        HStack(spacing: 4) {
+            iconButton("Previous Difference (⇧F7)", symbol: "arrow.up", disabled: adjacent(-1) == nil) { navigate(-1) }
+            iconButton("Next Difference (F7)", symbol: "arrow.down", disabled: adjacent(1) == nil) { navigate(1) }
+            toolbarSeparator
+            Menu { compareMenu } label: { Image(systemName: "arrow.left.arrow.right").frame(width: 20) }
+                .menuIndicator(.hidden).help("Compare Contents")
+            toolbarSeparator
+            Text("Apply non-conflicting changes:").font(.system(size: 11)).padding(.horizontal, 3)
+            textIcon("»", help: "Apply Non-Conflicting Changes from the Left Side", disabled: !editor.document.canApplyNonConflicting(side: .ours)) { mutate { $0.applyNonConflicting(side: .ours) } }
+            textIcon("»«", help: "Apply All Non-Conflicting Changes", disabled: !editor.document.canApplyNonConflicting()) { mutate { $0.applyNonConflicting() } }
+            textIcon("«", help: "Apply Non-Conflicting Changes from the Right Side", disabled: !editor.document.canApplyNonConflicting(side: .theirs)) { mutate { $0.applyNonConflicting(side: .theirs) } }
+            iconButton("Resolve Simple Conflicts", symbol: "wand.and.stars", disabled: !canResolveSimple) { mutate { $0.resolveSimpleConflicts() } }
+            toolbarSeparator
+            Menu {
+                ForEach(GitMergeWhitespacePolicy.allCases, id: \.self) { policy in
+                    Button { setWhitespace(policy) } label: { if editor.document.whitespacePolicy == policy { Label(policy.rawValue, systemImage: "checkmark") } else { Text(policy.rawValue) } }
                 }
-                if customDrafts[block.id] != nil {
-                    Button("Use edited result", systemImage: "checkmark") {
-                        acceptCustomDraft(block.id)
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .frame(
-                        width: contentWidth,
-                        height: height,
-                        alignment: .bottomTrailing
-                    )
-                    .padding(8)
-                    .help("Use edited result")
+            } label: { Text(editor.document.whitespacePolicy.rawValue).font(.system(size: 11)) }
+                .fixedSize().help("Ignore Differences")
+            Menu {
+                ForEach(GitMergeHighlight.allCases, id: \.self) { highlight in
+                    Button { viewSettings.highlight = highlight } label: { if viewSettings.highlight == highlight { Label(highlight.rawValue, systemImage: "checkmark") } else { Text(highlight.rawValue) } }
                 }
-            }
-            .frame(width: contentWidth, height: height, alignment: .topLeading)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(document.resolution(for: block.id) == nil
-            ? Color.orange.opacity(0.06)
-            : Color.green.opacity(0.06))
-    }
-
-    private func codeLine(
-        _ text: String,
-        lineNumber: Int,
-        pane: MergeConflictPane
-    ) -> some View {
-        let contentWidth = paneContentWidth(pane)
-        return GitDiffHorizontalScrollView(
-            identifier: "RepoDesk.MergeConflictEditor.\(pane.rawValue).Line.\(lineNumber)",
-            contentWidth: contentWidth,
-            contentHeight: codeLineHeight,
-            synchronization: horizontalSynchronization(for: pane),
-            showsHorizontalScroller: false
-        ) {
-            HStack(spacing: 9) {
-                blameCell(lineNumber, pane: pane)
-                Text(String(lineNumber))
-                    .font(.system(size: max(9, fontSize - 2), design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 38, alignment: .trailing)
-                Divider()
-                Text(text.isEmpty ? " " : text)
-                    .font(.system(size: fontSize, design: .monospaced))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            .padding(.horizontal, 7)
-            .frame(
-                width: contentWidth,
-                height: codeLineHeight,
-                alignment: .leading
-            )
-            .contextMenu { blameContextMenu() }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-    }
-
-    private func applyBlockButton(
-        _ blockID: Int,
-        side: GitConflictSide
-    ) -> some View {
-        Button(
-            side == .ours ? "Apply Yours" : "Apply Theirs",
-            systemImage: side == .ours ? "chevron.right.2" : "chevron.left.2"
-        ) {
-            accept(blockID, side: side)
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.plain)
-        .controlSize(.small)
-        .frame(width: 24, height: 28)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .overlay {
-            RoundedRectangle(cornerRadius: 4)
-                .stroke(Color(nsColor: .separatorColor), lineWidth: 0.5)
-        }
-        .help(side == .ours ? "Apply Yours to Result" : "Apply Theirs to Result")
-        .accessibilityIdentifier(
-            "RepoDesk.MergeConflictEditor.Apply.\(blockID).\(side == .ours ? "Yours" : "Theirs")"
-        )
-    }
-
-    private var editorFooter: some View {
-        HStack(spacing: 10) {
-            Label(
-                footerStatus,
-                systemImage: canApply ? "checkmark.circle" : "exclamationmark.triangle"
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Spacer()
-            if isApplying {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            Button("Cancel", role: .cancel) { dismiss() }
-                .disabled(isApplying)
-            Button("Save Progress", systemImage: "square.and.arrow.down") {
-                saveCurrentProgress()
-            }
-            .disabled(isApplying)
-            Button("Apply", systemImage: "checkmark") {
-                applyResult()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(isApplying || !canApply)
-            .accessibilityIdentifier("RepoDesk.MergeConflictEditor.Apply")
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 58)
-    }
-
-    private var codeLineHeight: CGFloat {
-        max(22, ceil(fontSize + 8))
-    }
-
-    private var horizontalScrollerHeight: CGFloat {
-        max(
-            14,
-            GitDiffLayoutMetrics.horizontalScrollerReserve
-        )
-    }
-
-    private func horizontalSynchronization(
-        for _: MergeConflictPane
-    ) -> GitDiffHorizontalScrollSynchronization {
-        horizontalScroll
-    }
-
-    private func horizontalOffsetBinding(
-        for _: MergeConflictPane
-    ) -> Binding<CGFloat> {
-        Binding(
-            get: {
-                horizontalOffset
-            },
-            set: { offset in
-                horizontalOffset = offset
-                horizontalScroll.scroll(to: offset)
-            }
-        )
-    }
-
-    private func paneContentWidth(_ pane: MergeConflictPane) -> CGFloat {
-        let baseWidth: CGFloat
-        switch pane {
-        case .yours: baseWidth = yoursContentWidth
-        case .result: baseWidth = resultContentWidth
-        case .theirs: baseWidth = theirsContentWidth
-        }
-        return baseWidth + (blameIsVisible ? GitBlameAnnotationCell.width : 0)
-    }
-
-    private var blameIsVisible: Bool {
-        blameAnnotations != nil
-    }
-
-    private func blame(for pane: MergeConflictPane) -> [Int: GitBlameLine] {
-        switch pane {
-        case .yours: blameAnnotations?.yours ?? [:]
-        case .result: blameAnnotations?.result ?? [:]
-        case .theirs: blameAnnotations?.theirs ?? [:]
-        }
-    }
-
-    @ViewBuilder
-    private func blameContextMenu() -> some View {
-        Button {
-            toggleBlame()
-        } label: {
-            if blameIsVisible {
-                Label("Close Annotations", systemImage: "checkmark")
-            } else if isLoadingBlame {
-                Label("Loading Git Blame…", systemImage: "hourglass")
+            } label: { Text(viewSettings.highlight.rawValue).font(.system(size: 11)) }.fixedSize().help("Highlighting Differences")
+            iconButton("Collapse Unchanged Fragments", symbol: "chevron.up.chevron.down", selected: collapsed) { collapsed.toggle() }
+            iconButton("Synchronize Scrolling", symbol: "arrow.up.and.down", selected: syncScroll) { syncScroll.toggle() }
+            Menu { settingsMenu } label: { Image(systemName: "gearshape").frame(width: 20) }
+                .menuIndicator(.hidden).help("Settings")
+            Spacer(minLength: 4)
+            if editor.document.unresolvedIDs.isEmpty {
+                Label("All conflicts resolved", systemImage: "checkmark").foregroundStyle(.green).font(.system(size: 11))
             } else {
-                Label("Annotation With Git Blame", systemImage: "person.text.rectangle")
+                Text("\(editor.document.unresolvedChangeCount) changes. \(editor.document.unresolvedConflictCount) conflicts.").font(.system(size: 11))
             }
         }
-        .disabled(isLoadingBlame)
+        .controlSize(.small).menuStyle(.borderlessButton)
+        .padding(.horizontal, 8).frame(height: 34)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .accessibilityIdentifier("RepoDesk.MergeConflictEditor.Toolbar")
     }
-
-    private func toggleBlame() {
-        guard !isLoadingBlame else { return }
-        if blameIsVisible {
-            blameAnnotations = nil
-            blameColorScales = [:]
-            return
-        }
-        isLoadingBlame = true
-        Task {
-            let annotations = try? await loadBlame(document.renderedText(overrides: customDrafts))
-            await MainActor.run {
-                if let annotations {
-                    blameAnnotations = annotations
-                    let panes: [MergeConflictPane: [Int: GitBlameLine]] = [
-                        .yours: annotations.yours,
-                        .result: annotations.result,
-                        .theirs: annotations.theirs
-                    ]
-                    blameColorScales = panes.mapValues { lines in
-                        GitBlameColorScale(dates: lines.values.lazy
-                            .filter { !$0.isUncommitted }.compactMap(\.authoredAt))
-                    }
-                }
-                isLoadingBlame = false
-            }
-        }
+    private var toolbarSeparator: some View { Divider().frame(height: 18).padding(.horizontal, 2) }
+    private func iconButton(_ title: String, symbol: String, disabled: Bool = false, selected: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: symbol).font(.system(size: 12)).frame(width: 23, height: 24) }
+            .buttonStyle(.plain).foregroundStyle(disabled ? Color.secondary.opacity(0.35) : .secondary)
+            .background(selected ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 4))
+            .disabled(disabled).help(title).accessibilityLabel(title)
     }
-
-    @ViewBuilder
-    private func blameCell(_ lineNumber: Int, pane: MergeConflictPane) -> some View {
-        if blameIsVisible {
-            GitBlameAnnotationCell(
-                blame: blame(for: pane)[lineNumber],
-                height: codeLineHeight,
-                colorScale: blameColorScales[pane] ?? GitBlameColorScale(dates: [])
-            )
-        }
+    private func textIcon(_ icon: String, help: String, disabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(icon, action: action).font(.system(size: 19, weight: .ultraLight)).buttonStyle(.plain)
+            .foregroundStyle(disabled ? Color.secondary.opacity(0.35) : .secondary)
+            .frame(width: icon.count > 1 ? 24 : 19, height: 24).disabled(disabled).help(help).accessibilityLabel(help)
     }
-
-    private static func initialContentWidths(
-        document: GitConflictResolutionDocument,
-        fontSize: CGFloat
-    ) -> MergeConflictPaneWidths {
-        func paneLines(_ pane: MergeConflictPane) -> [String] {
-            document.segments.flatMap { segment -> [String] in
-                switch segment {
-                case .unchanged(_, let text):
-                    return lines(in: text)
-                case .conflict(let block):
-                    switch pane {
-                    case .yours:
-                        return lines(in: block.ours)
-                    case .result:
-                        return lines(in: document.resolution(for: block.id) ?? block.base)
-                    case .theirs:
-                        return lines(in: block.theirs)
-                    }
-                }
-            }
-        }
-        return MergeConflictPaneWidths(
-            yours: measuredContentWidth(lines: paneLines(.yours), fontSize: fontSize),
-            result: measuredContentWidth(lines: paneLines(.result), fontSize: fontSize),
-            theirs: measuredContentWidth(lines: paneLines(.theirs), fontSize: fontSize)
-        )
-    }
-
-    private static func measuredContentWidth(
-        lines: [String],
-        fontSize: CGFloat
-    ) -> CGFloat {
-        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        let attributes: [NSAttributedString.Key: Any] = [.font: font]
-        let width = lines.reduce(CGFloat.zero) { maximum, line in
-            max(maximum, ceil((line as NSString).size(withAttributes: attributes).width))
-        }
-        return max(GitDiffLayoutMetrics.minimumSidePaneWidth, width + 92)
-    }
-
-    private func expandResultContentWidth(toFit text: String) {
-        let requiredWidth = Self.measuredContentWidth(
-            lines: Self.lines(in: text),
-            fontSize: fontSize
-        )
-        if requiredWidth > resultContentWidth {
-            resultContentWidth = requiredWidth
-        }
-    }
-
-    private func automaticVisibleLineCounts(
-        viewportHeight: CGFloat
-    ) -> [Int: Int] {
-        let unchanged = document.segments.enumerated().compactMap {
-            index,
-            segment -> (id: Int, count: Int, minimum: Int)? in
-            guard case .unchanged(let id, let text) = segment else { return nil }
-            let count = Self.lines(in: text).count
-            let edgeSegment = index == 0 || index == document.segments.count - 1
-            return (id, count, edgeSegment ? min(3, count) : min(6, count))
-        }
-        var allocations = Dictionary(uniqueKeysWithValues: unchanged.map { segment in
-            (
-                segment.id,
-                expandedUnchangedSegments.contains(segment.id)
-                    ? segment.count
-                    : segment.minimum
-            )
-        })
-        let conflictsHeight = document.blocks.reduce(CGFloat.zero) {
-            $0 + 24 + conflictContentHeight($1)
-        }
-
-        func targetLineCount(foldCount: Int) -> Int {
-            let availableHeight = max(
-                0,
-                viewportHeight - conflictsHeight - CGFloat(foldCount) * 26
-            )
-            return Int(floor(availableHeight / codeLineHeight))
-        }
-
-        func distribute(to target: Int, allocations: inout [Int: Int]) {
-            while allocations.values.reduce(0, +) < target {
-                var addedLine = false
-                for segment in unchanged
-                where !expandedUnchangedSegments.contains(segment.id) {
-                    let current = allocations[segment.id] ?? 0
-                    guard current < segment.count else { continue }
-                    allocations[segment.id] = current + 1
-                    addedLine = true
-                    if allocations.values.reduce(0, +) >= target { break }
-                }
-                if !addedLine { break }
-            }
-        }
-
-        let initialFoldCount = unchanged.filter {
-            !expandedUnchangedSegments.contains($0.id)
-                && (allocations[$0.id] ?? 0) < $0.count
-        }.count
-        distribute(
-            to: targetLineCount(foldCount: initialFoldCount),
-            allocations: &allocations
-        )
-        let finalFoldCount = unchanged.filter {
-            (allocations[$0.id] ?? 0) < $0.count
-        }.count
-        distribute(
-            to: targetLineCount(foldCount: finalFoldCount),
-            allocations: &allocations
-        )
-        return allocations
-    }
-
-    private func conflictContentHeight(_ block: GitConflictDocumentBlock) -> CGFloat {
-        let resultText = displayedResult(for: block)
-        let lineCount = max(
-            1,
-            Self.lines(in: block.ours).count,
-            Self.lines(in: block.theirs).count,
-            Self.lines(in: resultText).count
-        )
-        return max(48, CGFloat(lineCount) * codeLineHeight + 14)
-    }
-
-    private var canApply: Bool {
-        document.isResolved && customDrafts.isEmpty
-    }
-
-    private var footerStatus: String {
-        if !document.isResolved {
-            return "Resolve every conflict before applying"
-        }
-        if !customDrafts.isEmpty {
-            return "Confirm edited results before applying"
-        }
-        return "All conflicts resolved"
-    }
-
-    private var navigationBlockIDs: [Int] {
-        navigationScope.blockIDs(
-            allBlockIDs: document.blocks.map(\.id),
-            unresolvedBlockIDs: document.unresolvedBlockIDs
-        )
-    }
-
-    private var previousConflictID: Int? {
-        adjacentConflictID(offset: -1)
-    }
-
-    private var nextConflictID: Int? {
-        adjacentConflictID(offset: 1)
-    }
-
-    private func adjacentConflictID(offset: Int) -> Int? {
-        let ids = navigationBlockIDs
-        guard !ids.isEmpty else { return nil }
-        guard let selectedConflictID,
-              let index = ids.firstIndex(of: selectedConflictID) else {
-            return offset > 0 ? ids.first : ids.last
-        }
-        let nextIndex = index + offset
-        guard ids.indices.contains(nextIndex) else { return nil }
-        return ids[nextIndex]
-    }
-
-    private func navigateConflict(offset: Int, scrollProxy: ScrollViewProxy) {
-        guard let conflictID = adjacentConflictID(offset: offset) else { return }
-        if selectedConflictID == conflictID {
-            withAnimation(.easeInOut(duration: 0.16)) {
-                scrollProxy.scrollTo(conflictAnchor(conflictID), anchor: .center)
-            }
-        } else {
-            selectedConflictID = conflictID
-        }
-    }
-
-    private func accept(_ blockID: Int, side: GitConflictSide) {
-        let previousIDs = navigationBlockIDs
-        let previousIndex = previousIDs.firstIndex(of: blockID) ?? 0
-        customDrafts.removeValue(forKey: blockID)
-        document.resolve(blockID, with: side)
-        if let block = document.blocks.first(where: { $0.id == blockID }) {
-            expandResultContentWidth(toFit: side == .ours ? block.ours : block.theirs)
-        }
-        selectAfterResolution(previousIndex: previousIndex, resolvedID: blockID)
-    }
-
-    private func acceptCustomDraft(_ blockID: Int) {
-        guard let draft = customDrafts.removeValue(forKey: blockID) else { return }
-        let previousIDs = navigationBlockIDs
-        let previousIndex = previousIDs.firstIndex(of: blockID) ?? 0
-        document.resolve(blockID, with: draft)
-        expandResultContentWidth(toFit: draft)
-        selectAfterResolution(previousIndex: previousIndex, resolvedID: blockID)
-    }
-
-    private func reopen(_ blockID: Int) {
-        if customDrafts[blockID] == nil {
-            customDrafts[blockID] = document.resolution(for: blockID) ?? ""
-        }
-        expandResultContentWidth(toFit: customDrafts[blockID] ?? "")
-        document.markUnresolved(blockID)
-        selectedConflictID = blockID
-    }
-
-    private func selectAfterResolution(previousIndex: Int, resolvedID: Int) {
-        guard navigationScope == .unresolved else {
-            selectedConflictID = resolvedID
-            return
-        }
-        let remaining = navigationBlockIDs
-        selectedConflictID = remaining.isEmpty
-            ? nil
-            : remaining[min(previousIndex, remaining.count - 1)]
-    }
-
-    private func selectAvailableConflict() {
-        let ids = navigationBlockIDs
-        guard !ids.isEmpty else {
-            selectedConflictID = nil
-            return
-        }
-        if let selectedConflictID, ids.contains(selectedConflictID) { return }
-        self.selectedConflictID = ids.first
-    }
-
-    private func displayedResult(for block: GitConflictDocumentBlock) -> String {
-        customDrafts[block.id] ?? document.resolution(for: block.id) ?? block.base
-    }
-
-    private func customDraftBinding(for block: GitConflictDocumentBlock) -> Binding<String> {
-        Binding(
-            get: { displayedResult(for: block) },
-            set: {
-                customDrafts[block.id] = $0
-                expandResultContentWidth(toFit: $0)
-            }
-        )
-    }
-
-    private func toggleAllUnchangedSegments() {
-        if expandedUnchangedSegments.isEmpty {
-            expandedUnchangedSegments = Set(
-                document.segments.compactMap { segment in
-                    guard case .unchanged(let id, let text) = segment,
-                          Self.lines(in: text).count > 8 else { return nil }
-                    return id
-                }
-            )
-        } else {
-            expandedUnchangedSegments.removeAll()
-        }
-    }
-
-    private func unchangedDisplayParts(
-        id: Int,
-        lineCount: Int,
-        segmentIndex: Int,
-        visibleLineCount: Int
-    ) -> [MergeUnchangedDisplayPart] {
-        let visibleLineCount = expandedUnchangedSegments.contains(id)
-            ? lineCount
-            : min(lineCount, max(0, visibleLineCount))
-        guard visibleLineCount < lineCount else {
-            return (0..<lineCount).map(MergeUnchangedDisplayPart.line)
-        }
-        if segmentIndex == 0 {
-            let visible = max(0, lineCount - visibleLineCount)..<lineCount
-            return [.fold(0..<visible.lowerBound)] + visible.map(MergeUnchangedDisplayPart.line)
-        }
-        if segmentIndex == document.segments.count - 1 {
-            let visible = 0..<visibleLineCount
-            return visible.map(MergeUnchangedDisplayPart.line)
-                + [.fold(visible.upperBound..<lineCount)]
-        }
-        let leadingCount = (visibleLineCount + 1) / 2
-        let trailingCount = visibleLineCount / 2
-        let leading = 0..<leadingCount
-        let trailing = (lineCount - trailingCount)..<lineCount
-        return leading.map(MergeUnchangedDisplayPart.line)
-            + [.fold(leading.upperBound..<trailing.lowerBound)]
-            + trailing.map(MergeUnchangedDisplayPart.line)
-    }
-
-    private func lineStarts(for segmentIndex: Int) -> MergeConflictLineStarts {
-        var starts = MergeConflictLineStarts(left: 1, result: 1, right: 1)
-        for segment in document.segments.prefix(segmentIndex) {
-            switch segment {
-            case .unchanged(_, let text):
-                let count = Self.lines(in: text).count
-                starts.left += count
-                starts.result += count
-                starts.right += count
-            case .conflict(let block):
-                starts.left += Self.lines(in: block.ours).count
-                starts.right += Self.lines(in: block.theirs).count
-                let result = displayedResult(for: block)
-                starts.result += max(1, Self.lines(in: result).count)
-            }
-        }
-        return starts
-    }
-
-    private func numberedText(_ text: String, startingLine: Int) -> String {
-        Self.lines(in: text).enumerated().map { index, line in
-            let number = String(startingLine + index)
-            let padding = String(repeating: " ", count: max(0, 4 - number.count))
-            return "\(padding)\(number)  \(line)"
-        }.joined(separator: "\n")
-    }
-
-    private func conflictAnchor(_ blockID: Int) -> String {
-        "merge-conflict-\(blockID)"
-    }
-
-    private static func lines(in text: String) -> [String] {
-        guard !text.isEmpty else { return [] }
-        var lines = text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .components(separatedBy: "\n")
-        if lines.last == "" {
-            lines.removeLast()
-        }
-        return lines
-    }
-
-    private func applyResult() {
-        isApplying = true
-        Task {
-            let didApply = await apply(document.renderedText())
-            isApplying = false
-            if didApply { dismiss() }
-        }
-    }
-
-    private func saveCurrentProgress() {
-        isApplying = true
-        Task {
-            let didSave = await saveProgress(document.renderedText(overrides: customDrafts))
-            isApplying = false
-            if didSave { dismiss() }
-        }
-    }
-}
-
-private enum MergeConflictPane: String {
-    case yours
-    case result
-    case theirs
-}
-
-private struct MergeConflictPaneWidths {
-    var yours: CGFloat
-    var result: CGFloat
-    var theirs: CGFloat
-}
-
-@MainActor
-private struct MergeConflictHorizontalBar: View {
-    @Binding var offset: CGFloat
-    let contentWidth: CGFloat
-
-    @State private var dragStartOffset: CGFloat?
-
-    var body: some View {
+    private var headers: some View {
         GeometryReader { geometry in
-            let horizontalInset: CGFloat = 5
-            let trackWidth = max(1, geometry.size.width - horizontalInset * 2)
-            let maximumOffset = max(0, contentWidth - geometry.size.width)
-            let visibleFraction = min(1, geometry.size.width / max(1, contentWidth))
-            let thumbWidth = min(
-                trackWidth,
-                max(44, floor(trackWidth * visibleFraction))
-            )
-            let thumbTravel = max(0, trackWidth - thumbWidth)
-            let thumbOffset = maximumOffset > 0
-                ? min(thumbTravel, max(0, offset / maximumOffset * thumbTravel))
-                : 0
-
-            ZStack(alignment: .leading) {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color(nsColor: .separatorColor).opacity(0.45))
-                    .frame(height: 6)
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color(nsColor: .secondaryLabelColor).opacity(
-                        maximumOffset > 0 ? 0.72 : 0.24
-                    ))
-                    .frame(width: thumbWidth, height: 8)
-                    .offset(x: thumbOffset)
+            let width = max(0, (geometry.size.width - 64) / 3)
+            HStack(spacing: 0) {
+                Label("Your version (\(yoursBranch))", systemImage: "lock").frame(width: width, alignment: .leading)
+                Color.clear.frame(width: 32)
+                Text("Result").frame(width: width, alignment: .leading)
+                Color.clear.frame(width: 32)
+                Label("Changes from server (\(theirsBranch))", systemImage: "lock").frame(width: width, alignment: .leading)
+            }.font(.system(size: 12)).lineLimit(1).padding(.leading, 4)
+        }.frame(height: 20).background(Color(nsColor: .controlBackgroundColor))
+    }
+    private var breadcrumbs: some View {
+        Text(file.path.replacingOccurrences(of: "/", with: " › ")).font(.system(size: 11)).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8).frame(height: 22)
+    }
+    private var footer: some View {
+        HStack(spacing: 12) {
+            Button("Accept Left") { acceptWhole(.ours) }.buttonStyle(MergeDialogButtonStyle())
+            Button("Accept Right") { acceptWhole(.theirs) }.buttonStyle(MergeDialogButtonStyle())
+            Spacer()
+            if isApplying { ProgressView().controlSize(.small) }
+            Button("Cancel", role: .cancel) { cancel() }.buttonStyle(MergeDialogButtonStyle()).keyboardShortcut(.cancelAction)
+            Button("Apply") { if editor.document.unresolvedIDs.isEmpty { submit() } else { confirmsApply = true } }
+                .buttonStyle(MergeDialogButtonStyle(prominent: true))
+                .keyboardShortcut(.defaultAction).accessibilityIdentifier("RepoDesk.MergeConflictEditor.Apply")
+        }.padding(.horizontal, 16).frame(height: 50).background(Color(nsColor: .controlBackgroundColor))
+    }
+    private var settingsMenu: some View {
+        Group {
+            Toggle("Show Whitespaces", isOn: $viewSettings.showWhitespaces)
+            Toggle("Show Line Numbers", isOn: $viewSettings.showLineNumbers)
+            Toggle("Show Indent Guides", isOn: $viewSettings.showIndentGuides)
+            Toggle("Soft-Wrap", isOn: $viewSettings.softWrap)
+            Menu("Highlighting Level") {
+                Button("None") { viewSettings.syntaxHighlighting = false }
+                Button("Syntax") { viewSettings.syntaxHighlighting = true }
             }
-            .frame(width: trackWidth, height: geometry.size.height)
-            .padding(.horizontal, horizontalInset)
-            .contentShape(.rect)
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        guard maximumOffset > 0, thumbTravel > 0 else { return }
-                        if dragStartOffset == nil {
-                            let localX = value.startLocation.x - horizontalInset
-                            if localX < thumbOffset || localX > thumbOffset + thumbWidth {
-                                offset = min(
-                                    maximumOffset,
-                                    max(
-                                        0,
-                                        (localX - thumbWidth / 2)
-                                            / thumbTravel
-                                            * maximumOffset
-                                    )
-                                )
-                            }
-                            dragStartOffset = offset
-                        }
-                        let start = dragStartOffset ?? offset
-                        offset = min(
-                            maximumOffset,
-                            max(
-                                0,
-                                start
-                                    + value.translation.width
-                                        / thumbTravel
-                                        * maximumOffset
-                            )
-                        )
-                    }
-                    .onEnded { _ in
-                        dragStartOffset = nil
-                    }
-            )
+            Menu("Breadcrumbs") { ForEach(["Don't show", "Top", "Bottom"], id: \.self) { value in Button(value) { viewSettings.breadcrumbs = value } } }
+            Button("Resolve Conflicts in Import Statements") {}.disabled(true)
+            Divider()
+            Button("Help") { if let url = URL(string: "https://www.jetbrains.com/help/idea/2025.2/resolve-conflicts.html") { NSWorkspace.shared.open(url) } }
         }
-        .accessibilityElement()
-        .accessibilityLabel("Horizontal scroll")
-        .accessibilityValue(
-            contentWidth <= 0
-                ? "0%"
-                : "\(Int(min(100, max(0, offset / contentWidth * 100))))%"
-        )
+    }
+    private var compareMenu: some View {
+        Group {
+            Button("Left and Middle") { compare("Left", editor.document.ours, "Middle", editor.document.result) }
+            Button("Right and Middle") { compare("Right", editor.document.theirs, "Middle", editor.document.result) }
+            Button("Left and Right") { compare("Left", editor.document.ours, "Right", editor.document.theirs) }
+            Divider()
+            Button("Base and Left") { compare("Base", editor.document.base, "Left", editor.document.ours) }
+            Button("Base and Middle") { compare("Base", editor.document.base, "Middle", editor.document.result) }
+            Button("Base and Right") { compare("Base", editor.document.base, "Right", editor.document.theirs) }
+        }
+    }
+    private var canResolveSimple: Bool { editor.document.canApplyNonConflicting() || editor.document.changes.contains { editor.document.simpleResolution(for: $0) != nil } }
+    private func mutate(_ operation: (inout GitThreeWayMergeDocument) -> Void) { editor.commitPendingText?(); editor.change(operation) }
+    private func adjacent(_ direction: Int) -> Int? {
+        let ids = editor.document.unresolvedIDs
+        guard let selectedID else { return direction > 0 ? ids.first : ids.last }
+        return direction > 0 ? ids.first(where: { $0 > selectedID }) : ids.last(where: { $0 < selectedID })
+    }
+    private func navigate(_ direction: Int) { if let id = adjacent(direction) { selectedID = id } }
+    private func cancel() {
+        editor.commitPendingText?()
+        if editor.document != initialDocument { confirmsCancel = true } else { dismiss() }
+    }
+    private func acceptWhole(_ side: GitConflictSide) {
+        editor.commitPendingText?()
+        if editor.document != initialDocument { pendingWholeSide = side; confirmsWholeSide = true }
+        else { submit(side: side) }
+    }
+    private func submit(side: GitConflictSide? = nil) {
+        guard !isApplying else { return }
+        editor.commitPendingText?(); isApplying = true; errorMessage = nil
+        Task {
+            var document = editor.document
+            if let side { document.editResult(side == .ours ? document.ours : document.theirs) }
+            for change in document.changes { document.markResolved(change.id) }
+            let success: Bool
+            if let side, let acceptFile { success = await acceptFile(side) } else { success = await apply(document) }
+            isApplying = false
+            if success { dismiss() } else { errorMessage = operationError() ?? "Cannot apply the merge result. Refresh the file and try again." }
+        }
+    }
+    private func setWhitespace(_ policy: GitMergeWhitespacePolicy) {
+        guard policy != editor.document.whitespacePolicy else { return }
+        if editor.document != initialDocument { pendingWhitespace = policy; confirmsRestart = true } else { restart(policy) }
+    }
+    private func restart(_ policy: GitMergeWhitespacePolicy) {
+        let document = GitThreeWayMergeDocument(base: editor.document.base, ours: editor.document.ours, theirs: editor.document.theirs, automaticallyApply: automaticallyApply, whitespacePolicy: policy)
+        editor.change { $0 = document }; initialDocument = document; selectedID = document.unresolvedIDs.first
+    }
+    private func compare(_ leftTitle: String, _ left: String, _ rightTitle: String, _ right: String) {
+        editor.commitPendingText?()
+        comparison = MergeContentsComparison(title: "\(leftTitle) / \(rightTitle) — \(file.path)", leftTitle: leftTitle, rightTitle: rightTitle, left: left, right: right)
+    }
+    private func compareClipboard(_ text: String) { compare("Selected Version", text, "Clipboard", NSPasteboard.general.string(forType: .string) ?? "") }
+    private func annotate() {
+        guard !isLoadingBlame else { return }; isLoadingBlame = true
+        Task { do { blame = try await loadBlame(editor.document.result); showsBlame = true } catch { errorMessage = error.localizedDescription }; isLoadingBlame = false }
+    }
+    private func annotations(_ lines: [Int: GitBlameLine]) -> [Int: NativeGitBlameAnnotation] {
+        lines.mapValues { NativeGitBlameAnnotation(commitHash: $0.commitHash, author: $0.author, authoredAt: $0.authoredAt, isUncommitted: $0.isUncommitted, authorEmail: $0.authorEmail, message: $0.message) }
+    }
+    private var blameView: some View {
+        VStack(spacing: 0) {
+            HStack { Text("Annotate — \(file.path)").font(.headline); Spacer(); Button("Close") { showsBlame = false } }.padding()
+            HStack(spacing: 1) {
+                NativeCodeEditor(text: .constant(file.ours), isEditable: false, showsLineNumbers: true, gitBlame: annotations(blame.yours), fontSize: fontSize)
+                NativeCodeEditor(text: .constant(editor.document.result), isEditable: false, showsLineNumbers: true, gitBlame: annotations(blame.result), fontSize: fontSize)
+                NativeCodeEditor(text: .constant(file.theirs), isEditable: false, showsLineNumbers: true, gitBlame: annotations(blame.theirs), fontSize: fontSize)
+            }
+        }.frame(minWidth: 1100, minHeight: 600)
+    }
+}
+
+private struct MergeContentsComparison: Identifiable {
+    let id = UUID()
+    let title: String
+    let leftTitle: String
+    let rightTitle: String
+    let left: String
+    let right: String
+}
+
+struct MergeDialogButtonStyle: ButtonStyle {
+    var prominent = false
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.font(.system(size: 13)).padding(.horizontal, 14).frame(height: 28)
+            .foregroundStyle(prominent ? Color.white : Color.primary)
+            .background(prominent ? Color(red: 0.21, green: 0.45, blue: 0.94) : Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(prominent ? Color.clear : Color(nsColor: .separatorColor), lineWidth: 1))
+            .opacity(enabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
     }
 }
 
@@ -1637,22 +706,4 @@ enum MergeConflictNavigationScope: String, CaseIterable, Identifiable {
             allBlockIDs
         }
     }
-}
-
-private enum MergeUnchangedDisplayPart: Identifiable {
-    case line(Int)
-    case fold(Range<Int>)
-
-    var id: String {
-        switch self {
-        case .line(let index): "line-\(index)"
-        case .fold(let range): "fold-\(range.lowerBound)-\(range.upperBound)"
-        }
-    }
-}
-
-private struct MergeConflictLineStarts {
-    var left: Int
-    var result: Int
-    var right: Int
 }
