@@ -28,6 +28,7 @@ enum HistoryCommitPresentation {
 
 struct HistoryContainingBranchesView: View {
     let branches: [String]
+    let copyBranch: (String) -> Void
     @State private var showsAll = false
 
     var body: some View {
@@ -35,6 +36,7 @@ struct HistoryContainingBranchesView: View {
             Text("In \(branches.count) branches: \(preview)")
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .textSelection(.enabled)
             if !branches.isEmpty {
                 Button("显示全部") { showsAll = true }
                     .buttonStyle(.borderless)
@@ -48,6 +50,9 @@ struct HistoryContainingBranchesView: View {
                                     ForEach(Array(branches.enumerated()), id: \.offset) { _, branch in
                                         Text(branch)
                                             .frame(maxWidth: .infinity, alignment: .leading)
+                                            .contextMenu {
+                                                Button("复制分支名") { copyBranch(branch) }
+                                            }
                                     }
                                 }
                                 .textSelection(.enabled)

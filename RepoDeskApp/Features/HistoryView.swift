@@ -423,10 +423,15 @@ struct HistoryView: View {
             Text(detail.summary.subject)
                 .fontWeight(.semibold)
                 .lineLimit(2)
+                .textSelection(.enabled)
             HStack(spacing: 8) {
                 let author = detail.summary.author
                 Text(verbatim: detail.authorEmail.map { "\(author) <\($0)>" } ?? author)
-                Text(String(detail.summary.hash.prefix(12))).monospaced()
+                Text(String(detail.summary.hash.prefix(12)))
+                    .monospaced()
+                    .contextMenu {
+                        Button("复制完整 Hash") { copy(detail.summary.hash) }
+                    }
                 if let date = detail.summary.authoredAt { Text(date, format: .dateTime) }
             }
             .foregroundStyle(.secondary)
@@ -437,7 +442,7 @@ struct HistoryView: View {
                     .foregroundStyle(.tint)
                     .textSelection(.enabled)
             }
-            HistoryContainingBranchesView(branches: detail.containingBranches)
+            HistoryContainingBranchesView(branches: detail.containingBranches, copyBranch: copy)
                 .id(detail.summary.hash)
         }
         .padding(10)
