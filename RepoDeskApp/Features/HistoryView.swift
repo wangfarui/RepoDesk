@@ -424,7 +424,8 @@ struct HistoryView: View {
                 .fontWeight(.semibold)
                 .lineLimit(2)
             HStack(spacing: 8) {
-                Text(detail.summary.author)
+                let author = detail.summary.author
+                Text(verbatim: detail.authorEmail.map { "\(author) <\($0)>" } ?? author)
                 Text(String(detail.summary.hash.prefix(12))).monospaced()
                 if let date = detail.summary.authoredAt { Text(date, format: .dateTime) }
             }
@@ -522,7 +523,8 @@ struct HistoryView: View {
             summary: detail.summary,
             files: [selectedCommitFile],
             parentHashes: detail.parentHashes,
-            containingBranches: detail.containingBranches
+            containingBranches: detail.containingBranches,
+            authorEmail: detail.authorEmail
         )
     }
 

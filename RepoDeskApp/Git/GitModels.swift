@@ -174,17 +174,20 @@ struct GitCommitDetail: Equatable, Sendable {
     let files: [GitCommitFile]
     let parentHashes: [String]
     let containingBranches: [String]
+    let authorEmail: String?
 
     init(
         summary: GitCommitSummary,
         files: [GitCommitFile],
         parentHashes: [String] = [],
-        containingBranches: [String] = []
+        containingBranches: [String] = [],
+        authorEmail: String? = nil
     ) {
         self.summary = summary
         self.files = files
         self.parentHashes = parentHashes
         self.containingBranches = containingBranches
+        self.authorEmail = authorEmail
     }
 
     var isTwoParentMerge: Bool { parentHashes.count == 2 }

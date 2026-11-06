@@ -4514,7 +4514,8 @@ final class AppState {
                                 summary: refreshedSummary,
                                 files: selectedCommitDetail.files,
                                 parentHashes: selectedCommitDetail.parentHashes,
-                                containingBranches: containingBranches
+                                containingBranches: containingBranches,
+                                authorEmail: selectedCommitDetail.authorEmail
                             )
                         }
                     } else if selectedCommitHash != targetHash || !isLoadingCommit {

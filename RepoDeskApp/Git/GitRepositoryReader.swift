@@ -1040,13 +1040,17 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
 
     func commit(repositoryURL: URL, hash: String) async throws -> GitCommitDetail {
         let summaryData = try await runGit(
-            ["show", "-s", "--format=%H%x00%s%x00%an%x00%aI%x00%D%x00%P", hash],
+            ["show", "-s", "--format=%H%x00%s%x00%an%x00%aI%x00%D%x00%P%x00%ae", hash],
             in: repositoryURL
         )
         guard let summary = parseCommit(summaryData) else {
             throw GitRepositoryError.commandFailed(arguments: ["show", hash], message: "Commit metadata was empty")
         }
-        let parentHashes = parseCommitParentHashes(summaryData)
+        let fields = summaryData.split(separator: 0, omittingEmptySubsequences: false)
+        let authorEmail = fields.count > 6
+            ? String(decoding: fields[6], as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        let parentHashes = summary.parentHashes
         let fileArguments: [String]
         if parentHashes.count > 1 {
             fileArguments = [
@@ -1065,7 +1069,8 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             summary: summary,
             files: parseCommitFiles(try await filesData),
             parentHashes: parentHashes,
-            containingBranches: try await branches
+            containingBranches: try await branches,
+            authorEmail: authorEmail.isEmpty ? nil : authorEmail
         )
     }
 
