@@ -124,8 +124,8 @@ final class AppState {
     var isPerformingBranchOperation = false
     var branchOperationErrorMessage: String?
     var branchOperationStatusMessage: String?
-    var branchComparison: GitBranchComparison?
-    var isLoadingBranchComparison = false
+    @ObservationIgnored private var branchComparisonWindow = GitDiffWindowController(frameAutosaveName: "RepoDesk.BranchComparison")
+    private(set) var branchComparisonSession: BranchComparisonSession?
     var conflictFiles: [GitConflictFile] = []
     /// Files staged as resolved during the current merge, retained for review/revert.
     var resolvedConflictFiles: [GitConflictFile] = []
@@ -761,8 +761,7 @@ final class AppState {
         isPerformingBranchOperation = false
         branchOperationErrorMessage = nil
         branchOperationStatusMessage = nil
-        branchComparison = nil
-        isLoadingBranchComparison = false
+        dismissBranchComparison()
         conflictFiles = []
         resolvedConflictFiles = []
         mergeSourceBranch = nil
@@ -892,8 +891,7 @@ final class AppState {
         isPerformingBranchOperation = false
         branchOperationErrorMessage = nil
         branchOperationStatusMessage = nil
-        branchComparison = nil
-        isLoadingBranchComparison = false
+        dismissBranchComparison()
         conflictFiles = []
         resolvedConflictFiles = []
         mergeSourceBranch = nil
@@ -1042,7 +1040,7 @@ final class AppState {
         branchesErrorMessage = nil
         branchOperationErrorMessage = nil
         branchOperationStatusMessage = nil
-        branchComparison = nil
+        dismissBranchComparison()
         conflictFiles = []
         resolvedConflictFiles = []
         mergeSourceBranch = nil
@@ -1615,18 +1613,23 @@ final class AppState {
     func compareBranch(_ branch: GitBranch) async {
         guard let repositoryURL = activeRepositoryURL,
               let current = branches.first(where: \.isCurrent)?.name else { return }
-        isLoadingBranchComparison = true
-        branchOperationErrorMessage = nil
-        defer { isLoadingBranchComparison = false }
-        do {
-            branchComparison = try await gitRepositoryReader.compareBranches(
-                repositoryURL: repositoryURL,
-                base: current,
-                compared: branch.name
-            )
-        } catch {
-            branchOperationErrorMessage = error.localizedDescription
+        let session = BranchComparisonSession(repositoryURL: repositoryURL,
+            current: "refs/heads/\(current)",
+            selected: "\(branch.isRemote ? "refs/remotes/" : "refs/heads/")\(branch.name)",
+            reader: gitRepositoryReader)
+        branchComparisonSession = session
+        branchComparisonWindow.onClose = { [weak self, weak session] in
+            if self?.branchComparisonSession === session { self?.branchComparisonSession = nil }
         }
+        branchComparisonWindow.present(title: "\(current) 独有 · 相对 \(branch.name)") {
+            BranchComparisonSheet(session: session, dismiss: { [weak self] in self?.dismissBranchComparison() })
+                .id(session.id)
+        }
+    }
+
+    func dismissBranchComparison() {
+        branchComparisonWindow.close()
+        branchComparisonSession = nil
     }
 
     @discardableResult

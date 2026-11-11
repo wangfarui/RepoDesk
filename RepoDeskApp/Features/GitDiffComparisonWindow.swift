@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class GitDiffWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
+    var onClose: (() -> Void)?
     private let frameAutosaveName: String
 
     init(frameAutosaveName: String = "RepoDesk.GitDiffComparison") {
@@ -64,6 +65,9 @@ final class GitDiffWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         window?.contentViewController = nil
         window = nil
+        let completion = onClose
+        onClose = nil
+        completion?()
     }
 }
 

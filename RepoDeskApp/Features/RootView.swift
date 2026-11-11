@@ -124,11 +124,6 @@ struct RootView: View {
         .sheet(isPresented: $showsPushSheet) {
             GitPushSheet(appState: appState)
         }
-        .sheet(isPresented: branchComparisonPresented) {
-            if let comparison = appState.branchComparison {
-                BranchComparisonSheet(comparison: comparison) { appState.branchComparison = nil }
-            }
-        }
         .sheet(isPresented: mergeConflictPresented) {
             MergeConflictResolverSheet(appState: appState)
         }
@@ -838,10 +833,6 @@ struct RootView: View {
                     closeBranchPopovers()
                     Task { _ = await appState.switchBranch(branch) }
                 }
-                branchAction("Compare With '\(currentBranchTitle)'", systemImage: "arrow.left.arrow.right") {
-                    closeBranchPopovers()
-                    Task { await appState.compareBranch(branch) }
-                }
             } else {
                 if !branch.isCurrent {
                     branchAction("Checkout", systemImage: "arrow.right.circle") {
@@ -877,6 +868,11 @@ struct RootView: View {
                     }
                 }
             }
+            branchAction("Compare With '\(currentBranchTitle)'", systemImage: "arrow.left.arrow.right") {
+                closeBranchPopovers()
+                Task { await appState.compareBranch(branch) }
+            }
+            .accessibilityIdentifier("RepoDesk.Branch.Compare")
         }
         .padding(6)
         .frame(width: 310)
@@ -914,13 +910,6 @@ struct RootView: View {
     private func closeBranchPopovers() {
         branchWithOpenActions = nil
         showsBranchPicker = false
-    }
-
-    private var branchComparisonPresented: Binding<Bool> {
-        Binding(
-            get: { appState.branchComparison != nil },
-            set: { if !$0 { appState.branchComparison = nil } }
-        )
     }
 
     private var mergeConflictPresented: Binding<Bool> {

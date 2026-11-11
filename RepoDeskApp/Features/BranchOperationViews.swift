@@ -48,58 +48,6 @@ private final class MergeConflictSheetWindowView: NSView {
 }
 
 @MainActor
-struct BranchComparisonSheet: View {
-    let comparison: GitBranchComparison
-    let dismiss: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Compare Branches").font(.headline)
-                    Text("\(comparison.comparedBranch) with \(comparison.baseBranch)")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("关闭", systemImage: "xmark", action: dismiss).labelStyle(.iconOnly)
-            }
-            .padding()
-            Divider()
-            HSplitView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("Commits").font(.caption.weight(.semibold)).padding(10)
-                    Divider()
-                    List(comparison.commits) { commit in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(commit.subject).lineLimit(2)
-                            Text("\(commit.author)  \(commit.hash.prefix(8))")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .overlay {
-                        if comparison.commits.isEmpty { ContentUnavailableView("没有仅存在于该分支的 Commit", systemImage: "checkmark") }
-                    }
-                }
-                .frame(minWidth: 260)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("File Diff").font(.caption.weight(.semibold)).padding(10)
-                    Divider()
-                    ScrollView([.vertical, .horizontal]) {
-                        Text(comparison.diffText.isEmpty ? "没有文件差异" : comparison.diffText)
-                            .font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                }
-                .frame(minWidth: 520)
-            }
-        }
-        .frame(minWidth: 900, minHeight: 600)
-    }
-}
-
-@MainActor
 struct MergeConflictResolverSheet: View {
     @Bindable var appState: AppState
     @State private var selectedPaths = Set<String>()

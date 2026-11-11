@@ -30,9 +30,9 @@ enum HistoryFileOutlineBuilder {
         modulePath: (GitCommitFile) -> String
     ) -> [HistoryFileOutlineRow] {
         let selections = selections(for: files)
-        let filesByPath = Dictionary(uniqueKeysWithValues: files.map { ($0.path, $0) })
+        let filesByPath = Dictionary(grouping: files, by: \.path)
         let modulePathsByPath = grouping.contains(.module)
-            ? Dictionary(uniqueKeysWithValues: files.map { ($0.path, modulePath($0)) })
+            ? files.reduce(into: [String: String]()) { $0[$1.path] = modulePath($1) }
             : [:]
         let resolveModulePath: (GitChangeSelection) -> String = { selection in
             modulePathsByPath[selection.path] ?? "."
@@ -72,22 +72,22 @@ enum HistoryFileOutlineBuilder {
             )
         }
 
-        return rows.compactMap { row in
+        return rows.flatMap { row -> [HistoryFileOutlineRow] in
             switch row {
             case .directory(let id, let name, let path, let depth, let count, let modulePath):
-                .directory(
+                [.directory(
                     id: id,
                     name: name,
                     path: path,
                     depth: depth,
                     count: count,
                     modulePath: modulePath
-                )
+                )]
             case .module(let id, let name, let path, let count):
-                .module(id: id, name: name, path: path, count: count)
+                [.module(id: id, name: name, path: path, count: count)]
             case .file(let id, let selection, let depth, let modulePath, _):
-                filesByPath[selection.path].map {
-                    .file(id: id, file: $0, depth: depth, modulePath: modulePath)
+                (filesByPath[selection.path] ?? []).map {
+                    .file(id: $0.comparisonIdentity ?? id, file: $0, depth: depth, modulePath: modulePath)
                 }
             }
         }
@@ -101,7 +101,7 @@ enum HistoryFileOutlineBuilder {
     ) -> Set<String> {
         let selections = selections(for: files)
         let modulePathsByPath = grouping.contains(.module)
-            ? Dictionary(uniqueKeysWithValues: files.map { ($0.path, modulePath($0)) })
+            ? files.reduce(into: [String: String]()) { $0[$1.path] = modulePath($1) }
             : [:]
         let resolveModulePath: (GitChangeSelection) -> String = { selection in
             modulePathsByPath[selection.path] ?? "."
@@ -131,8 +131,10 @@ enum HistoryFileOutlineBuilder {
     }
 
     private static func selections(for files: [GitCommitFile]) -> [GitChangeSelection] {
-        files.map {
-            GitChangeSelection(path: $0.path, kind: .changes, originalPath: $0.originalPath)
+        var seen = Set<String>()
+        return files.compactMap {
+            guard seen.insert($0.path).inserted else { return nil }
+            return GitChangeSelection(path: $0.path, kind: .changes, originalPath: $0.originalPath)
         }
     }
 }

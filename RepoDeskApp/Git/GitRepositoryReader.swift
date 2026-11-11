@@ -147,7 +147,7 @@ extension GitRepositoryReading {
         throw GitRepositoryError.unsupportedMergeParentCount(parentHashes.count)
     }
     func compareBranches(repositoryURL: URL, base: String, compared: String) async throws -> GitBranchComparison {
-        GitBranchComparison(baseBranch: base, comparedBranch: compared, commits: [], diffText: "")
+        throw GitRepositoryError.commandFailed(arguments: ["compare"], message: "当前读取器不支持分支比较。")
     }
     func blame(
         repositoryURL: URL,
@@ -380,7 +380,11 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
                 file: file,
                 ignoringWhitespace: ignoringWhitespace
             )
-        case .revisionRange(let base, let head, let file):
+        case .revisionRange(let base, let head, let file, let exactFileVersions):
+            if exactFileVersions {
+                return try await fileVersionsDiff(repositoryURL: repositoryURL, base: base, head: head,
+                    file: file, ignoringWhitespace: ignoringWhitespace)
+            }
             return try await revisionRangeFileDiff(
                 repositoryURL: repositoryURL,
                 base: base,
@@ -392,32 +396,65 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
     }
 
     func compareBranches(repositoryURL: URL, base: String, compared: String) async throws -> GitBranchComparison {
-        async let logResult = commandRunner.run(CommandRequest(
-            executableURL: gitURL,
-            arguments: ["log", "--left-right", "--format=%m%x00%H%x00%s%x00%an%x00%aI", "--no-merges", "\(base)...\(compared)"],
-            workingDirectoryURL: repositoryURL,
-            environment: gitEnvironment
-        ))
-        async let diffResult = commandRunner.run(CommandRequest(
-            executableURL: gitURL,
-            arguments: ["diff", "--no-color", "--unified=3", base, compared],
-            workingDirectoryURL: repositoryURL,
-            environment: gitEnvironment
-        ))
-        let log = try await logResult
-        let diff = try await diffResult
-        guard log.terminationStatus == 0, diff.terminationStatus == 0 else {
-            throw GitRepositoryError.commandFailed(arguments: ["compare", base, compared], message: "无法比较分支。")
-        }
-        let fields = String(decoding: log.standardOutput, as: UTF8.self)
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .compactMap { line -> GitCommitSummary? in
-                let parts = line.split(separator: "\0", omittingEmptySubsequences: false)
-                guard parts.count >= 5 else { return nil }
-                let side = String(parts[0]) == "<" ? base : compared
-                return GitCommitSummary(hash: String(parts[1]), subject: String(parts[2]), author: String(parts[3]), authoredAt: ISO8601DateFormatter().date(from: String(parts[4])), refs: [side])
+        // Callers pass fully qualified refs. Pin both sides before querying history.
+        let baseSHA = decodedLine(try await runGit(["rev-parse", "--verify", "\(base)^{commit}"], in: repositoryURL))
+        let comparedSHA = decodedLine(try await runGit(["rev-parse", "--verify", "\(compared)^{commit}"], in: repositoryURL))
+        let range = "\(comparedSHA)..\(baseSHA)"
+        let commits = GitHistoryParser.parse(try await runGit([
+            "log", "--reverse", "--topo-order", "--format=%x1e%H%x1f%s%x1f%an%x1f%aI%x1f%D%x1f%P", range, "--"
+        ], in: repositoryURL))
+        // NUL headers cannot collide with legal Git paths; only status tokens are trimmed.
+        let batch = try await runGit([
+            "log", "--reverse", "--topo-order", "--format=%x00%H%x00", "--name-status", "-z",
+            "--root", "--diff-merges=first-parent", "-M", range, "--"
+        ], in: repositoryURL)
+        let tokens = batch.split(separator: 0, omittingEmptySubsequences: false)
+        var filesByCommit: [String: [GitCommitFile]] = [:]
+        let commitHashes = Set(commits.map(\.hash))
+        var index = 0
+        while index < tokens.count {
+            guard tokens[index].isEmpty, index + 2 < tokens.count else { index += 1; continue }
+            let hash = String(decoding: tokens[index + 1], as: UTF8.self)
+            guard commitHashes.contains(hash) else { index += 1; continue }
+            index += 3
+            var data = Data()
+            while index < tokens.count, !tokens[index].isEmpty {
+                let status = String(decoding: tokens[index], as: UTF8.self).trimmingCharacters(in: .newlines)
+                let count = status.hasPrefix("R") || status.hasPrefix("C") ? 3 : 2
+                guard index + count <= tokens.count else {
+                    throw GitRepositoryError.commandFailed(arguments: ["log"], message: "文件状态记录不完整。")
+                }
+                data.append(contentsOf: status.utf8); data.append(0)
+                for offset in 1..<count { data.append(contentsOf: tokens[index + offset]); data.append(0) }
+                index += count
             }
-        return GitBranchComparison(baseBranch: base, comparedBranch: compared, commits: fields, diffText: String(decoding: diff.standardOutput, as: UTF8.self))
+            filesByCommit[hash] = parseCommitFiles(data)
+        }
+        var records: [GitBranchCommitChanges] = []
+        var changes: [GitBranchComparisonFile] = []
+        for commit in commits {
+            try Task.checkCancellation()
+            guard let first = filesByCommit[commit.hash] else {
+                throw GitRepositoryError.commandFailed(arguments: ["log"], message: "缺少提交的文件记录：\(commit.hash)")
+            }
+            var parents = [GitBranchCommitChanges(commit: commit.hash, parent: commit.parentHashes.first, files: first)]
+            for parent in commit.parentHashes.dropFirst() {
+                let data = try await runGit([
+                    "diff", "--name-status", "-z", "-M", parent, commit.hash, "--"
+                ], in: repositoryURL)
+                parents.append(GitBranchCommitChanges(commit: commit.hash, parent: parent, files: parseCommitFiles(data)))
+            }
+            records.append(contentsOf: parents)
+            let paths = parents.dropFirst().map { Set($0.files.map(\.path)) }
+            let included = first.filter { file in paths.allSatisfy { $0.contains(file.path) } }
+            GitBranchChangesCollector.append(included, commit: commit.hash, parent: commit.parentHashes.first, to: &changes)
+        }
+        return GitBranchComparison(
+            baseBranch: base.replacingOccurrences(of: "refs/heads/", with: ""),
+            comparedBranch: compared.replacingOccurrences(of: "refs/heads/", with: "").replacingOccurrences(of: "refs/remotes/", with: ""),
+            commits: commits, baseSHA: baseSHA, comparedSHA: comparedSHA, records: records,
+            files: changes.sorted { $0.file.path < $1.file.path }
+        )
     }
 
     func blame(
@@ -694,6 +731,48 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             newLineCount: newLineCount,
             patch: patch,
             hunks: parsedHunks
+        )
+    }
+
+    private func fileVersionsDiff(
+        repositoryURL: URL,
+        base: String?,
+        head: String,
+        file: GitCommitFile,
+        ignoringWhitespace: Bool
+    ) async throws -> GitFileDiff {
+        // Compare precisely these two file versions. A tree diff with both paths can
+        // accidentally include an unrelated file re-created at the rename's old path.
+        let oldPath = file.originalPath ?? file.path
+        let oldData: Data?
+        if let base, file.status != .added {
+            oldData = try await readBlob("\(base):\(oldPath)", repositoryURL: repositoryURL)
+        } else { oldData = nil }
+        let newData = file.status == .deleted ? nil : try await readBlob("\(head):\(file.path)", repositoryURL: repositoryURL)
+        guard (base == nil || file.status == .added || oldData != nil),
+              (file.status == .deleted || newData != nil) else {
+            throw GitRepositoryError.commandFailed(arguments: ["show"], message: "汇总文件的版本已不可读取。")
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("RepoDesk-Range-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let oldURL = directory.appendingPathComponent("before")
+        let newURL = directory.appendingPathComponent("after")
+        try (oldData ?? Data()).write(to: oldURL)
+        try (newData ?? Data()).write(to: newURL)
+        var arguments = ["diff", "--no-index", "--no-ext-diff", "--no-textconv", "--no-color", "--unified=3"]
+        if ignoringWhitespace { arguments.append("--ignore-all-space") }
+        arguments.append(contentsOf: ["--", oldURL.path, newURL.path])
+        let result = try await runGitResult(arguments, in: repositoryURL)
+        guard result.terminationStatus == 0 || result.terminationStatus == 1 else {
+            throw GitRepositoryError.commandFailed(arguments: arguments, message: decodedError(result))
+        }
+        return makeFileDiff(
+            path: file.path, originalPath: file.originalPath,
+            oldLabel: base.map { "\($0.prefix(8)):\(oldPath)" } ?? "Empty",
+            newLabel: file.status == .deleted ? "Empty" : "\(head.prefix(8)):\(file.path)",
+            oldData: oldData, newData: newData,
+            patch: String(decoding: result.standardOutput, as: UTF8.self)
         )
     }
 

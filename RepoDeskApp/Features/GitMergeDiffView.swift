@@ -151,6 +151,7 @@ struct GitMergeDiffView: View {
     let ignoresWhitespace: Bool
     let toggleIgnoreWhitespace: () -> Void
     let jumpToSource: (Int?) -> Void
+    let canJumpToSource: Bool
     let blame: [GitHistoryBlameSide: [Int: GitBlameLine]]
     private let blameColorScales: [GitHistoryBlameSide: GitBlameColorScale]
     let toggleBlame: (GitHistoryBlameSide) -> (() -> Void)?
@@ -178,6 +179,7 @@ struct GitMergeDiffView: View {
         ignoresWhitespace: Bool,
         toggleIgnoreWhitespace: @escaping () -> Void,
         jumpToSource: @escaping (Int?) -> Void,
+        canJumpToSource: Bool = true,
         blame: [GitHistoryBlameSide: [Int: GitBlameLine]] = [:],
         toggleBlame: @escaping (GitHistoryBlameSide) -> (() -> Void)? = { _ in nil },
         fontSize: CGFloat = NSFont.systemFontSize,
@@ -187,6 +189,7 @@ struct GitMergeDiffView: View {
         self.ignoresWhitespace = ignoresWhitespace
         self.toggleIgnoreWhitespace = toggleIgnoreWhitespace
         self.jumpToSource = jumpToSource
+        self.canJumpToSource = canJumpToSource
         self.blame = blame
         blameColorScales = blame.mapValues { annotations in
             GitBlameColorScale(dates: annotations.values.lazy
@@ -311,11 +314,13 @@ struct GitMergeDiffView: View {
             }
             .labelStyle(.iconOnly)
             .help(ignoresWhitespace ? "当前忽略空白变化" : "忽略空白变化")
-            Button("跳转到源文件", systemImage: "arrow.turn.down.right") {
-                jumpToSource(selectedResultLine)
+            if canJumpToSource {
+                Button("跳转到源文件", systemImage: "arrow.turn.down.right") {
+                    jumpToSource(selectedResultLine)
+                }
+                .labelStyle(.iconOnly)
+                .help("Jump To Source")
             }
-            .labelStyle(.iconOnly)
-            .help("Jump To Source")
         }
         .padding(.horizontal, 12)
         .frame(height: 46)

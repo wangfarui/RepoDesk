@@ -12,6 +12,22 @@ struct HistoryGitBlameContext: Equatable, Sendable {
     let path: String
     let targets: [GitHistoryBlameSide: HistoryGitBlameTarget]
 
+    init(repositoryURL: URL, before: GitFileRevision?, after: GitFileRevision?, diff: GitFileDiff) {
+        self.repositoryURL = repositoryURL
+        commitHash = after?.commit ?? before?.commit ?? ""
+        path = diff.path
+        var targets: [GitHistoryBlameSide: HistoryGitBlameTarget] = [:]
+        if !diff.isBinary {
+            if let before, !diff.oldLines.isEmpty {
+                targets[.target] = HistoryGitBlameTarget(revision: before.commit, path: before.path)
+            }
+            if let after, !diff.newLines.isEmpty {
+                targets[.result] = HistoryGitBlameTarget(revision: after.commit, path: after.path)
+            }
+        }
+        self.targets = targets
+    }
+
     init(repositoryURL: URL, detail: GitCommitDetail, diff: GitFileDiff, source: GitFileDiff? = nil) {
         self.repositoryURL = repositoryURL
         commitHash = detail.summary.hash

@@ -62,6 +62,18 @@ swiftc \
   -strict-concurrency=complete \
   -warnings-as-errors \
   -I "${project_dir}/build" -L "${project_dir}/build" -lRepoDesk \
+  "${project_dir}/scripts/verify-git-branch-comparison.swift" \
+  -o "${project_dir}/build/verify-git-branch-comparison"
+
+DYLD_LIBRARY_PATH="${project_dir}/build" \
+  "${project_dir}/build/verify-git-branch-comparison"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
+  -I "${project_dir}/build" -L "${project_dir}/build" -lRepoDesk \
   "${project_dir}/scripts/verify-idea-merge-interaction.swift" \
   -o "${project_dir}/build/verify-idea-merge-interaction"
 
@@ -922,6 +934,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Git/GitHistoryParser.swift" \
   "${project_dir}/RepoDeskApp/Git/GitStatusParser.swift" \
   "${project_dir}/RepoDeskApp/Git/GitRepositoryReader.swift" \
+  "${project_dir}/RepoDeskApp/Git/GitBranchChangesCollector.swift" \
   "${project_dir}/RepoDeskApp/Git/GitLineChanges.swift" \
   "${project_dir}/RepoDeskApp/Files/FileModels.swift" \
   "${project_dir}/RepoDeskApp/Files/DocumentLoader.swift" \

@@ -86,7 +86,45 @@ struct GitBranchComparison: Equatable, Sendable {
     let baseBranch: String
     let comparedBranch: String
     let commits: [GitCommitSummary]
-    let diffText: String
+    let baseSHA: String
+    let comparedSHA: String
+    let records: [GitBranchCommitChanges]
+    let files: [GitBranchComparisonFile]
+
+    var title: String { "\(baseBranch) 独有 · 相对 \(comparedBranch)" }
+}
+
+struct GitFileRevision: Equatable, Sendable {
+    let commit: String
+    let path: String
+}
+
+/// One entry per parent, including entries excluded from a merge's intersection.
+struct GitBranchCommitChanges: Equatable, Sendable {
+    let commit: String
+    let parent: String?
+    let files: [GitCommitFile]
+}
+
+struct GitBranchComparisonFile: Equatable, Identifiable, Sendable {
+    let before: GitFileRevision?
+    var after: GitFileRevision?
+    var contributions: [String]
+    let initialStatus: GitStatusCode
+
+    var id: String { [contributions.first ?? "", before?.path ?? "", after?.path ?? ""].joined(separator: "\0") }
+    var file: GitCommitFile {
+        let path = after?.path ?? before!.path
+        let status: GitStatusCode = before == nil ? .added : after == nil ? .deleted
+            : before?.path != after?.path ? .renamed
+            : initialStatus == .typeChanged ? .typeChanged : .modified
+        return GitCommitFile(path: path, originalPath: before?.path != path ? before?.path : nil,
+            status: status, comparisonIdentity: id)
+    }
+
+    var target: GitDiffTarget {
+        .revisionRange(base: before?.commit, head: after?.commit ?? before!.commit, file: file, exactFileVersions: true)
+    }
 }
 
 struct GitConflictFile: Equatable, Identifiable, Codable, Sendable {
@@ -166,7 +204,9 @@ struct GitCommitFile: Equatable, Identifiable, Sendable {
     let originalPath: String?
     let status: GitStatusCode
 
-    var id: String { path }
+    // Distinct change chains can end at the same path (delete a, then rename b to a).
+    var comparisonIdentity: String? = nil
+    var id: String { comparisonIdentity ?? path }
 }
 
 struct GitCommitDetail: Equatable, Sendable {
@@ -196,7 +236,7 @@ struct GitCommitDetail: Equatable, Sendable {
 enum GitDiffTarget: Equatable, Sendable {
     case change(GitChangeSelection)
     case commit(hash: String, file: GitCommitFile)
-    case revisionRange(base: String?, head: String, file: GitCommitFile)
+    case revisionRange(base: String?, head: String, file: GitCommitFile, exactFileVersions: Bool = false)
 }
 
 enum GitPatchLineKind: Equatable, Sendable {
