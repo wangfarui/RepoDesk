@@ -80,6 +80,10 @@ enum VerifyGitBranchComparison {
         let restored = try file(local, "restore.txt")
         let restoredDiff = try await diff(f, restored)
         try require(restored.contributions == [first, last] && restoredDiff.hunks.isEmpty && restoredDiff.oldLines == restoredDiff.newLines, "Restored file must retain history with zero net diff")
+        try require(restored.isNetUnchanged && restored.statusLabel == "≡", "Restored file must use the unchanged marker")
+        try require(local.unchangedFileCount == 1 && local.netChangedFileCount == 4
+            && !local.visibleFiles(includingUnchanged: false).contains(restored)
+            && local.visibleFiles(includingUnchanged: true) == local.files, "Default hidden / expanded summary or counts incorrect")
         let addedDiff = try await diff(f, file(local, "added.txt"))
         let deletedDiff = try await diff(f, file(local, "delete.txt"))
         try require(addedDiff.oldLines.isEmpty && addedDiff.newLines == ["new"] && !addedDiff.hunks.isEmpty, "Added side incorrect")
@@ -127,6 +131,7 @@ enum VerifyGitBranchComparison {
         try await verifyRequestIsolation()
         try await verifyCherryPickAndOldPathReuse()
         try await verifySharedResultPath()
+        try await verifyUnchangedClassification()
         let failedHistory = BranchComparisonSession(repositoryURL: f.url, current: "refs/heads/feature", selected: "refs/heads/main",
             reader: SystemGitRepositoryReader(commandRunner: HistoryFailureRunner()))
         await failedHistory.load()
@@ -372,6 +377,51 @@ enum VerifyGitBranchComparison {
         let whitespace = try file(await compare(f, "refs/heads/main"), "space")
         let ignored = try await reader.fileDiff(repositoryURL: f.url, target: whitespace.target, ignoringWhitespace: true)
         try require(ignored.hunks.isEmpty, "Ignore whitespace ineffective")
+        try require(!whitespace.isNetUnchanged, "Whitespace filtering changed the file classification")
+    }
+
+    static func verifyUnchangedClassification() async throws {
+        let f = try Fixture(); defer { try? FileManager.default.removeItem(at: f.url) }
+        let path = "dir/tab\tline\n[original]*.txt"
+        try f.write(path, "original\n")
+        try Data([0, 1, 2]).write(to: f.url.appendingPathComponent("binary"))
+        try f.write("mode", "same\n"); try f.write("old", "same\n")
+        try f.write("space", "a b\n"); try f.write("empty deleted", "")
+        try f.commit("base"); try f.git(["checkout", "-b", "feature"])
+        try f.write(path, "changed\n")
+        try Data([0, 3, 4]).write(to: f.url.appendingPathComponent("binary"))
+        let first = try f.commit("change text and binary")
+        try f.write(path, "original\n")
+        try Data([0, 1, 2]).write(to: f.url.appendingPathComponent("binary"))
+        let last = try f.commit("restore text and binary")
+        let unchanged = try await compare(f, "refs/heads/main")
+        try require(unchanged.netChangedFileCount == 0 && unchanged.unchangedFileCount == 2
+            && unchanged.visibleFiles(includingUnchanged: false).isEmpty
+            && unchanged.visibleFiles(includingUnchanged: true).count == 2, "All-unchanged summary cannot be expanded")
+        for entry in unchanged.files {
+            try require(entry.isNetUnchanged && entry.statusLabel == "≡" && entry.contributions == [first, last],
+                "NUL paths / binary restoration classification lost versions or history")
+        }
+        try f.git(["config", "core.filemode", "true"])
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: f.url.appendingPathComponent("mode").path)
+        try f.commit("mode only")
+        try f.git(["rm", "empty deleted"]); try f.commit("delete empty file")
+        try f.git(["mv", "old", "new"])
+        try f.write("space", "ab\n"); try f.write("empty added", "")
+        try f.commit("rename, whitespace and empty files")
+        let mixed = try await compare(f, "refs/heads/main")
+        try require(mixed.unchangedFileCount == 2 && mixed.netChangedFileCount == 5, "Mixed file counts incorrect")
+        try require(Set(mixed.visibleFiles(includingUnchanged: false).map { $0.file.path })
+            == Set(["mode", "new", "space", "empty added", "empty deleted"]),
+            "Mode-only, rename-only, whitespace-only or empty added/deleted files were hidden")
+        for missingEntry in [false, true] {
+            let session = BranchComparisonSession(repositoryURL: f.url, current: "refs/heads/feature", selected: "refs/heads/main",
+                reader: SystemGitRepositoryReader(commandRunner: TreeFailureRunner(missingEntry: missingEntry)))
+            await session.load()
+            try require(session.error != nil && session.comparison == nil && !session.isLoading,
+                "Failed or missing tree entry silently classified as unchanged")
+        }
+        print("Unchanged file classification passed: marker, default hiding, expansion, counts, NUL paths, binary restoration and real metadata changes")
     }
 }
 
@@ -406,6 +456,17 @@ private struct HistoryFailureRunner: CommandRunning {
             return CommandResult(standardOutput: Data((String(repeating: "a", count: 40) + "\n").utf8), standardError: Data(), terminationStatus: 0)
         }
         return CommandResult(standardOutput: Data(), standardError: Data("history read failed".utf8), terminationStatus: 128)
+    }
+}
+
+private struct TreeFailureRunner: CommandRunning {
+    let missingEntry: Bool
+    func run(_ request: CommandRequest) async throws -> CommandResult {
+        if request.arguments.contains("ls-tree") {
+            return CommandResult(standardOutput: Data(), standardError: Data("tree read failed".utf8),
+                terminationStatus: missingEntry ? 0 : 128)
+        }
+        return try await SystemCommandRunner().run(request)
     }
 }
 

@@ -92,9 +92,16 @@ struct GitBranchComparison: Equatable, Sendable {
     let files: [GitBranchComparisonFile]
 
     var title: String { "\(baseBranch) 独有 · 相对 \(comparedBranch)" }
+
+    var unchangedFileCount: Int { files.filter(\.isNetUnchanged).count }
+    var netChangedFileCount: Int { files.count - unchangedFileCount }
+
+    func visibleFiles(includingUnchanged: Bool) -> [GitBranchComparisonFile] {
+        files.filter { includingUnchanged || !$0.isNetUnchanged }
+    }
 }
 
-struct GitFileRevision: Equatable, Sendable {
+struct GitFileRevision: Hashable, Sendable {
     let commit: String
     let path: String
 }
@@ -111,6 +118,9 @@ struct GitBranchComparisonFile: Equatable, Identifiable, Sendable {
     var after: GitFileRevision?
     var contributions: [String]
     let initialStatus: GitStatusCode
+    var isNetUnchanged = false
+
+    var statusLabel: String { isNetUnchanged ? "≡" : String(file.status.rawValue) }
 
     var id: String { [contributions.first ?? "", before?.path ?? "", after?.path ?? ""].joined(separator: "\0") }
     var file: GitCommitFile {

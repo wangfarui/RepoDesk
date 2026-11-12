@@ -449,12 +449,52 @@ struct SystemGitRepositoryReader: GitRepositoryReading {
             let included = first.filter { file in paths.allSatisfy { $0.contains(file.path) } }
             GitBranchChangesCollector.append(included, commit: commit.hash, parent: commit.parentHashes.first, to: &changes)
         }
+        try await classifyNetUnchangedFiles(&changes, repositoryURL: repositoryURL)
         return GitBranchComparison(
             baseBranch: base.replacingOccurrences(of: "refs/heads/", with: ""),
             comparedBranch: compared.replacingOccurrences(of: "refs/heads/", with: "").replacingOccurrences(of: "refs/remotes/", with: ""),
             commits: commits, baseSHA: baseSHA, comparedSHA: comparedSHA, records: records,
             files: changes.sorted { $0.file.path < $1.file.path }
         )
+    }
+
+    /// Compare tree entries without loading file contents or patches. Literal, NUL-delimited
+    /// paths preserve tabs/newlines; batches share one query per revision and path group.
+    private func classifyNetUnchangedFiles(
+        _ changes: inout [GitBranchComparisonFile], repositoryURL: URL
+    ) async throws {
+        let candidates = changes.indices.filter {
+            changes[$0].before != nil && changes[$0].before?.path == changes[$0].after?.path
+        }
+        let versions = Set(candidates.flatMap { [changes[$0].before!, changes[$0].after!] })
+        let byCommit = Dictionary(grouping: versions, by: \.commit)
+        var entries: [GitFileRevision: String] = [:]
+        for commit in byCommit.keys.sorted() {
+            let paths = byCommit[commit]!.map(\.path).sorted()
+            for start in stride(from: 0, to: paths.count, by: 128) {
+                try Task.checkCancellation()
+                let batch = Array(paths[start..<min(start + 128, paths.count)])
+                let data = try await runGit(
+                    ["--literal-pathspecs", "ls-tree", "-z", commit, "--"] + batch, in: repositoryURL
+                )
+                for record in data.split(separator: 0) {
+                    guard let tab = record.firstIndex(of: 9) else {
+                        throw GitRepositoryError.commandFailed(arguments: ["ls-tree"], message: "文件版本记录不完整。")
+                    }
+                    let metadata = String(decoding: record[..<tab], as: UTF8.self)
+                    let path = String(decoding: record[record.index(after: tab)...], as: UTF8.self)
+                    entries[GitFileRevision(commit: commit, path: path)] = metadata
+                }
+            }
+        }
+        for index in candidates {
+            let before = changes[index].before!, after = changes[index].after!
+            guard let old = entries[before], let new = entries[after] else {
+                throw GitRepositoryError.commandFailed(arguments: ["ls-tree"], message: "无法读取汇总文件的前后版本：\(after.path)")
+            }
+            // Mode/type changes and renames remain real changes, even with identical bytes.
+            changes[index].isNetUnchanged = old == new
+        }
     }
 
     func blame(

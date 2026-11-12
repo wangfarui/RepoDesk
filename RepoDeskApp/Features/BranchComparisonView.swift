@@ -42,6 +42,7 @@ struct BranchComparisonSheet: View {
     let dismiss: () -> Void
     @State private var showsCommits = false
     @State private var selectedCommit: String?
+    @State private var showsUnchangedFiles = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -54,7 +55,15 @@ struct BranchComparisonSheet: View {
                                 showsCommits.toggle()
                             }
                             .accessibilityIdentifier("RepoDesk.BranchComparison.Commits")
-                            Text("\(comparison.files.count) 个文件").foregroundStyle(.secondary)
+                            Text("有净差异 \(comparison.netChangedFileCount) 个").foregroundStyle(.secondary)
+                            if comparison.unchangedFileCount > 0 {
+                                Button("无净差异 \(comparison.unchangedFileCount) 个", systemImage: showsUnchangedFiles ? "chevron.down" : "chevron.right") {
+                                    showsUnchangedFiles.toggle()
+                                    selectedCommit = nil
+                                }
+                                .help(showsUnchangedFiles ? "收起无净差异文件" : "展开无净差异文件")
+                                .accessibilityIdentifier("RepoDesk.BranchComparison.UnchangedFiles")
+                            }
                             if selectedCommit != nil { Button("全部文件汇总") { selectedCommit = nil } }
                         }
                     }
@@ -87,9 +96,9 @@ struct BranchComparisonSheet: View {
                             BranchComparisonCommitView(session: session, hash: selectedCommit).id(selectedCommit)
                         } else {
                             BranchComparisonFileBrowser(
-                                session: session, files: comparison.files.map(\.file),
+                                session: session, files: comparison.visibleFiles(includingUnchanged: showsUnchangedFiles).map(\.file),
                                 emptyMessage: "有独有提交，但汇总没有文件变化", commit: nil,
-                                summaryFiles: comparison.files,
+                                summaryFiles: comparison.files, showsUnchangedFiles: $showsUnchangedFiles,
                                 openCommit: { selectedCommit = $0; showsCommits = true }
                             )
                         }
@@ -114,7 +123,8 @@ private struct BranchComparisonCommitView: View {
             if let detail {
                 Text("\(hash.prefix(8)) · \(detail.summary.subject)").font(.headline).padding(10)
                 BranchComparisonFileBrowser(session: session, files: detail.files,
-                    emptyMessage: "该提交没有文件变化", commit: detail, summaryFiles: [], openCommit: { _ in })
+                    emptyMessage: "该提交没有文件变化", commit: detail, summaryFiles: [],
+                    showsUnchangedFiles: .constant(false), openCommit: { _ in })
             } else if let error {
                 ContentUnavailableView("读取提交失败", systemImage: "exclamationmark.triangle", description: Text(error))
             } else { ProgressView("正在读取提交…").frame(maxWidth: .infinity, maxHeight: .infinity) }
@@ -136,11 +146,14 @@ private struct BranchComparisonFileBrowser: View {
     let emptyMessage: String
     let commit: GitCommitDetail?
     let summaryFiles: [GitBranchComparisonFile]
+    @Binding var showsUnchangedFiles: Bool
     let openCommit: (String) -> Void
     @State private var expanded = Set<String>()
     @State private var selectedFile: GitCommitFile?
     @State private var ignoresWhitespace = false
     @State private var diffState = BranchComparisonDiffState()
+
+    private var unchangedFiles: [GitBranchComparisonFile] { summaryFiles.filter(\.isNetUnchanged) }
 
     private var rows: [HistoryFileOutlineRow] {
         HistoryFileOutlineBuilder.rows(files: files, namespace: "comparison", repositoryName: session.repositoryURL.lastPathComponent,
@@ -171,13 +184,30 @@ private struct BranchComparisonFileBrowser: View {
                         ignoresWhitespace: $ignoresWhitespace, state: diffState)
                         .id("\(commit?.summary.hash ?? "summary"):\(selectedFile.id)")
                 } else {
-                    ContentUnavailableView(files.isEmpty ? emptyMessage : "选择文件查看 Diff", systemImage: "doc.text.magnifyingglass")
+                    if files.isEmpty && !unchangedFiles.isEmpty {
+                        ContentUnavailableView {
+                            Label("全部 \(unchangedFiles.count) 个文件均无净差异", systemImage: "equal.circle")
+                        } description: {
+                            Text("这些文件在独有提交中修改过，汇总前后版本完全一致。")
+                        } actions: {
+                            Button("展开文件") { showsUnchangedFiles = true }
+                        }
+                    } else {
+                        ContentUnavailableView(files.isEmpty ? emptyMessage : "选择文件查看 Diff", systemImage: "doc.text.magnifyingglass")
+                    }
                 }
             }.frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
         }
         .onDisappear { diffState.cancel() }
+        .onChange(of: files) {
+            if let selectedFile, !files.contains(selectedFile) {
+                diffState.cancel()
+                self.selectedFile = nil
+            }
+        }
         .onAppear {
-            expanded = HistoryFileOutlineBuilder.expandableNodeIDs(files: files, namespace: "comparison", grouping: .directory, modulePath: { _ in "." })
+            let allFiles = commit == nil ? summaryFiles.map(\.file) : files
+            expanded = HistoryFileOutlineBuilder.expandableNodeIDs(files: allFiles, namespace: "comparison", grouping: .directory, modulePath: { _ in "." })
         }
     }
 
@@ -196,7 +226,9 @@ private struct BranchComparisonFileBrowser: View {
                     FileTypeIcon(path: file.path)
                     Text((file.path as NSString).lastPathComponent).lineLimit(1)
                     Spacer()
-                    Text(String(file.status.rawValue)).font(.caption.monospaced()).foregroundStyle(file.status == .deleted ? .red : .secondary)
+                    Text(summaryFiles.first(where: { $0.file == file })?.statusLabel ?? String(file.status.rawValue))
+                        .font(.caption.monospaced()).foregroundStyle(file.status == .deleted ? .red : .secondary)
+                        .help(unchangedFiles.contains { $0.file == file } ? "无净差异：汇总前后版本完全一致" : "文件状态")
                 }.padding(5).contentShape(.rect)
             }.buttonStyle(.plain).padding(.leading, CGFloat(depth) * 14)
                 .background(selectedFile == file ? Color.accentColor.opacity(0.15) : Color.clear)
