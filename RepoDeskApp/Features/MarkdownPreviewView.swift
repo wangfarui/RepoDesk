@@ -5,20 +5,25 @@ import WebKit
 @MainActor
 struct MarkdownDocumentView: View {
     let text: String
-    let fileName: String
+    let fileURL: URL
+    let projectRootURL: URL?
     let fontSize: Double
     let sourceLine: Int
+    let navigationRequest: NativeTextNavigationRequest?
     let headerActions: DocumentHeaderActions
     let onVisibleLineChange: (Int) -> Void
+    let onNavigationHandled: (UUID) -> Void
+    let onOpenFile: (URL, Int?) -> Void
     @State private var contentFindState = ContentFindState()
     @State private var searchMatches: [ContentSearchMatch] = []
+    @State private var fileLinkError: String?
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
                 Image(systemName: "doc.richtext")
                     .foregroundStyle(.secondary)
-                Text(fileName)
+                Text(fileURL.lastPathComponent)
                     .fontWeight(.semibold)
                     .lineLimit(1)
                 Spacer()
@@ -46,8 +51,20 @@ struct MarkdownDocumentView: View {
                 contentSearch: contentSearchPresentation,
                 focusRequestID: contentFindState.contentFocusRequestID,
                 sourceLine: sourceLine,
-                onVisibleLineChange: onVisibleLineChange
+                navigationRequest: navigationRequest,
+                onVisibleLineChange: onVisibleLineChange,
+                onNavigationHandled: onNavigationHandled,
+                onFileLinkActivated: openFileLink
             )
+            .id(fileURL)
+        }
+        .alert("无法打开文件链接", isPresented: Binding(
+            get: { fileLinkError != nil },
+            set: { if !$0 { fileLinkError = nil } }
+        )) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(fileLinkError ?? "")
         }
         .background(ContentFindCommandListener(
             requestFind: { contentFindState.present() },
@@ -106,6 +123,19 @@ struct MarkdownDocumentView: View {
             contentFindState.present()
         }
         contentFindState.navigate(by: offset, matchCount: searchMatches.count)
+    }
+
+    private func openFileLink(_ link: MarkdownPreviewFileLink) {
+        guard let projectRootURL else {
+            fileLinkError = "当前项目目录不可用。"
+            return
+        }
+        do {
+            let target = try link.resolve(from: fileURL, within: projectRootURL)
+            onOpenFile(target, link.line)
+        } catch {
+            fileLinkError = error.localizedDescription
+        }
     }
 }
 
@@ -689,8 +719,7 @@ struct MarkdownPreviewHTMLDocument {
             var tags: [String] = []
             var closingTags: [String] = []
             if let link = attributes[.link] {
-                let href = escapeHTML((link as? URL)?.absoluteString ?? String(describing: link))
-                tags.append("<a href=\"\(href)\">")
+                tags.append(linkTag(link))
                 closingTags.insert("</a>", at: 0)
             }
             if intent?.contains(.stronglyEmphasized) == true {
@@ -713,6 +742,20 @@ struct MarkdownPreviewHTMLDocument {
             text += value
         }
         return (html, text)
+    }
+
+    private static func linkTag(_ link: Any) -> String {
+        if let url = link as? URL, MarkdownPreviewFileLink(url: url) != nil {
+            var action = URLComponents()
+            action.scheme = MarkdownPreviewFileLink.navigationScheme
+            action.host = "open"
+            action.queryItems = [URLQueryItem(name: "target", value: url.absoluteString)]
+            if let href = action.string {
+                return "<a href=\"\(escapeHTML(href))\" title=\"⌘ + 单击打开文件\">"
+            }
+        }
+        let href = escapeHTML((link as? URL)?.absoluteString ?? String(describing: link))
+        return "<a href=\"\(href)\">"
     }
 
     private static func documentHTML(body: String, fontSize: Double) -> String {
@@ -996,18 +1039,14 @@ private struct MarkdownPreviewTextView: NSViewRepresentable {
     let contentSearch: ContentSearchPresentation?
     let focusRequestID: UUID?
     let sourceLine: Int
+    let navigationRequest: NativeTextNavigationRequest?
     let onVisibleLineChange: (Int) -> Void
+    let onNavigationHandled: (UUID) -> Void
+    let onFileLinkActivated: (MarkdownPreviewFileLink) -> Void
 
     func makeNSView(context: Context) -> MarkdownPreviewWebViewSurface {
         let webView = MarkdownPreviewWebViewSurface()
         webView.setAccessibilityIdentifier("RepoDesk.MarkdownPreview")
-        webView.apply(
-            document: document,
-            contentSearch: contentSearch,
-            focusRequestID: focusRequestID,
-            sourceLine: sourceLine,
-            onVisibleLineChange: onVisibleLineChange
-        )
         return webView
     }
 
@@ -1017,7 +1056,10 @@ private struct MarkdownPreviewTextView: NSViewRepresentable {
             contentSearch: contentSearch,
             focusRequestID: focusRequestID,
             sourceLine: sourceLine,
-            onVisibleLineChange: onVisibleLineChange
+            navigationRequest: navigationRequest,
+            onVisibleLineChange: onVisibleLineChange,
+            onNavigationHandled: onNavigationHandled,
+            onFileLinkActivated: onFileLinkActivated
         )
     }
 }
@@ -1039,11 +1081,15 @@ private final class MarkdownPreviewWebViewSurface: WKWebView, WKNavigationDelega
     private var appliedDocumentIdentity: String?
     private var appliedSearch: ContentSearchPresentation?
     private var appliedFocusRequestID: UUID?
+    private var appliedNavigationRequestID: UUID?
     private var pendingSearch: ContentSearchPresentation?
     private var pendingSourceLine: Int?
+    private var navigationRequest: NativeTextNavigationRequest?
     private var isDocumentLoaded = false
     private var lastReportedSourceLine: Int?
     private var onVisibleLineChange: ((Int) -> Void)?
+    private var onNavigationHandled: ((UUID) -> Void)?
+    private var onFileLinkActivated: ((MarkdownPreviewFileLink) -> Void)?
     private let messageProxy: MarkdownPreviewScriptMessageProxy
 
     init() {
@@ -1077,18 +1123,26 @@ private final class MarkdownPreviewWebViewSurface: WKWebView, WKNavigationDelega
         contentSearch: ContentSearchPresentation?,
         focusRequestID: UUID?,
         sourceLine: Int,
-        onVisibleLineChange: @escaping (Int) -> Void
+        navigationRequest: NativeTextNavigationRequest?,
+        onVisibleLineChange: @escaping (Int) -> Void,
+        onNavigationHandled: @escaping (UUID) -> Void,
+        onFileLinkActivated: @escaping (MarkdownPreviewFileLink) -> Void
     ) {
+        self.navigationRequest = navigationRequest
         self.onVisibleLineChange = onVisibleLineChange
+        self.onNavigationHandled = onNavigationHandled
+        self.onFileLinkActivated = onFileLinkActivated
         if appliedDocumentIdentity != document.identity {
             appliedDocumentIdentity = document.identity
             appliedSearch = nil
             pendingSearch = contentSearch
             pendingSourceLine = max(1, sourceLine)
+            lastReportedSourceLine = nil
             isDocumentLoaded = false
             loadHTMLString(document.html, baseURL: nil)
         } else if isDocumentLoaded {
             applySearchIfNeeded(contentSearch)
+            scrollToRequestedLine()
         } else {
             pendingSearch = contentSearch
         }
@@ -1097,12 +1151,51 @@ private final class MarkdownPreviewWebViewSurface: WKWebView, WKNavigationDelega
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         isDocumentLoaded = true
-        if let sourceLine = pendingSourceLine {
-            evaluate("window.repoDeskScrollToSourceLine(\(sourceLine));")
-            pendingSourceLine = nil
-        }
         applySearchIfNeeded(pendingSearch)
         pendingSearch = nil
+        scrollToRequestedLine()
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor action: WKNavigationAction,
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
+    ) {
+        guard let url = action.request.url else {
+            decisionHandler(.allow)
+            return
+        }
+        let isPreviewLink = action.navigationType == .linkActivated && action.sourceFrame.isMainFrame
+            && action.sourceFrame.request.url?.absoluteString == "about:blank"
+        let scheme = url.scheme?.lowercased()
+        if isPreviewLink, scheme == "http" || scheme == "https" {
+            decisionHandler(.cancel)
+            NSWorkspace.shared.open(url)
+            return
+        }
+        guard scheme == MarkdownPreviewFileLink.navigationScheme else {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        // WebKit numbers the primary button as 1.
+        guard isPreviewLink, action.buttonNumber == 1, action.modifierFlags.contains(.command),
+              let target = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "target" })?.value,
+              let destination = URL(string: target),
+              let link = MarkdownPreviewFileLink(url: destination) else { return }
+        onFileLinkActivated?(link)
+    }
+
+    private func scrollToRequestedLine() {
+        if let request = navigationRequest, request.id != appliedNavigationRequestID {
+            appliedNavigationRequestID = request.id
+            evaluate("window.repoDeskScrollToSourceLine(\(request.line));")
+            Task { @MainActor [weak self] in self?.onNavigationHandled?(request.id) }
+        } else if let line = pendingSourceLine {
+            evaluate("window.repoDeskScrollToSourceLine(\(line));")
+        }
+        pendingSourceLine = nil
     }
 
     func receiveScriptMessage(_ message: WKScriptMessage) {

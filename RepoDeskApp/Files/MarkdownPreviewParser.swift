@@ -1,5 +1,79 @@
 import Foundation
 
+struct MarkdownPreviewFileLink {
+    static let navigationScheme = "repodesk-markdown-file"
+
+    let path: String
+    let line: Int?
+
+    init?(url: URL) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.user == nil, components.port == nil else { return nil }
+        if let host = components.host {
+            guard url.isFileURL, host.isEmpty || host.lowercased() == "localhost" else { return nil }
+        }
+
+        var encodedPath = components.percentEncodedPath
+        if let scheme = components.scheme, !url.isFileURL {
+            // Foundation reads a bare filename followed by :42 as a URL scheme.
+            guard scheme.contains("."), Self.lineNumber(encodedPath) != nil else { return nil }
+            encodedPath = scheme + ":" + encodedPath
+        }
+        guard !encodedPath.isEmpty, !encodedPath.hasPrefix("//"),
+              !url.isFileURL || encodedPath.hasPrefix("/") else { return nil }
+
+        var targetLine: Int?
+        if let separator = encodedPath.lastIndex(of: ":"),
+           let number = Self.lineNumber(String(encodedPath[encodedPath.index(after: separator)...])) {
+            targetLine = number
+            encodedPath = String(encodedPath[..<separator])
+        }
+        guard let decodedPath = encodedPath.removingPercentEncoding,
+              !decodedPath.isEmpty, !decodedPath.contains("\0") else { return nil }
+        path = decodedPath
+        line = targetLine
+    }
+
+    func resolve(from documentURL: URL, within projectRoot: URL) throws -> URL {
+        let target = path.hasPrefix("/")
+            ? URL(fileURLWithPath: path, isDirectory: false)
+            : documentURL.deletingLastPathComponent().appendingPathComponent(path, isDirectory: false)
+        let fileURL = target.standardizedFileURL
+        let root = projectRoot.standardizedFileURL
+        let resolved = fileURL.resolvingSymlinksInPath()
+        guard Self.contains(fileURL, within: root),
+              Self.contains(resolved, within: root.resolvingSymlinksInPath()) else {
+            throw ResolutionError.outsideProject(path)
+        }
+        guard (try? resolved.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+            throw ResolutionError.fileUnavailable(path)
+        }
+        return fileURL
+    }
+
+    private static func contains(_ fileURL: URL, within root: URL) -> Bool {
+        fileURL.pathComponents.starts(with: root.pathComponents)
+    }
+
+    private static func lineNumber(_ value: String) -> Int? {
+        guard value.utf8.allSatisfy({ (48...57).contains($0) }),
+              let number = Int(value), number > 0 else { return nil }
+        return number
+    }
+
+    private enum ResolutionError: LocalizedError {
+        case outsideProject(String)
+        case fileUnavailable(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .outsideProject(let path): "链接指向当前项目之外的路径“\(path)”。"
+            case .fileUnavailable(let path): "找不到可打开的文件“\(path)”。"
+            }
+        }
+    }
+}
+
 struct MarkdownPreviewListItem: Equatable, Sendable {
     enum Marker: Equatable, Sendable {
         case unordered

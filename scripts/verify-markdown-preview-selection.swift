@@ -88,6 +88,17 @@ struct MarkdownPreviewSelectionVerification {
         }
         try verifyHTMLSearchOffsets()
         try verifyBoldLabels()
+        let links = MarkdownPreviewHTMLDocument(
+            blocks: MarkdownPreviewParser.parseWithSourceLines("""
+            [**Source**](Source.swift:42) [Website](https://example.com) [Section](#heading)
+            """),
+            fontSize: RepoDeskFontSize.default
+        )
+        guard links.html.contains("href=\"repodesk-markdown-file://open?target=Source.swift:42\""),
+              links.html.contains("href=\"https://example.com\""),
+              links.html.contains("href=\"#heading\""), links.text.contains("Source Website Section") else {
+            throw MarkdownPreviewSelectionVerificationError.renderedMarkdownWasNotExposed
+        }
         print("Markdown preview selection verification passed")
     }
 

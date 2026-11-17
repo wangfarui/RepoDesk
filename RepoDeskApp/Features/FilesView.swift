@@ -429,15 +429,22 @@ struct FilesView: View {
         } else if let document = appState.loadedDocument {
             switch document {
             case .text(let textDocument):
-                if appState.showsMarkdownPreview,
-                   appState.selectedFileURL?.pathExtension.lowercased() == "md" {
+                if appState.showsMarkdownPreview, let fileURL = appState.selectedFileURL,
+                   fileURL.pathExtension.lowercased() == "md" {
                     MarkdownDocumentView(
                         text: appState.documentText,
-                        fileName: appState.selectedFileURL?.lastPathComponent ?? "",
+                        fileURL: fileURL,
+                        projectRootURL: appState.visibleWorkspaceRootURL,
                         fontSize: appState.fileContentFontSize,
                         sourceLine: appState.selectedFileVisibleLine,
+                        navigationRequest: appState.selectedSourceNavigationRequest,
                         headerActions: documentHeaderActions,
-                        onVisibleLineChange: { appState.rememberSelectedFileVisibleLine($0) }
+                        onVisibleLineChange: { appState.rememberSelectedFileVisibleLine($0) },
+                        onNavigationHandled: { appState.clearSelectedSourceNavigationRequest($0) },
+                        onOpenFile: { target, line in
+                            guard appState.selectedFileURL == fileURL else { return }
+                            appState.selectFile(target, line: line)
+                        }
                     )
                 } else {
                     SourceDocumentView(
