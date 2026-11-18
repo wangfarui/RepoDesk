@@ -185,13 +185,7 @@ struct FilesView: View {
             guard isSectionActive, let rootURL = appState.visibleWorkspaceRootURL else { return }
             if let selectedFileURL = appState.selectedFileURL,
                WorkspaceTreeRefreshPlanner.isSameOrDescendant(selectedFileURL, of: rootURL) {
-                let selection = FileTreeItemSelection(
-                    url: selectedFileURL,
-                    isDirectory: false
-                )
-                selectedTreeItem = selection
-                selectedTreeItems = [selection]
-                selectionAnchorURL = selectedFileURL.standardizedFileURL
+                selectFileInTree(selectedFileURL)
             } else {
                 let selection = FileTreeItemSelection(url: rootURL, isDirectory: true)
                 selectedTreeItem = selection
@@ -211,10 +205,7 @@ struct FilesView: View {
         .onDisappear(perform: cancelSubtreeExpansion)
         .onChange(of: appState.selectedFileURL) {
             guard let selectedFileURL = appState.selectedFileURL else { return }
-            let selection = FileTreeItemSelection(url: selectedFileURL, isDirectory: false)
-            selectedTreeItem = selection
-            selectedTreeItems = [selection]
-            selectionAnchorURL = selectedFileURL.standardizedFileURL
+            selectFileInTree(selectedFileURL)
         }
     }
 
@@ -389,8 +380,12 @@ struct FilesView: View {
                             )
                         }
                         .onChange(of: appState.fileTreeRevealRequest?.id) {
-                            guard let fileURL = appState.fileTreeRevealRequest?.fileURL else { return }
-                            proxy.scrollTo(fileURL)
+                            guard let request = appState.fileTreeRevealRequest else { return }
+                            if request.selectsFile,
+                               appState.selectedFileURL?.standardizedFileURL == request.fileURL {
+                                selectFileInTree(request.fileURL)
+                            }
+                            proxy.scrollTo(request.fileURL)
                         }
                     }
                 }
@@ -709,6 +704,13 @@ struct FilesView: View {
             return "“\(name)”已经存在。"
         }
         return "有 \(conflicts.count) 个同名项目已经存在。"
+    }
+
+    private func selectFileInTree(_ fileURL: URL) {
+        let selection = FileTreeItemSelection(url: fileURL.standardizedFileURL, isDirectory: false)
+        selectedTreeItem = selection
+        selectedTreeItems = [selection]
+        selectionAnchorURL = selection.url
     }
 
     private func handleTreeItemClick(

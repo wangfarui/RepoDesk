@@ -4,6 +4,12 @@ import Observation
 struct FileTreeRevealRequest: Equatable, Sendable {
     let id = UUID()
     let fileURL: URL
+    let selectsFile: Bool
+
+    init(fileURL: URL, selectsFile: Bool = false) {
+        self.fileURL = fileURL
+        self.selectsFile = selectsFile
+    }
 }
 
 struct GitFileBlameTarget: Equatable, Sendable {
@@ -3629,10 +3635,10 @@ final class AppState {
     func revealSelectedFileInTree() async {
         guard canRevealSelectedFileInTree,
               let selectedFileURL else { return }
-        await revealFileTreeItem(selectedFileURL)
+        await revealFileTreeItem(selectedFileURL, selectsFile: true)
     }
 
-    func revealFileTreeItem(_ itemURL: URL) async {
+    func revealFileTreeItem(_ itemURL: URL, selectsFile: Bool = false) async {
         guard let rootURL = visibleWorkspaceRootURL?.standardizedFileURL else { return }
         let itemURL = itemURL.standardizedFileURL
         guard itemURL != rootURL,
@@ -3648,7 +3654,7 @@ final class AppState {
         }
         guard collapseRevision == fileTreeCollapseRevision,
               visibleWorkspaceRootURL?.standardizedFileURL == rootURL else { return }
-        fileTreeRevealRequest = FileTreeRevealRequest(fileURL: itemURL)
+        fileTreeRevealRequest = FileTreeRevealRequest(fileURL: itemURL, selectsFile: selectsFile)
     }
 
     func selectFile(_ fileURL: URL, line: Int? = nil) {
