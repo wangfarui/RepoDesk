@@ -54,6 +54,8 @@ struct FilesView: View {
     @State private var deleteFileItemErrorMessage: String?
     @State private var isDeletingFileItem = false
     @State private var contextMenuTreeItemURL: URL?
+    @State private var subtreeExpansionTask: Task<Void, Never>?
+    @State private var subtreeExpansionReachedLimit = false
     @FocusState private var focusedFileTreeURL: URL?
     private let fileTransfer = FileSystemWorkspaceFileTransfer()
     private let fileCreator = FileSystemWorkspaceFileCreator()
@@ -200,6 +202,13 @@ struct FilesView: View {
             contextMenuTreeItemURL = nil
             await appState.loadDirectory(rootURL)
         }
+        .onChange(of: isSectionActive ? appState.visibleWorkspaceRootURL?.path : nil) {
+            cancelSubtreeExpansion()
+        }
+        .onChange(of: appState.showsHiddenFiles) {
+            cancelSubtreeExpansion()
+        }
+        .onDisappear(perform: cancelSubtreeExpansion)
         .onChange(of: appState.selectedFileURL) {
             guard let selectedFileURL = appState.selectedFileURL else { return }
             let selection = FileTreeItemSelection(url: selectedFileURL, isDirectory: false)
@@ -247,6 +256,22 @@ struct FilesView: View {
                         ProgressView()
                             .controlSize(.small)
                     }
+                    if subtreeExpansionTask != nil {
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("正在展开子树")
+                        Button("取消展开", systemImage: "xmark.circle", action: cancelSubtreeExpansion)
+                            .buttonStyle(.borderless)
+                            .labelStyle(.iconOnly)
+                            .help("取消展开")
+                    }
+                    Button("全部收起", systemImage: "arrow.down.right.and.arrow.up.left") {
+                        collapseFileTree(at: rootURL)
+                    }
+                    .buttonStyle(.borderless)
+                    .labelStyle(.iconOnly)
+                    .frame(width: 24, height: 24)
+                    .contentShape(.rect)
+                    .help("全部收起")
                     Menu("文件树选项", systemImage: "ellipsis.circle") {
                         Toggle(
                             "显示隐藏文件",
@@ -304,6 +329,14 @@ struct FilesView: View {
 
                 Divider()
 
+                if subtreeExpansionReachedLimit {
+                    Text("子树超过 \(AppState.directorySubtreeEntryLimit) 项，请选择较小的目录展开。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+
                 let rows = visibleTreeRows(at: rootURL)
                 let contentWidth = fileTreeContentWidth(rows: rows)
                 GeometryReader { geometry in
@@ -343,6 +376,7 @@ struct FilesView: View {
                                         beginDeletingSelectedFileItems: beginDeletingSelectedFileItems,
                                         handleTreeItemClick: handleTreeItemClick,
                                         prepareContextMenu: prepareContextMenu,
+                                        expandSubtree: expandSubtree,
                                         viewGitHistory: { appState.showFileHistory(for: row.entry.url) }
                                     )
                                 }
@@ -724,10 +758,38 @@ struct FilesView: View {
         selectionAnchorURL = itemURL
         focusedFileTreeURL = itemURL
         if isDirectory {
+            cancelSubtreeExpansion()
             appState.toggleDirectory(activationURL.standardizedFileURL)
         } else {
             appState.selectFile(itemURL)
         }
+    }
+
+    private func collapseFileTree(at rootURL: URL) {
+        cancelSubtreeExpansion()
+        appState.collapseFileTree(at: rootURL)
+
+        let selection = FileTreeItemSelection(url: rootURL, isDirectory: true)
+        selectedTreeItem = selection
+        selectedTreeItems = [selection]
+        selectionAnchorURL = rootURL
+        focusedFileTreeURL = rootURL
+    }
+
+    private func expandSubtree(at directoryURL: URL) {
+        cancelSubtreeExpansion()
+        subtreeExpansionTask = Task {
+            let reachedLimit = await appState.expandDirectorySubtree(directoryURL)
+            guard !Task.isCancelled else { return }
+            subtreeExpansionReachedLimit = reachedLimit
+            subtreeExpansionTask = nil
+        }
+    }
+
+    private func cancelSubtreeExpansion() {
+        subtreeExpansionTask?.cancel()
+        subtreeExpansionTask = nil
+        subtreeExpansionReachedLimit = false
     }
 
     private func prepareContextMenu(for itemURL: URL, isDirectory: Bool) {
@@ -1326,6 +1388,7 @@ private struct FileTreeEntryView: View {
     let beginDeletingSelectedFileItems: () -> Void
     let handleTreeItemClick: (URL, Bool, URL, [URL]) -> Void
     let prepareContextMenu: (URL, Bool) -> Void
+    let expandSubtree: (URL) -> Void
     let viewGitHistory: () -> Void
 
     var body: some View {
@@ -1391,6 +1454,9 @@ private struct FileTreeEntryView: View {
                 newDirectoryItem: isMultiSelection ? nil : (entry.isDirectory
                     ? { beginCreatingFileItem(commandItemURL, true) }
                     : nil),
+                expandSubtreeItem: entry.isDirectory && !isMultiSelection
+                    ? { expandSubtree(entry.url) }
+                    : nil,
                 renameItem: isMultiSelection ? nil : {
                     beginRenamingFileItem(commandItemURL, entry.isDirectory)
                 },

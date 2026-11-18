@@ -62,6 +62,7 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
     let pasteItem: (() -> Void)?
     let newFileItem: (() -> Void)?
     let newDirectoryItem: (() -> Void)?
+    let expandSubtreeItem: (() -> Void)?
     let renameItem: (() -> Void)?
     let deleteItem: (() -> Void)?
     let rollbackItem: (() -> Void)?
@@ -74,7 +75,7 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
         if values != nil || copyItem != nil || pasteItem != nil || newFileItem != nil
-            || newDirectoryItem != nil || renameItem != nil || deleteItem != nil || rollbackItem != nil
+            || newDirectoryItem != nil || expandSubtreeItem != nil || renameItem != nil || deleteItem != nil || rollbackItem != nil
             || viewGitHistoryItem != nil || annotateGitBlameItem != nil || openInFinderItem != nil {
             if let isContextMenuPresented {
                 content.overlay {
@@ -84,6 +85,7 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
                         pasteItem: pasteItem,
                         newFileItem: newFileItem,
                         newDirectoryItem: newDirectoryItem,
+                        expandSubtreeItem: expandSubtreeItem,
                         renameItem: renameItem,
                         deleteItem: deleteItem,
                         rollbackItem: rollbackItem,
@@ -106,6 +108,9 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
 
     @ViewBuilder
     private var swiftUIMenuItems: some View {
+        if let expandSubtreeItem {
+            Button("展开子树", systemImage: "arrow.up.left.and.arrow.down.right", action: expandSubtreeItem)
+        }
         if let copyItem {
             Button("复制", systemImage: "doc.on.doc", action: copyItem)
         }
@@ -139,7 +144,7 @@ private struct FileSystemPathCopyMenuModifier: ViewModifier {
         if let openInFinderItem {
             Button("在Finder中打开", systemImage: "folder", action: openInFinderItem)
         }
-        if (copyItem != nil || pasteItem != nil || newFileItem != nil || newDirectoryItem != nil
+        if (copyItem != nil || pasteItem != nil || newFileItem != nil || newDirectoryItem != nil || expandSubtreeItem != nil
             || renameItem != nil
             || deleteItem != nil
             || rollbackItem != nil
@@ -174,6 +179,7 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
     let pasteItem: (() -> Void)?
     let newFileItem: (() -> Void)?
     let newDirectoryItem: (() -> Void)?
+    let expandSubtreeItem: (() -> Void)?
     let renameItem: (() -> Void)?
     let deleteItem: (() -> Void)?
     let rollbackItem: (() -> Void)?
@@ -190,6 +196,7 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             pasteItem: pasteItem,
             newFileItem: newFileItem,
             newDirectoryItem: newDirectoryItem,
+            expandSubtreeItem: expandSubtreeItem,
             renameItem: renameItem,
             deleteItem: deleteItem,
             rollbackItem: rollbackItem,
@@ -213,6 +220,7 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
         context.coordinator.pasteItem = pasteItem
         context.coordinator.newFileItem = newFileItem
         context.coordinator.newDirectoryItem = newDirectoryItem
+        context.coordinator.expandSubtreeItem = expandSubtreeItem
         context.coordinator.renameItem = renameItem
         context.coordinator.deleteItem = deleteItem
         context.coordinator.rollbackItem = rollbackItem
@@ -230,6 +238,7 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
         var pasteItem: (() -> Void)?
         var newFileItem: (() -> Void)?
         var newDirectoryItem: (() -> Void)?
+        var expandSubtreeItem: (() -> Void)?
         var renameItem: (() -> Void)?
         var deleteItem: (() -> Void)?
         var rollbackItem: (() -> Void)?
@@ -245,6 +254,7 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             pasteItem: (() -> Void)?,
             newFileItem: (() -> Void)?,
             newDirectoryItem: (() -> Void)?,
+            expandSubtreeItem: (() -> Void)?,
             renameItem: (() -> Void)?,
             deleteItem: (() -> Void)?,
             rollbackItem: (() -> Void)?,
@@ -259,6 +269,7 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             self.pasteItem = pasteItem
             self.newFileItem = newFileItem
             self.newDirectoryItem = newDirectoryItem
+            self.expandSubtreeItem = expandSubtreeItem
             self.renameItem = renameItem
             self.deleteItem = deleteItem
             self.rollbackItem = rollbackItem
@@ -272,6 +283,9 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
         func presentMenu(for event: NSEvent, in view: NSView) {
             let menu = NSMenu()
             menu.delegate = self
+            if expandSubtreeItem != nil {
+                menu.addItem(menuItem("展开子树", symbol: "arrow.up.left.and.arrow.down.right", action: #selector(expandSubtree)))
+            }
             if copyItem != nil {
                 menu.addItem(menuItem("复制", symbol: "doc.on.doc", action: #selector(copyFileItem)))
             }
@@ -304,7 +318,7 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
             if openInFinderItem != nil {
                 menu.addItem(menuItem("在Finder中打开", symbol: "folder", action: #selector(openInFinder)))
             }
-            if (copyItem != nil || pasteItem != nil || newFileItem != nil || newDirectoryItem != nil
+            if (copyItem != nil || pasteItem != nil || newFileItem != nil || newDirectoryItem != nil || expandSubtreeItem != nil
                 || renameItem != nil
                 || deleteItem != nil
                 || rollbackItem != nil
@@ -353,6 +367,10 @@ private struct FileSystemContextMenuPresenter: NSViewRepresentable {
 
         @objc private func createDirectoryItem() {
             newDirectoryItem?()
+        }
+
+        @objc private func expandSubtree() {
+            expandSubtreeItem?()
         }
 
         @objc private func renameFileItem() {
@@ -433,6 +451,7 @@ extension View {
         pasteItem: (() -> Void)? = nil,
         newFileItem: (() -> Void)? = nil,
         newDirectoryItem: (() -> Void)? = nil,
+        expandSubtreeItem: (() -> Void)? = nil,
         renameItem: (() -> Void)? = nil,
         deleteItem: (() -> Void)? = nil,
         rollbackItem: (() -> Void)? = nil,
@@ -449,6 +468,7 @@ extension View {
                 pasteItem: pasteItem,
                 newFileItem: newFileItem,
                 newDirectoryItem: newDirectoryItem,
+                expandSubtreeItem: expandSubtreeItem,
                 renameItem: renameItem,
                 deleteItem: deleteItem,
                 rollbackItem: rollbackItem,

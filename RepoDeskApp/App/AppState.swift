@@ -87,6 +87,8 @@ private actor RepositoryRefreshLimiter {
 @MainActor
 @Observable
 final class AppState {
+    static let directorySubtreeEntryLimit = 1_000
+
     var workspace: WorkspaceSummary?
     var repositories: [RegisteredRepository]
     var selectedRepositoryID: RegisteredRepository.ID?
@@ -136,6 +138,7 @@ final class AppState {
     var loadingDirectoryURLs: Set<URL> = []
     var directoryLoadErrors: [URL: String] = [:]
     var fileTreeRevealRequest: FileTreeRevealRequest?
+    @ObservationIgnored private var fileTreeCollapseRevision = 0
     var lastDeletedFileSession: WorkspaceFileDeletionSession?
     var lastDeletedFileTabs: [OpenFileTab] = []
     var lastDeletedSelectedFileURL: URL?
@@ -3555,6 +3558,74 @@ final class AppState {
         }
     }
 
+    func collapseFileTree(at rootURL: URL) {
+        fileTreeCollapseRevision += 1
+        expandedDirectoryURLs = expandedDirectoryURLs.filter {
+            $0 == rootURL || !WorkspaceTreeRefreshPlanner.isSameOrDescendant($0, of: rootURL)
+        }
+    }
+
+    /// Returns whether the subtree exceeded the entry limit. Publish the loaded
+    /// directories together so a large or canceled request cannot open a partial tree.
+    func expandDirectorySubtree(_ directoryURL: URL) async -> Bool {
+        let directoryURL = directoryURL.standardizedFileURL
+        guard let rootURL = visibleWorkspaceRootURL?.standardizedFileURL,
+              directoryURL != rootURL,
+              WorkspaceTreeRefreshPlanner.isSameOrDescendant(directoryURL, of: rootURL) else { return false }
+
+        let collapseRevision = fileTreeCollapseRevision
+        let showsHiddenFiles = self.showsHiddenFiles
+        func isCurrent() -> Bool {
+            !Task.isCancelled && collapseRevision == fileTreeCollapseRevision
+                && self.showsHiddenFiles == showsHiddenFiles
+                && visibleWorkspaceRootURL?.standardizedFileURL == rootURL
+        }
+
+        var directories = [directoryURL]
+        var expandedURLs: Set<URL> = []
+        var loadedChildren: [URL: [WorkspaceFileEntry]] = [:]
+        var loadErrors: [URL: String] = [:]
+        var entryCount = 0
+
+        while let nextURL = directories.popLast() {
+            guard isCurrent() else { return false }
+            let children: [WorkspaceFileEntry]
+            do {
+                if let cached = fileChildren[nextURL] {
+                    children = cached
+                } else {
+                    children = try await workspaceFileBrowser.children(of: nextURL)
+                    loadedChildren[nextURL] = children
+                }
+            } catch {
+                loadErrors[nextURL] = error.localizedDescription
+                expandedURLs.insert(nextURL)
+                continue
+            }
+
+            guard isCurrent() else { return false }
+            let visibleChildren = showsHiddenFiles ? children : children.filter { !$0.name.hasPrefix(".") }
+            entryCount += visibleChildren.count
+            guard entryCount <= Self.directorySubtreeEntryLimit else { return true }
+
+            expandedURLs.insert(nextURL)
+            directories.append(contentsOf: visibleChildren.reversed().lazy.filter(\.isDirectory).map {
+                $0.url.standardizedFileURL
+            })
+        }
+
+        guard isCurrent() else { return false }
+        for (url, children) in loadedChildren where fileChildren[url] == nil {
+            fileChildren[url] = children
+            directoryLoadErrors[url] = nil
+        }
+        for (url, message) in loadErrors where fileChildren[url] == nil {
+            directoryLoadErrors[url] = message
+        }
+        expandedDirectoryURLs.formUnion(expandedURLs)
+        return false
+    }
+
     func revealSelectedFileInTree() async {
         guard canRevealSelectedFileInTree,
               let selectedFileURL else { return }
@@ -3562,17 +3633,21 @@ final class AppState {
     }
 
     func revealFileTreeItem(_ itemURL: URL) async {
-        guard let visibleWorkspaceRootURL else { return }
+        guard let rootURL = visibleWorkspaceRootURL?.standardizedFileURL else { return }
         let itemURL = itemURL.standardizedFileURL
-        let rootURL = visibleWorkspaceRootURL.standardizedFileURL
         guard itemURL != rootURL,
               WorkspaceTreeRefreshPlanner.isSameOrDescendant(itemURL, of: rootURL) else { return }
 
+        let collapseRevision = fileTreeCollapseRevision
         await loadDirectory(rootURL)
         for directoryURL in parentDirectories(of: itemURL, relativeTo: rootURL) {
+            guard collapseRevision == fileTreeCollapseRevision,
+                  visibleWorkspaceRootURL?.standardizedFileURL == rootURL else { return }
             expandedDirectoryURLs.insert(directoryURL)
             await loadDirectory(directoryURL)
         }
+        guard collapseRevision == fileTreeCollapseRevision,
+              visibleWorkspaceRootURL?.standardizedFileURL == rootURL else { return }
         fileTreeRevealRequest = FileTreeRevealRequest(fileURL: itemURL)
     }
 
