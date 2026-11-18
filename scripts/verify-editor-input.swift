@@ -18,7 +18,7 @@ private final class InputState {
         NativeCodeEditor(text: $state.text, isEditable: true,
                          style: .source(fileExtension: fileExtension), showsLineNumbers: true,
                          contentIdentity: state.identity, fontSize: state.fontSize,
-                         semanticTokens: state.semanticTokens, usesIncrementalStyling: incremental)
+                         semanticTokens: state.semanticTokens, usesAsyncSourceStyling: incremental)
     }
 }
 

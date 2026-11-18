@@ -32,6 +32,14 @@ struct NativeGitBlameAnnotation: Equatable, Sendable {
 }
 
 @MainActor
+private extension NSTextView {
+    var visibleTextContainerRect: NSRect {
+        let origin = textContainerOrigin
+        return visibleRect.offsetBy(dx: -origin.x, dy: -origin.y)
+    }
+}
+
+@MainActor
 private final class NativeCodeTextView: NSTextView {
     private let documentUndoManager = UndoManager()
     private var isSettingMarkedText = false
@@ -417,9 +425,8 @@ final class NativeLineNumberRulerView: NSRulerView {
             ).fill()
         }
 
-        layoutManager.ensureLayout(forBoundingRect: textView.visibleRect, in: textContainer)
         let visibleGlyphRange = layoutManager.glyphRange(
-            forBoundingRect: textView.visibleRect,
+            forBoundingRect: textView.visibleTextContainerRect,
             in: textContainer
         )
         let visibleCharacterRange = layoutManager.characterRange(
@@ -591,7 +598,7 @@ struct NativeCodeEditor: NSViewRepresentable {
     var shortcuts: [AppShortcutID: ShortcutBinding] = ShortcutBinding.defaults()
     var foldsJavaImports = false
     var importsExpanded: Binding<Bool>? = nil
-    var usesIncrementalStyling = false
+    var usesAsyncSourceStyling = false
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -610,7 +617,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             contentSearch: contentSearch,
             semanticTokens: semanticTokens,
             gitLineChanges: gitLineChanges,
-            usesIncrementalStyling: usesIncrementalStyling
+            usesAsyncSourceStyling: usesAsyncSourceStyling
         )
     }
 
@@ -679,11 +686,13 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.configureLineNumbers(showsLineNumbers, in: scrollView)
         context.coordinator.startObserving(scrollView)
-        if context.coordinator.canStyleIncrementally {
-            textView.string = text
-            context.coordinator.scheduleSourceStyling()
+        let source = text
+        context.coordinator.synchronizedText = source
+        if context.coordinator.canStyleAsynchronously {
+            textView.string = source
+            context.coordinator.scheduleSourceStyling(source)
         } else {
-            NativeTextStyler.apply(text, style: style, fontSize: fontSize, semanticTokens: semanticTokens, to: textView)
+            NativeTextStyler.apply(source, style: style, fontSize: fontSize, semanticTokens: semanticTokens, to: textView)
         }
         context.coordinator.lastAppliedSemanticTokens = semanticTokens
         context.coordinator.configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
@@ -699,6 +708,7 @@ struct NativeCodeEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NativeCodeTextView else { return }
         guard isSectionActive else {
+            context.coordinator.cancelVisibleLineReport()
             textView.isJavaNavigationEnabled = false
             if scrollView.window?.firstResponder === textView {
                 scrollView.window?.makeFirstResponder(nil)
@@ -717,7 +727,6 @@ struct NativeCodeEditor: NSViewRepresentable {
         context.coordinator.followsTail = followsTail
         context.coordinator.contentSearch = contentSearch
         context.coordinator.semanticTokens = semanticTokens
-        context.coordinator.usesIncrementalStyling = usesIncrementalStyling
         textView.isJavaNavigationEnabled = isJavaNavigationEnabled
         textView.javaNavigationHandler = onJavaNavigation
         textView.javaPopupDismissHandler = onJavaPopupDismiss
@@ -727,10 +736,13 @@ struct NativeCodeEditor: NSViewRepresentable {
         let styleChanged = context.coordinator.style != style
             || context.coordinator.fontSize != fontSize
             || context.coordinator.lastAppliedSemanticTokens != semanticTokens
+            || context.coordinator.usesAsyncSourceStyling != usesAsyncSourceStyling
         let contentIdentityChanged = context.coordinator.contentIdentity != contentIdentity
+        if contentIdentityChanged { context.coordinator.cancelVisibleLineReport() }
         context.coordinator.style = style
         context.coordinator.fontSize = fontSize
         context.coordinator.contentIdentity = contentIdentity
+        context.coordinator.usesAsyncSourceStyling = usesAsyncSourceStyling
         context.coordinator.configureLineNumbers(showsLineNumbers, in: scrollView)
         // Marked text and its selection belong to the input method until commit.
         // A semantic/font refresh must not end composition or consume its Return.
@@ -738,7 +750,8 @@ struct NativeCodeEditor: NSViewRepresentable {
         if contentIdentityChanged { textView.unmarkText() }
         context.coordinator.configureFont(in: textView)
         textView.isEditable = isEditable
-        let textChanged = textView.string != text
+        let source = text
+        let textChanged = context.coordinator.synchronizedText != source
         if contentIdentityChanged || (textChanged && isEditable) {
             textView.breakUndoCoalescing()
             textView.undoManager?.removeAllActions()
@@ -748,12 +761,14 @@ struct NativeCodeEditor: NSViewRepresentable {
         if textChanged || styleChanged || contentIdentityChanged {
             context.coordinator.beginScrollAdjustment()
             let selection = textView.selectedRange()
-            if context.coordinator.canStyleIncrementally {
-                if textChanged { textView.string = text }
-                context.coordinator.scheduleSourceStyling()
+            context.coordinator.synchronizedText = source
+            if context.coordinator.canStyleAsynchronously {
+                if textChanged { textView.string = source }
+                context.coordinator.scheduleSourceStyling(source)
             } else {
+                context.coordinator.cancelSourceStyling()
                 NativeTextStorageUpdater.update(
-                    text,
+                    source,
                     style: style,
                     fontSize: fontSize,
                     semanticTokens: semanticTokens,
@@ -767,8 +782,10 @@ struct NativeCodeEditor: NSViewRepresentable {
             context.coordinator.lastAppliedSemanticTokens = semanticTokens
             context.coordinator.invalidateContentSearch()
             context.coordinator.resetExternalNavigation()
-            context.coordinator.configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
-            context.coordinator.refreshLineNumbers()
+            if textChanged || contentIdentityChanged {
+                context.coordinator.configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
+                context.coordinator.refreshLineNumbers()
+            }
             textView.setSelectedRange(
                 NSRange(
                     location: min(selection.location, textView.textStorage?.length ?? 0),
@@ -796,7 +813,10 @@ struct NativeCodeEditor: NSViewRepresentable {
         var style: NativeTextStyle
         var gitBlame: [Int: NativeGitBlameAnnotation]?
         var gitLineChanges: [Int: GitLineChangeKind]?
-        var usesIncrementalStyling: Bool
+        var usesAsyncSourceStyling: Bool
+        // Keep the Swift value shared with the binding to avoid comparing bridged
+        // copies of the entire source during unrelated view updates.
+        var synchronizedText: String?
         var canToggleGitBlame: Bool
         var onToggleGitBlame: (() -> Void)?
         var onSelectGitBlameCommit: ((String) -> Void)?
@@ -813,6 +833,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         private weak var scrollView: NSScrollView?
         private var lineNumberRuler: NativeLineNumberRulerView?
         private var lineIndex = SourceLineIndex(text: "")
+        private var configuredFontSize: CGFloat?
         private(set) var importFolding: NativeJavaImportFolding?
         private var foldsJavaImports = false
         private var importsExpanded: Binding<Bool>?
@@ -826,10 +847,9 @@ struct NativeCodeEditor: NSViewRepresentable {
         private var lastAppliedContentSearch: ContentSearchPresentation?
         private var hasAppliedContentSearch = false
         private var lastReportedVisibleLine: Int?
+        private var visibleLineTask: Task<Void, Never>?
         private var sourceHighlightTask: Task<NativeSourceHighlightPlan, Never>?
         private var sourceHighlightGeneration = UUID()
-        private var sourceHighlightPlan: NativeSourceHighlightPlan?
-        private var paintedSourceRange: NSRange?
 
         init(
             text: Binding<String>,
@@ -847,13 +867,13 @@ struct NativeCodeEditor: NSViewRepresentable {
             contentSearch: ContentSearchPresentation?,
             semanticTokens: [JavaSemanticToken],
             gitLineChanges: [Int: GitLineChangeKind]? = nil,
-            usesIncrementalStyling: Bool = false
+            usesAsyncSourceStyling: Bool = false
         ) {
             self.text = text
             self.style = style
             self.gitBlame = gitBlame
             self.gitLineChanges = gitLineChanges
-            self.usesIncrementalStyling = usesIncrementalStyling
+            self.usesAsyncSourceStyling = usesAsyncSourceStyling
             self.canToggleGitBlame = canToggleGitBlame
             self.onToggleGitBlame = onToggleGitBlame
             self.onSelectGitBlameCommit = onSelectGitBlameCommit
@@ -868,6 +888,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         }
 
         deinit {
+            visibleLineTask?.cancel()
             sourceHighlightTask?.cancel()
             NotificationCenter.default.removeObserver(self)
         }
@@ -914,10 +935,9 @@ struct NativeCodeEditor: NSViewRepresentable {
         }
 
         func configureFont(in textView: NSTextView) {
-            let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-            guard textView.font?.fontName != font.fontName
-                    || textView.font?.pointSize != font.pointSize else { return }
-            textView.font = font
+            guard configuredFontSize != fontSize else { return }
+            configuredFontSize = fontSize
+            textView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
         }
 
         func refreshLineNumbers() {
@@ -926,51 +946,41 @@ struct NativeCodeEditor: NSViewRepresentable {
             lineNumberRuler?.refresh(text: textView.string, index: lineIndex)
         }
 
-        var canStyleIncrementally: Bool {
-            if case .source = style { return usesIncrementalStyling }
+        var canStyleAsynchronously: Bool {
+            if case .source = style { return usesAsyncSourceStyling }
             return false
         }
 
-        func scheduleSourceStyling() {
-            guard let textView, case .source(let fileExtension) = style else { return }
+        func cancelSourceStyling() {
             sourceHighlightTask?.cancel()
+            sourceHighlightTask = nil
             sourceHighlightGeneration = UUID()
+        }
+
+        func scheduleSourceStyling(_ source: String, after delay: Duration? = nil) {
+            guard case .source(let fileExtension) = style else { return }
+            cancelSourceStyling()
             let generation = sourceHighlightGeneration
-            let source = textView.string
             let tokens = semanticTokens
             lastAppliedSemanticTokens = tokens
-            sourceHighlightPlan = nil
-            paintedSourceRange = nil
             let task = Task.detached(priority: .userInitiated) {
-                NativeSourceHighlightPlan.prepare(source, fileExtension: fileExtension, semanticTokens: tokens)
+                if let delay { try? await Task.sleep(for: delay) }
+                return NativeSourceHighlightPlan.prepare(source, fileExtension: fileExtension, semanticTokens: tokens)
             }
             sourceHighlightTask = task
             Task { [weak self] in
                 let plan = await task.value
-                guard let self, sourceHighlightGeneration == generation, !task.isCancelled,
-                      self.textView?.string == source else { return }
-                sourceHighlightPlan = plan
-                applyVisibleSourceStyling()
+                guard let self, sourceHighlightGeneration == generation, !task.isCancelled else { return }
+                sourceHighlightTask = nil
+                guard canStyleAsynchronously, synchronizedText == source, let textView,
+                      (textView as? NativeCodeTextView)?.isComposingText != true,
+                      let storage = textView.textStorage, storage.length > 0,
+                      storage.length == source.utf16.count else { return }
+                isApplyingStyle = true
+                defer { isApplyingStyle = false }
+                NativeTextStyler.apply(plan, fontSize: fontSize, to: storage)
+                importFolding?.updatePlaceholder()
             }
-        }
-
-        func applyVisibleSourceStyling() {
-            guard canStyleIncrementally, !isApplyingStyle,
-                  let textView, let plan = sourceHighlightPlan,
-                  (textView as? NativeCodeTextView)?.isComposingText != true,
-                  let storage = textView.textStorage, storage.length > 0,
-                  let layout = textView.layoutManager, let container = textView.textContainer else { return }
-            isApplyingStyle = true
-            defer { isApplyingStyle = false }
-            let visible = textView.visibleRect.insetBy(dx: 0, dy: -80)
-            layout.ensureLayout(forBoundingRect: visible, in: container)
-            let glyphs = layout.glyphRange(forBoundingRect: visible, in: container)
-            let characters = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-            let range = (textView.string as NSString).lineRange(for: characters)
-            guard range.length > 0, NSMaxRange(range) <= storage.length else { return }
-            if let paintedSourceRange, NSIntersectionRange(paintedSourceRange, range) == range { return }
-            NativeTextStyler.apply(plan, in: range, fontSize: fontSize, to: storage)
-            paintedSourceRange = range
         }
 
         func configureImportFolding(enabled: Bool, expanded: Binding<Bool>?, sourceChanged: Bool) {
@@ -992,7 +1002,6 @@ struct NativeCodeEditor: NSViewRepresentable {
                 sourceChanged: sourceChanged
             )
             lineNumberRuler?.importFolding = importFolding
-            lineNumberRuler?.needsDisplay = true
         }
 
         func requestGoToLine() {
@@ -1023,17 +1032,19 @@ struct NativeCodeEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard !isApplyingStyle,
                   let textView = notification.object as? NSTextView else { return }
-            if text.wrappedValue != textView.string { text.wrappedValue = textView.string }
+            let source = textView.string
+            synchronizedText = source
+            if text.wrappedValue != source { text.wrappedValue = source }
             // Do not replace attributes, restore selections, or fold source while
             // AppKit is still building an input method's marked-text transaction.
             guard (textView as? NativeCodeTextView)?.isComposingText != true else { return }
             configureFont(in: textView)
-            if canStyleIncrementally {
-                scheduleSourceStyling()
+            if canStyleAsynchronously {
+                scheduleSourceStyling(source, after: .milliseconds(80))
             } else {
                 let selection = textView.selectedRange()
                 isApplyingStyle = true
-                NativeTextStyler.apply(textView.string, style: style, fontSize: fontSize, semanticTokens: semanticTokens, to: textView)
+                NativeTextStyler.apply(source, style: style, fontSize: fontSize, semanticTokens: semanticTokens, to: textView)
                 lastAppliedSemanticTokens = semanticTokens
                 textView.setSelectedRange(selection)
                 isApplyingStyle = false
@@ -1118,6 +1129,7 @@ struct NativeCodeEditor: NSViewRepresentable {
 
         func navigateIfNeeded(to request: NativeTextNavigationRequest?) {
             guard let request, request.id != lastNavigationRequestID else { return }
+            cancelVisibleLineReport()
             if let range = request.range {
                 navigate(to: range)
             } else {
@@ -1214,7 +1226,6 @@ struct NativeCodeEditor: NSViewRepresentable {
 
         func endScrollAdjustment() {
             isAdjustingScroll = false
-            applyVisibleSourceStyling()
         }
 
         func scrollToTail() {
@@ -1231,7 +1242,6 @@ struct NativeCodeEditor: NSViewRepresentable {
             scrollView.reflectScrolledClipView(scrollView.contentView)
             followsTail?.wrappedValue = true
             isAdjustingScroll = wasAdjustingScroll
-            if !isAdjustingScroll { applyVisibleSourceStyling() }
         }
 
         func restoreVisibleOrigin(_ origin: NSPoint) {
@@ -1241,17 +1251,13 @@ struct NativeCodeEditor: NSViewRepresentable {
             scrollView.contentView.scroll(to: origin)
             scrollView.reflectScrolledClipView(scrollView.contentView)
             isAdjustingScroll = wasAdjustingScroll
-            if !isAdjustingScroll { applyVisibleSourceStyling() }
         }
 
         @objc private func visibleBoundsDidChange(_ notification: Notification) {
             guard !isAdjustingScroll,
                   let scrollView,
                   let documentView = scrollView.documentView else { return }
-            applyVisibleSourceStyling()
-            if let line = centerVisibleLine(in: scrollView) {
-                onVisibleLineChange?(line)
-            }
+            scheduleVisibleLineReport()
             if let followsTail {
                 let isAtTail = NativeTextTailFollowPolicy.isAtTail(
                     documentHeight: documentView.bounds.height,
@@ -1263,15 +1269,46 @@ struct NativeCodeEditor: NSViewRepresentable {
             }
         }
 
-        private func centerVisibleLine(in scrollView: NSScrollView) -> Int? {
+        func cancelVisibleLineReport() {
+            visibleLineTask?.cancel()
+            visibleLineTask = nil
+            lastReportedVisibleLine = nil
+        }
+
+        private func scheduleVisibleLineReport() {
+            guard onVisibleLineChange != nil, visibleLineTask == nil else { return }
+            visibleLineTask = Task { [weak self] in
+                guard !Task.isCancelled else { return }
+                if self?.reportVisibleLine() == false {
+                    // TextKit may not yet have drawn the new viewport.
+                    try? await Task.sleep(for: .milliseconds(80))
+                    guard !Task.isCancelled else { return }
+                    _ = self?.reportVisibleLine()
+                }
+                self?.visibleLineTask = nil
+            }
+        }
+
+        private func reportVisibleLine() -> Bool {
+            guard let onVisibleLineChange else { return true }
+            guard let line = centerVisibleLine() else { return false }
+            if line != lastReportedVisibleLine {
+                lastReportedVisibleLine = line
+                onVisibleLineChange(line)
+            }
+            return true
+        }
+
+        private func centerVisibleLine() -> Int? {
             guard let textView,
                   let layoutManager = textView.layoutManager,
                   let textContainer = textView.textContainer else { return nil }
-            layoutManager.ensureLayout(forBoundingRect: textView.visibleRect, in: textContainer)
+            if lineIndex.utf16Length == 0 { return 1 }
             let glyphRange = layoutManager.glyphRange(
-                forBoundingRect: textView.visibleRect,
+                forBoundingRectWithoutAdditionalLayout: textView.visibleTextContainerRect,
                 in: textContainer
             )
+            guard glyphRange.length > 0 else { return nil }
             let characterRange = layoutManager.characterRange(
                 forGlyphRange: glyphRange,
                 actualGlyphRange: nil
@@ -1288,8 +1325,6 @@ struct NativeCodeEditor: NSViewRepresentable {
             } else {
                 line = firstLine + (lastLine - firstLine) / 2
             }
-            guard line != lastReportedVisibleLine else { return nil }
-            lastReportedVisibleLine = line
             return line
         }
     }
@@ -1442,33 +1477,32 @@ private struct NativeSourceHighlightPlan: Sendable {
 
 @MainActor
 private enum NativeTextStyler {
-    static func apply(_ plan: NativeSourceHighlightPlan, in range: NSRange, fontSize: CGFloat, to storage: NSTextStorage) {
+    static func apply(_ plan: NativeSourceHighlightPlan, fontSize: CGFloat, to storage: NSTextStorage) {
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let italic = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
         storage.beginEditing()
-        storage.setAttributes(plainAttributes(fontSize: fontSize), range: range)
+        storage.setAttributes([.font: font, .foregroundColor: NSColor.textColor],
+                              range: NSRange(location: 0, length: storage.length))
         for span in plan.spans {
-            let intersection = NSIntersectionRange(span.range, range)
-            guard intersection.length > 0 else { continue }
             let attributes: [NSAttributedString.Key: Any]
             switch span.style {
-            case .java(let style): attributes = javaAttributes(for: style, fontSize: fontSize)
+            case .java(let style): attributes = javaAttributes(for: style, italic: italic)
             case .xml(let style): attributes = [.foregroundColor: XMLSyntaxColorPalette.color(for: style)]
             case .semantic(let style): attributes = [.foregroundColor: JavaSemanticColorPalette.color(for: style)]
             case .comment: attributes = [.foregroundColor: NSColor.systemGreen]
             case .markup, .keyword: attributes = [.foregroundColor: NSColor.systemPurple]
             case .property: attributes = [.foregroundColor: NSColor.systemBlue]
             }
-            storage.addAttributes(attributes, range: intersection)
+            storage.addAttributes(attributes, range: span.range)
         }
         storage.endEditing()
     }
 
-    private static func javaAttributes(for style: JavaSyntaxHighlightStyle, fontSize: CGFloat) -> [NSAttributedString.Key: Any] {
+    private static func javaAttributes(for style: JavaSyntaxHighlightStyle, italic: NSFont) -> [NSAttributedString.Key: Any] {
         switch style {
         case .annotation: return [.foregroundColor: NSColor.systemBrown]
         case .comment, .fieldDeclaration: return [.foregroundColor: NSColor.secondaryLabelColor]
         case .constant, .methodCall:
-            let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-            let italic = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
             return style == .constant
                 ? [.foregroundColor: NSColor.systemPurple, .font: italic] : [.font: italic]
         case .fieldReference: return [.foregroundColor: NSColor.systemPurple]

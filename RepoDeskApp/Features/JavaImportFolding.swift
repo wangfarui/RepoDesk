@@ -55,7 +55,7 @@ final class NativeJavaImportFolding: NSObject, @preconcurrency NSLayoutManagerDe
     var onExpansionChange: ((Bool) -> Void)?
     var onLayoutChange: (() -> Void)?
     private let placeholder = NSButton(title: "...", target: nil, action: nil)
-    private var hasConfiguredSource = false
+    private var configuredEnabled: Bool?
 
     init(textView: NSTextView) {
         self.textView = textView
@@ -81,15 +81,19 @@ final class NativeJavaImportFolding: NSObject, @preconcurrency NSLayoutManagerDe
         guard let textView else { return }
         let oldRegion = region
         let oldExpanded = isExpanded
-        if sourceChanged || !hasConfiguredSource || !enabled {
+        if sourceChanged || configuredEnabled != enabled {
             region = enabled ? JavaImportRegion.find(in: textView.string) : nil
-            hasConfiguredSource = true
+            configuredEnabled = enabled
         }
         isExpanded = expanded
-        if oldRegion != region || oldExpanded != expanded {
+        let layoutChanged = oldRegion != region || oldExpanded != expanded
+        if layoutChanged {
             invalidateLayout()
+            onLayoutChange?()
         }
-        updatePlaceholder()
+        if layoutChanged || sourceChanged || (region != nil && !expanded && placeholder.font != textView.font) {
+            updatePlaceholder()
+        }
     }
 
     @objc func toggle() {
@@ -174,16 +178,17 @@ final class NativeJavaImportFolding: NSObject, @preconcurrency NSLayoutManagerDe
         forGlyphRange glyphRange: NSRange
     ) -> Int {
         guard let region, !isExpanded else { return 0 }
+        let indexes = UnsafeBufferPointer(start: charIndexes, count: glyphRange.length)
+        guard let firstHidden = indexes.firstIndex(where: { NSLocationInRange($0, region.hiddenRange) }) else {
+            return 0
+        }
         var properties = Array(UnsafeBufferPointer(start: props, count: glyphRange.length))
-        var changed = false
-        for index in properties.indices where NSLocationInRange(charIndexes[index], region.hiddenRange) {
+        for index in firstHidden..<properties.endIndex where NSLocationInRange(charIndexes[index], region.hiddenRange) {
             // Large runs of .null glyphs corrupt NSATSTypesetter's paragraph ranges,
             // merging visible lines after the fold. Control glyphs retain the source
             // mapping while the delegate above suppresses their width and line breaks.
             properties[index] = .controlCharacter
-            changed = true
         }
-        guard changed else { return 0 }
         layoutManager.setGlyphs(
             glyphs, properties: properties, characterIndexes: charIndexes,
             font: font, forGlyphRange: glyphRange

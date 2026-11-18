@@ -481,20 +481,24 @@ struct FilesView: View {
                         }
                     )
                 } else {
+                    let fileURL = appState.selectedFileURL
                     SourceDocumentView(
                         text: Binding(
                             get: { appState.documentText },
                             set: { appState.updateSelectedDocumentText($0) }
                         ),
                         isLarge: textDocument.isLarge,
-                        fileIdentity: appState.selectedFileURL?.standardizedFileURL.path ?? "",
-                        fileName: appState.selectedFileURL?.lastPathComponent ?? "",
-                        fileExtension: appState.selectedFileURL?.pathExtension.lowercased() ?? "",
+                        fileIdentity: fileURL?.standardizedFileURL.path ?? "",
+                        fileName: fileURL?.lastPathComponent ?? "",
+                        fileExtension: fileURL?.pathExtension.lowercased() ?? "",
                         isModified: appState.hasUnsavedDocumentChanges,
                         isSaving: appState.isSavingDocument,
                         headerActions: documentHeaderActions,
                         navigationRequest: appState.selectedSourceNavigationRequest,
-                        onVisibleLineChange: { appState.rememberSelectedFileVisibleLine($0) },
+                        onVisibleLineChange: { line in
+                            guard appState.selectedFileURL == fileURL else { return }
+                            appState.rememberSelectedFileVisibleLine(line)
+                        },
                         onNavigationHandled: { appState.clearSelectedSourceNavigationRequest($0) },
                         fontSize: appState.fileContentFontSize,
                         semanticTokens: appState.javaSemanticTokens,
@@ -1781,7 +1785,7 @@ struct SourceDocumentView: View {
                         shortcuts: shortcuts,
                         foldsJavaImports: fileExtension == "java",
                         importsExpanded: importsExpanded,
-                        usesIncrementalStyling: true
+                        usesAsyncSourceStyling: true
                     )
 
                     if let presentation = javaNavigationLoadingPresentation {

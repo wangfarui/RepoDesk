@@ -18,7 +18,7 @@ enum VerifyFilesEditingPerformance {
             text: Binding(get: { state.text }, set: { state.update($0) }),
             isEditable: true, style: .source(fileExtension: "java"), showsLineNumbers: true,
             gitLineChanges: [:], contentIdentity: "editing.java", fontSize: 13,
-            usesIncrementalStyling: true
+            usesAsyncSourceStyling: true
         ))
         host.frame = NSRect(x: 0, y: 0, width: 1000, height: 640)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -74,8 +74,7 @@ enum VerifyFilesEditingPerformance {
         let keyword = (state.text as NSString).range(of: "private String field1510").location
         view.scrollRangeToVisible(NSRange(location: keyword, length: 0))
         try await waitUntil {
-            coordinator.applyVisibleSourceStyling()
-            return view.textStorage?.attribute(.foregroundColor, at: keyword, effectiveRange: nil) as? NSColor == .systemBlue
+            view.textStorage?.attribute(.foregroundColor, at: keyword, effectiveRange: nil) as? NSColor == .systemBlue
         }
         try require(view.string == state.text, "Background styling changes source text")
         let distantKeyword = (state.text as NSString).range(of: "private String field2800").location

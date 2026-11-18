@@ -5916,10 +5916,7 @@ final class AppState {
     }
 
     private func scheduleWindowStatePersistence() {
-        guard let workspaceURL else { return }
-        syncCurrentFileTabSession()
-        let state = windowStateSnapshot()
-        windowStatePersistenceTask?.cancel()
+        guard let workspaceURL, windowStatePersistenceTask == nil else { return }
         windowStatePersistenceTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(250))
@@ -5927,8 +5924,9 @@ final class AppState {
                 return
             }
             guard let self else { return }
-            windowStateStore.save(state, for: workspaceURL)
             windowStatePersistenceTask = nil
+            guard self.workspaceURL == workspaceURL else { return }
+            persistWindowState()
         }
     }
 
