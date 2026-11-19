@@ -304,8 +304,8 @@ final class AppState {
     private var activeRepositoryRefreshIDs: Set<RegisteredRepository.ID> = []
     private var repositoryRefreshWaiters: [RegisteredRepository.ID: [CheckedContinuation<Void, Never>]] = [:]
     @ObservationIgnored private var commitSuccessDismissTask: Task<Void, Never>?
-    @ObservationIgnored private var documentAutoSaveTasks: [URL: Task<Void, Never>] = [:]
-    @ObservationIgnored private var documentAutoSaveRequestIDs: [URL: UUID] = [:]
+    @ObservationIgnored private var pendingDocumentSaves: [URL: PendingDocumentSave] = [:]
+    @ObservationIgnored private var documentSaveTasks: [URL: Task<Void, Never>] = [:]
     @ObservationIgnored private var windowStatePersistenceTask: Task<Void, Never>?
     @ObservationIgnored private var gitRemoteOperationSuccessDismissTask: Task<Void, Never>?
     @ObservationIgnored private var javaLanguageEventTask: Task<Void, Never>?
@@ -328,6 +328,11 @@ final class AppState {
     private struct JavaSemanticTokenCacheEntry: Sendable {
         let text: String
         let tokens: [JavaSemanticToken]
+    }
+
+    private struct PendingDocumentSave {
+        var request: DocumentSaveRequest
+        let task: Task<Void, Never>
     }
 
     init(
@@ -650,7 +655,7 @@ final class AppState {
         )
         await refreshLoadedDirectories(for: batch, workspaceURL: workspaceURL)
         markMavenProjectRevisions(for: batch)
-        reloadSelectedFileIfChanged(force: true)
+        await reloadSelectedFileIfChanged(force: true)
         if selectedSection == .changes {
             await refreshAllRepositories()
         } else {
@@ -2578,13 +2583,11 @@ final class AppState {
         let selectedDocumentWasLoading = selectedFileWasRenamed && isLoadingDocument
         let shouldResumeDocumentAutoSave = selectedFileWasRenamed && hasUnsavedDocumentChanges
 
-        let autoSaveURLs = documentAutoSaveTasks.keys.filter {
+        let autoSaveURLs = pendingDocumentSaves.keys.filter {
             Self.isSameOrDescendant($0, of: oldURL)
         }
         for fileURL in autoSaveURLs {
-            documentAutoSaveTasks[fileURL]?.cancel()
-            documentAutoSaveTasks[fileURL] = nil
-            documentAutoSaveRequestIDs[fileURL] = nil
+            pendingDocumentSaves.removeValue(forKey: fileURL)?.task.cancel()
         }
         if selectedDocumentWasLoading {
             documentRequestID = nil
@@ -2740,7 +2743,7 @@ final class AppState {
         if shouldResumeDocumentAutoSave {
             scheduleDocumentAutoSave()
         } else if let selectedFileURL {
-            isSavingDocument = documentAutoSaveRequestIDs[selectedFileURL] != nil
+            isSavingDocument = hasPendingDocumentSave(for: selectedFileURL)
         }
         persistWindowState()
         if selectedDocumentWasLoading, let selectedFileURL {
@@ -3838,47 +3841,30 @@ final class AppState {
     func discardChangesAndReload() {
         showsDiscardAndReloadConfirmation = false
         guard let selectedFileURL else { return }
+        pendingDocumentSaves.removeValue(forKey: selectedFileURL)?.task.cancel()
         loadFile(selectedFileURL, preservesMarkdownPreview: true)
     }
 
     func saveSelectedDocument(allowsOverwrite: Bool = false) async {
-        guard let selectedFileURL,
-              case .text(let document) = loadedDocument,
-              !document.isLarge,
-              !isSavingDocument else { return }
-
-        let savedText = documentText
-        isSavingDocument = true
-        documentSaveErrorMessage = nil
-        defer { isSavingDocument = false }
-        do {
-            let revision = try await documentSaver.save(
-                DocumentSaveRequest(
-                    fileURL: selectedFileURL,
-                    text: savedText,
-                    encoding: document.encoding,
-                    expectedRevision: document.revision,
-                    allowsOverwrite: allowsOverwrite
-                )
-            )
-            loadedDocument = .text(
-                LoadedTextDocument(
-                    text: savedText,
-                    isLarge: false,
-                    encoding: document.encoding,
-                    revision: revision
-                )
-            )
-            documentOriginalText = savedText
-            selectedFileFingerprint = fileFingerprint(selectedFileURL)
-            syncActiveFileTab()
-            hasDocumentConflict = false
-            lastDocumentSavedAt = .now
-        } catch DocumentSaveError.changedOnDisk {
-            hasDocumentConflict = true
-        } catch {
-            documentSaveErrorMessage = error.localizedDescription
+        guard let fileURL = selectedFileURL else { return }
+        while let task = documentSaveTasks[fileURL] {
+            await task.value
         }
+        guard selectedFileURL == fileURL,
+              case .text(let document) = loadedDocument,
+              !document.isLarge else { return }
+
+        pendingDocumentSaves.removeValue(forKey: fileURL)?.task.cancel()
+        let task = startDocumentSave(
+            DocumentSaveRequest(
+                fileURL: fileURL,
+                text: documentText,
+                encoding: document.encoding,
+                expectedRevision: document.revision,
+                allowsOverwrite: allowsOverwrite
+            )
+        )
+        await task.value
     }
 
     func updateSelectedDocumentText(_ text: String) {
@@ -3931,7 +3917,7 @@ final class AppState {
         hasDocumentConflict = false
         documentSaveErrorMessage = nil
         lastDocumentSavedAt = nil
-        isSavingDocument = documentAutoSaveRequestIDs[fileURL] != nil
+        isSavingDocument = hasPendingDocumentSave(for: fileURL)
         documentText = ""
         documentOriginalText = ""
         let requestID = UUID()
@@ -3949,6 +3935,8 @@ final class AppState {
 
         Task { [weak self] in
             guard let self else { return }
+            await documentSaveTasks[fileURL]?.value
+            guard documentRequestID == requestID else { return }
             let document = await documentLoader.load(fileURL)
             guard documentRequestID == requestID else { return }
             loadedDocument = document
@@ -3986,7 +3974,7 @@ final class AppState {
         hasDocumentConflict = false
         documentSaveErrorMessage = nil
         lastDocumentSavedAt = nil
-        isSavingDocument = documentAutoSaveRequestIDs[tab.url] != nil
+        isSavingDocument = hasPendingDocumentSave(for: tab.url)
         documentRequestID = nil
         selectedSourceNavigationRequest = NativeTextNavigationRequest(line: tab.visibleLine)
         if tab.loadedDocument == nil && !tab.isLoading {
@@ -4037,64 +4025,89 @@ final class AppState {
         guard let fileURL = selectedFileURL,
               case .text(let document) = loadedDocument,
               !document.isLarge else { return }
-        documentAutoSaveTasks[fileURL]?.cancel()
-        let requestID = UUID()
-        documentAutoSaveRequestIDs[fileURL] = requestID
-        let text = documentText
+        pendingDocumentSaves[fileURL]?.task.cancel()
         let request = DocumentSaveRequest(
             fileURL: fileURL,
-            text: text,
+            text: documentText,
             encoding: document.encoding,
             expectedRevision: document.revision,
             allowsOverwrite: false
         )
-        isSavingDocument = true
-        documentAutoSaveTasks[fileURL] = Task { [weak self] in
+        let task = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(180))
             } catch {
-                guard let self else { return }
-                guard self.documentAutoSaveRequestIDs[fileURL] == requestID else { return }
-                self.documentAutoSaveRequestIDs[fileURL] = nil
-                self.documentAutoSaveTasks[fileURL] = nil
-                if self.selectedFileURL == fileURL { self.isSavingDocument = false }
                 return
             }
             guard let self else { return }
+            while let writing = documentSaveTasks[fileURL], !Task.isCancelled {
+                await writing.value
+            }
+            guard !Task.isCancelled,
+                  let pending = pendingDocumentSaves.removeValue(forKey: fileURL) else { return }
+            _ = startDocumentSave(pending.request)
+        }
+        pendingDocumentSaves[fileURL] = PendingDocumentSave(request: request, task: task)
+        isSavingDocument = true
+    }
+
+    private func hasPendingDocumentSave(for fileURL: URL) -> Bool {
+        pendingDocumentSaves[fileURL] != nil || documentSaveTasks[fileURL] != nil
+    }
+
+    private func startDocumentSave(_ request: DocumentSaveRequest) -> Task<Void, Never> {
+        let fileURL = request.fileURL
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                documentSaveTasks[fileURL] = nil
+                if selectedFileURL == fileURL {
+                    isSavingDocument = hasPendingDocumentSave(for: fileURL)
+                }
+            }
             do {
-                let revision = try await self.documentSaver.save(request)
-                guard self.documentAutoSaveRequestIDs[fileURL] == requestID else { return }
-                self.documentAutoSaveRequestIDs[fileURL] = nil
-                self.documentAutoSaveTasks[fileURL] = nil
-                guard let index = self.openFileTabs.firstIndex(where: { $0.url == fileURL }) else { return }
-                self.openFileTabs[index].loadedDocument = .text(
-                    LoadedTextDocument(
-                        text: text,
-                        isLarge: false,
-                        encoding: document.encoding,
-                        revision: revision
-                    )
+                let revision = try await documentSaver.save(request)
+                if pendingDocumentSaves[fileURL]?.request.expectedRevision == request.expectedRevision {
+                    pendingDocumentSaves[fileURL]?.request.expectedRevision = revision
+                }
+                let document = LoadedDocument.text(
+                    LoadedTextDocument(text: request.text, isLarge: false, encoding: request.encoding, revision: revision)
                 )
-                self.openFileTabs[index].text = text
-                self.openFileTabs[index].originalText = text
-                self.openFileTabs[index].fingerprint = self.fileFingerprint(fileURL)
-                self.openFileTabs[index].isLoading = false
-                if self.selectedFileURL == fileURL {
-                    self.loadedDocument = self.openFileTabs[index].loadedDocument
-                    self.documentOriginalText = text
-                    self.selectedFileFingerprint = self.openFileTabs[index].fingerprint
-                    self.isSavingDocument = false
+                if let index = openFileTabs.firstIndex(where: { $0.url == fileURL }),
+                   case .text(let previous) = openFileTabs[index].loadedDocument,
+                   previous.revision == request.expectedRevision {
+                    openFileTabs[index].loadedDocument = document
+                    openFileTabs[index].originalText = request.text
+                }
+                if selectedFileURL == fileURL,
+                   case .text(let previous) = loadedDocument,
+                   previous.revision == request.expectedRevision {
+                    loadedDocument = document
+                    documentOriginalText = request.text
+                    hasDocumentConflict = false
+                    lastDocumentSavedAt = .now
+                }
+            } catch DocumentSaveError.changedOnDisk {
+                if selectedFileURL == fileURL,
+                   case .text(let current) = loadedDocument,
+                   current.revision == request.expectedRevision {
+                    pendingDocumentSaves.removeValue(forKey: fileURL)?.task.cancel()
+                    selectedFileFingerprint = fileFingerprint(fileURL)
+                    syncActiveFileTab()
+                    hasDocumentConflict = true
                 }
             } catch {
-                guard self.documentAutoSaveRequestIDs[fileURL] == requestID else { return }
-                self.documentAutoSaveRequestIDs[fileURL] = nil
-                self.documentAutoSaveTasks[fileURL] = nil
-                if self.selectedFileURL == fileURL {
-                    self.isSavingDocument = false
-                    self.documentSaveErrorMessage = error.localizedDescription
+                if selectedFileURL == fileURL {
+                    documentSaveErrorMessage = error.localizedDescription
                 }
             }
         }
+        documentSaveTasks[fileURL] = task
+        if selectedFileURL == fileURL {
+            isSavingDocument = true
+            documentSaveErrorMessage = nil
+        }
+        return task
     }
 
     func toggleMarkdownPreview() {
@@ -4113,17 +4126,39 @@ final class AppState {
         persistWindowState()
     }
 
-    private func reloadSelectedFileIfChanged(force: Bool = false) {
-        guard let selectedFileURL else { return }
-        let fingerprint = fileFingerprint(selectedFileURL)
-        if hasUnsavedDocumentChanges {
-            guard fingerprint != selectedFileFingerprint else { return }
-            hasDocumentConflict = true
-            selectedFileFingerprint = fingerprint
-        } else {
-            guard force || fingerprint != selectedFileFingerprint else { return }
-            loadFile(selectedFileURL, preservesMarkdownPreview: true)
+    private func reloadSelectedFileIfChanged(force: Bool = false) async {
+        guard let fileURL = selectedFileURL else { return }
+        await documentSaveTasks[fileURL]?.value
+        guard selectedFileURL == fileURL, !isLoadingDocument, documentSaveTasks[fileURL] == nil else { return }
+
+        let baselineFingerprint = selectedFileFingerprint
+        let fingerprint = fileFingerprint(fileURL)
+        guard fingerprint != baselineFingerprint || (force && !hasUnsavedDocumentChanges) else { return }
+
+        if case .text(let document) = loadedDocument, !document.isLarge {
+            let disk = await documentLoader.load(fileURL)
+            guard selectedFileURL == fileURL,
+                  !isLoadingDocument,
+                  documentSaveTasks[fileURL] == nil,
+                  loadedDocument == .text(document),
+                  selectedFileFingerprint == baselineFingerprint,
+                  fileFingerprint(fileURL) == fingerprint else { return }
+
+            if case .text(let diskDocument) = disk, diskDocument.revision == document.revision {
+                selectedFileFingerprint = fingerprint
+                syncActiveFileTab()
+                return
+            }
+            if hasUnsavedDocumentChanges {
+                pendingDocumentSaves.removeValue(forKey: fileURL)?.task.cancel()
+                isSavingDocument = false
+                selectedFileFingerprint = fingerprint
+                syncActiveFileTab()
+                hasDocumentConflict = true
+                return
+            }
         }
+        loadFile(fileURL, preservesMarkdownPreview: true)
     }
 
     private func applyWorkspaceChanges(
@@ -4146,7 +4181,7 @@ final class AppState {
                 "workspace-batch directories-complete id=\(traceID)"
             )
         }
-        reloadSelectedFileIfChanged()
+        await reloadSelectedFileIfChanged()
         await javaLanguageProvider.notifyFilesChanged(Array(batch.changedURLs))
 
         let changeScope = WorkspaceChangeScope(batch)

@@ -38,7 +38,7 @@ struct DocumentSaveRequest: Equatable, Sendable {
     let fileURL: URL
     let text: String
     let encoding: DocumentTextEncoding
-    let expectedRevision: DocumentRevision
+    var expectedRevision: DocumentRevision
     let allowsOverwrite: Bool
 }
 

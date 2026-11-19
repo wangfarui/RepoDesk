@@ -10,9 +10,78 @@ private struct QAIntegrationFailure: LocalizedError {
 @MainActor
 enum QAIntegrationVerification {
     static func main() async throws {
+        try await verifyDocumentAutoSave()
+        try await verifyDocumentConflict()
         try await verifyRealGitLifecycle()
         try verifyWindowStateAndAppStateRestoration()
         print("QA integration verification passed")
+    }
+
+    private static func verifyDocumentAutoSave() async throws {
+        let fixture = try QADocumentFixture()
+        defer { fixture.remove() }
+        let saver = QAPausedDocumentSaver()
+        let state = fixture.open(saver: saver)
+        try await waitFor("opening the editable document") { state.canEditSelectedDocument }
+
+        state.updateSelectedDocumentText("first edit\n")
+        do {
+            try await waitFor("the first write") { await saver.isFirstWritePaused }
+        } catch {
+            await saver.resume()
+            throw error
+        }
+
+        state.updateSelectedDocumentText("latest edit\n")
+        let refresh = Task { await state.refreshWorkspaceConsistency() }
+        await saver.resume()
+        await refresh.value
+        try await waitFor("saving the latest edit") { !state.isSavingDocument }
+        try require(state.documentSaveErrorMessage == nil, "An autosave rejected RepoDesk's own write.")
+        try require(!state.hasDocumentConflict, "Workspace refresh treated an autosave as an external edit.")
+        let diskText = try fixture.read()
+        try require(diskText == "latest edit\n", "The latest edit was not saved.")
+        try require(state.documentText == diskText && !state.hasUnsavedDocumentChanges, "The editor lost the latest edit.")
+    }
+
+    private static func verifyDocumentConflict() async throws {
+        let fixture = try QADocumentFixture()
+        defer { fixture.remove() }
+        let state = fixture.open()
+        try await waitFor("opening the editable document") { state.canEditSelectedDocument }
+
+        state.updateSelectedDocumentText("edit after timestamp change\n")
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSinceNow: -60)],
+            ofItemAtPath: fixture.fileURL.path
+        )
+        await state.refreshWorkspaceConsistency()
+        try require(!state.hasDocumentConflict, "A timestamp-only change raised a conflict.")
+        try await waitFor("saving after the timestamp change") { !state.isSavingDocument }
+
+        try fixture.write("external edit\n")
+        state.updateSelectedDocumentText("unsaved editor text\n")
+        try await waitFor("checking the external edit during autosave") { !state.isSavingDocument }
+        await state.refreshWorkspaceConsistency()
+        try require(state.hasDocumentConflict, "An external edit did not raise a conflict.")
+        try require(state.documentSaveErrorMessage == nil, "An external edit raised two different alerts.")
+        let externalText = try fixture.read()
+        try require(externalText == "external edit\n", "Autosave overwrote an external edit.")
+        try require(state.hasUnsavedDocumentChanges, "The editor lost its unsaved changes.")
+
+        await state.saveSelectedDocument(allowsOverwrite: true)
+        let overwrittenText = try fixture.read()
+        try require(overwrittenText == "unsaved editor text\n", "Explicit overwrite failed.")
+        try require(!state.hasDocumentConflict && !state.hasUnsavedDocumentChanges, "Overwrite did not clear the conflict.")
+    }
+
+    private static func waitFor(_ operation: String, until condition: () async -> Bool) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(3))
+        while !(await condition()) {
+            try require(clock.now < deadline, "Timed out while \(operation).")
+            try await Task.sleep(for: .milliseconds(5))
+        }
     }
 
     private static func verifyRealGitLifecycle() async throws {
@@ -241,6 +310,72 @@ enum QAIntegrationVerification {
     private static func value<T>(_ value: T?, _ message: String) throws -> T {
         guard let value else { throw QAIntegrationFailure(message: message) }
         return value
+    }
+}
+
+private struct QADocumentFixture {
+    let directory: URL
+    let fileURL: URL
+
+    init() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RepoDeskQADocument-\(UUID())", isDirectory: true)
+        fileURL = directory.appendingPathComponent("document.txt")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try write("initial text\n")
+    }
+
+    @MainActor
+    func open(saver: (any DocumentSaving)? = nil) -> AppState {
+        let state = AppState(
+            workspace: WorkspaceSummary(url: directory),
+            documentSaver: saver,
+            windowStateStore: QAWindowStateStore(),
+            restoresWorkspaceOnLaunch: false
+        )
+        state.selectFile(fileURL)
+        return state
+    }
+
+    func read() throws -> String {
+        try String(contentsOf: fileURL, encoding: .utf8)
+    }
+
+    func write(_ text: String) throws {
+        try Data(text.utf8).write(to: fileURL, options: .atomic)
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: directory)
+    }
+}
+
+@MainActor
+private final class QAWindowStateStore: WindowStateStoring {
+    func state(for workspaceURL: URL) -> WorkspaceWindowState { .initial }
+    func save(_ state: WorkspaceWindowState, for workspaceURL: URL) {}
+}
+
+private actor QAPausedDocumentSaver: DocumentSaving {
+    private let store = FileSystemDocumentStore()
+    private var hasStartedFirstWrite = false
+    private var firstWrite: CheckedContinuation<Void, Never>?
+
+    var isFirstWritePaused: Bool { firstWrite != nil }
+
+    func save(_ request: DocumentSaveRequest) async throws -> DocumentRevision {
+        let pause = !hasStartedFirstWrite
+        hasStartedFirstWrite = true
+        let revision = try await store.save(request)
+        if pause {
+            await withCheckedContinuation { firstWrite = $0 }
+        }
+        return revision
+    }
+
+    func resume() {
+        firstWrite?.resume()
+        firstWrite = nil
     }
 }
 

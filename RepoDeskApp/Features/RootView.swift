@@ -206,7 +206,7 @@ struct RootView: View {
                 Task { await appState.saveSelectedDocument(allowsOverwrite: true) }
             }
         } message: {
-            Text("RepoDesk 打开文件后，另一个进程修改了它。请重新加载或明确覆盖磁盘版本。")
+            Text("磁盘上的内容与编辑器加载的版本不同。重新加载会放弃未保存的改动，覆盖会用当前编辑内容替换磁盘版本。")
         }
         .alert("文件无法保存", isPresented: saveErrorAlertBinding) {
             Button("确定", role: .cancel) {
