@@ -600,6 +600,14 @@ struct NativeCodeEditor: NSViewRepresentable {
     var importsExpanded: Binding<Bool>? = nil
     var usesAsyncSourceStyling = false
 
+    @MainActor
+    static func focusedSelection(in window: NSWindow, contentIdentity: String) -> NSRange? {
+        guard let textView = window.firstResponder as? NativeCodeTextView,
+              let coordinator = textView.delegate as? Coordinator,
+              coordinator.contentIdentity == contentIdentity else { return nil }
+        return textView.selectedRange()
+    }
+
     func makeCoordinator() -> Coordinator {
         Coordinator(
             text: $text,

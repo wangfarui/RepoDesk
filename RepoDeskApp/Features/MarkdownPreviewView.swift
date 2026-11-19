@@ -15,10 +15,13 @@ struct MarkdownDocumentView: View {
     let onNavigationHandled: (UUID) -> Void
     let onOpenFile: (URL, Int?) -> Void
     @State private var contentFindState = ContentFindState()
-    @State private var searchMatches: [ContentSearchMatch] = []
     @State private var fileLinkError: String?
 
     var body: some View {
+        let document = previewDocument
+        let searchRanges = contentFindState.isPresented
+            ? contentFindState.documentMatchRanges(in: document.text)
+            : []
         VStack(spacing: 0) {
             HStack(spacing: 7) {
                 Image(systemName: "doc.richtext")
@@ -40,15 +43,15 @@ struct MarkdownDocumentView: View {
             if contentFindState.isPresented {
                 ContentFindBar(
                     state: $contentFindState,
-                    matchCount: searchMatches.count,
+                    matchCount: searchRanges.count,
                     dismiss: { contentFindState.dismiss() }
                 )
                 Divider()
             }
 
             MarkdownPreviewTextView(
-                document: previewDocument,
-                contentSearch: contentSearchPresentation,
+                document: document,
+                contentSearch: contentSearchPresentation(for: searchRanges),
                 focusRequestID: contentFindState.contentFocusRequestID,
                 sourceLine: sourceLine,
                 navigationRequest: navigationRequest,
@@ -67,25 +70,15 @@ struct MarkdownDocumentView: View {
             Text(fileLinkError ?? "")
         }
         .background(ContentFindCommandListener(
-            requestFind: { contentFindState.present() },
-            navigateMatch: navigateContentFind
+            requestFind: { presentContentFind(in: $0, document: document) },
+            navigateMatch: { navigateContentFind(by: $0, in: document.text) }
         ))
-        .onAppear {
-            rebuildSearchMatches()
-        }
         .onChange(of: text) { _, _ in
-            rebuildSearchMatches()
             guard contentFindState.isPresented else { return }
             contentFindState.resetSelection()
         }
-        .onChange(of: contentFindState.isPresented) { _, _ in
-            rebuildSearchMatches()
-        }
-        .onChange(of: contentFindState.query) { _, _ in
-            rebuildSearchMatches()
-        }
-        .onChange(of: contentFindState.options) { _, _ in
-            rebuildSearchMatches()
+        .onChange(of: fileURL) { _, _ in
+            contentFindState.resetSelection()
         }
     }
 
@@ -97,32 +90,33 @@ struct MarkdownDocumentView: View {
         MarkdownPreviewHTMLDocument(blocks: blocks, fontSize: fontSize)
     }
 
-    private var contentSearchPresentation: ContentSearchPresentation? {
+    private func contentSearchPresentation(for ranges: [NSRange]) -> ContentSearchPresentation? {
         guard contentFindState.isPresented else { return nil }
         let activeRange = contentFindState
-            .activeMatchIndex(matchCount: searchMatches.count)
-            .map { searchMatches[$0].range }
+            .activeMatchIndex(matchCount: ranges.count)
+            .map { ranges[$0] }
         return ContentSearchPresentation(
-            ranges: searchMatches.map(\.range),
+            ranges: ranges,
             activeRange: activeRange,
             navigationRequestID: contentFindState.navigationRequestID
         )
     }
 
-    private func rebuildSearchMatches() {
-        let visibleText = previewDocument.text
-        searchMatches = ContentSearchMatcher.matches(
-            in: visibleText,
-            query: contentFindState.query,
-            options: contentFindState.options
-        )
+    private func presentContentFind(in window: NSWindow, document: MarkdownPreviewHTMLDocument) {
+        guard let webView = MarkdownPreviewWebViewSurface.focused(in: window) else {
+            contentFindState.present()
+            return
+        }
+        webView.readSelection(in: document.identity) { selection in
+            contentFindState.present(selection: selection, in: document.text)
+        }
     }
 
-    private func navigateContentFind(by offset: Int) {
+    private func navigateContentFind(by offset: Int, in text: String) {
         if !contentFindState.isPresented {
             contentFindState.present()
         }
-        contentFindState.navigate(by: offset, matchCount: searchMatches.count)
+        contentFindState.navigate(by: offset, matchCount: contentFindState.documentMatchRanges(in: text).count)
     }
 
     private func openFileLink(_ link: MarkdownPreviewFileLink) {
@@ -820,6 +814,16 @@ struct MarkdownPreviewHTMLDocument {
             while ((node = walker.nextNode())) nodes.push(node);
             return nodes;
           }
+          window.repoDeskSelectionRange = function() {
+            var root = document.querySelector('.markdown-document'), selection = window.getSelection();
+            if (!root || !selection || selection.isCollapsed || !selection.rangeCount) return [];
+            var range = selection.getRangeAt(0);
+            if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return [];
+            var prefix = document.createRange();
+            prefix.selectNodeContents(root);
+            prefix.setEnd(range.startContainer, range.startOffset);
+            return [prefix.toString().length, range.toString().length];
+          };
           window.repoDeskApplySearch = function(ranges, activeIndex) {
             var root = document.querySelector('.markdown-document');
             if (!root) return;
@@ -1084,6 +1088,7 @@ private final class MarkdownPreviewWebViewSurface: WKWebView, WKNavigationDelega
     private var appliedSearch: ContentSearchPresentation?
     private var appliedFocusRequestID: UUID?
     private var appliedNavigationRequestID: UUID?
+    private var selectionRequestID: UUID?
     private var pendingSearch: ContentSearchPresentation?
     private var pendingSourceLine: Int?
     private var navigationRequest: NativeTextNavigationRequest?
@@ -1118,6 +1123,31 @@ private final class MarkdownPreviewWebViewSurface: WKWebView, WKNavigationDelega
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    static func focused(in window: NSWindow) -> MarkdownPreviewWebViewSurface? {
+        var view = window.firstResponder as? NSView
+        while let current = view {
+            if let webView = current as? MarkdownPreviewWebViewSurface { return webView }
+            view = current.superview
+        }
+        return nil
+    }
+
+    func readSelection(in identity: String, completion: @escaping (NSRange?) -> Void) {
+        guard isDocumentLoaded, appliedDocumentIdentity == identity else {
+            completion(nil)
+            return
+        }
+        let requestID = UUID()
+        selectionRequestID = requestID
+        evaluateJavaScript("window.repoDeskSelectionRange();") { [weak self] result, _ in
+            guard let self, selectionRequestID == requestID, appliedDocumentIdentity == identity,
+                  let window, Self.focused(in: window) === self else { return }
+            let bounds = result as? [Int] ?? []
+            let range = bounds.count == 2 ? NSRange(location: bounds[0], length: bounds[1]) : nil
+            completion(range)
+        }
     }
 
     func apply(

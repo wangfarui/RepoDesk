@@ -1675,6 +1675,7 @@ struct SourceDocumentView: View {
     }
 
     var body: some View {
+        let searchRanges = contentFindState.isPresented ? contentSearchRanges : []
         VStack(spacing: 0) {
             HStack(spacing: 7) {
                 FileTypeIcon(path: fileName)
@@ -1743,7 +1744,7 @@ struct SourceDocumentView: View {
             if contentFindState.isPresented {
                 ContentFindBar(
                     state: $contentFindState,
-                    matchCount: contentSearchMatches.count,
+                    matchCount: searchRanges.count,
                     dismiss: dismissContentFind
                 )
                 Divider()
@@ -1776,7 +1777,7 @@ struct SourceDocumentView: View {
                         },
                         contentIdentity: fileIdentity,
                         fontSize: CGFloat(fontSize),
-                        contentSearch: contentSearchPresentation,
+                        contentSearch: contentSearchPresentation(for: searchRanges),
                         focusRequestID: contentFindState.contentFocusRequestID,
                         semanticTokens: semanticTokens,
                         isJavaNavigationEnabled: fileExtension == "java",
@@ -1931,28 +1932,24 @@ struct SourceDocumentView: View {
         return CGSize(width: origin.x, height: origin.y)
     }
 
-    private var contentSearchMatches: [ContentSearchMatch] {
-        return ContentSearchMatcher.matches(
-            in: text,
-            query: contentFindState.query,
-            options: contentFindState.options
-        )
+    private var contentSearchRanges: [NSRange] {
+        contentFindState.documentMatchRanges(in: text)
     }
 
-    private var contentSearchPresentation: ContentSearchPresentation? {
+    private func contentSearchPresentation(for ranges: [NSRange]) -> ContentSearchPresentation? {
         guard contentFindState.isPresented else { return nil }
-        let matches = contentSearchMatches
-        let activeIndex = contentFindState.activeMatchIndex(matchCount: matches.count)
+        let activeIndex = contentFindState.activeMatchIndex(matchCount: ranges.count)
         return ContentSearchPresentation(
-            ranges: matches.map(\.range),
-            activeRange: activeIndex.map { matches[$0].range },
+            ranges: ranges,
+            activeRange: activeIndex.map { ranges[$0] },
             navigationRequestID: contentFindState.navigationRequestID
         )
     }
 
-    private func presentContentFind() {
+    private func presentContentFind(in window: NSWindow) {
+        let selection = NativeCodeEditor.focusedSelection(in: window, contentIdentity: fileIdentity)
         dismissGoToLine()
-        contentFindState.present()
+        contentFindState.present(selection: selection, in: text)
     }
 
     private func dismissContentFind() {
@@ -1961,9 +1958,10 @@ struct SourceDocumentView: View {
 
     private func navigateContentFind(by offset: Int) {
         if !contentFindState.isPresented {
-            presentContentFind()
+            dismissGoToLine()
+            contentFindState.present()
         }
-        contentFindState.navigate(by: offset, matchCount: contentSearchMatches.count)
+        contentFindState.navigate(by: offset, matchCount: contentSearchRanges.count)
     }
 
     private func toggleGitBlame() {

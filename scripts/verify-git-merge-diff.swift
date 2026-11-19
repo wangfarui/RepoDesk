@@ -275,6 +275,10 @@ enum GitMergeDiffVerification {
         })
         let hosting = NSHostingView(rootView: MergeGapVerificationPreview(state: state, annotations: annotations))
         hosting.frame = NSRect(x: 0, y: 0, width: 1_440, height: 720)
+        let window = NSWindow(contentRect: hosting.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        defer { window.close() }
         func updateLayout() {
             hosting.layoutSubtreeIfNeeded()
             RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
@@ -328,10 +332,7 @@ enum GitMergeDiffVerification {
 
         state.expandedGapIDs = [firstGap.id]
         updateLayout()
-        guard let findListener = descendantViews(of: hosting).compactMap({ $0 as? ContentFindCommandListenerView }).first else {
-            throw VerificationFailure(message: "Merge search listener missing")
-        }
-        findListener.requestFind?()
+        NotificationCenter.default.post(name: .repoDeskContentFindRequested, object: window)
         updateLayout()
         guard let field = descendantViews(of: hosting).compactMap({ $0 as? NSTextField }).first(where: {
             $0.placeholderString == "Find"

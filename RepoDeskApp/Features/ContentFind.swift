@@ -133,11 +133,28 @@ enum ContentSearchMatcher {
         documentOffset: Int,
         to matches: inout [ContentSearchMatch]
     ) {
-        let source = line as NSString
+        for range in ranges(in: line, query: query, options: options) {
+            matches.append(ContentSearchMatch(
+                lineIndex: lineIndex,
+                range: NSRange(location: documentOffset + range.location, length: range.length),
+                rangeInLine: range
+            ))
+        }
+    }
+
+    static func ranges(
+        in text: String,
+        query: String,
+        options: ContentSearchOptions,
+        startingAt start: Int = 0
+    ) -> [NSRange] {
+        guard !query.isEmpty else { return [] }
+        let source = text as NSString
         let searchOptions: NSString.CompareOptions = options.matchesCase
             ? []
             : [.caseInsensitive]
-        var searchLocation = 0
+        var matches: [NSRange] = []
+        var searchLocation = start
 
         while searchLocation <= source.length {
             let searchRange = NSRange(
@@ -146,21 +163,15 @@ enum ContentSearchMatcher {
             )
             let range = source.range(of: query, options: searchOptions, range: searchRange)
             guard range.location != NSNotFound else { break }
-            if !options.matchesWholeWords || isWholeWord(range, in: line) {
-                matches.append(ContentSearchMatch(
-                    lineIndex: lineIndex,
-                    range: NSRange(
-                        location: documentOffset + range.location,
-                        length: range.length
-                    ),
-                    rangeInLine: range
-                ))
+            if !options.matchesWholeWords || isWholeWord(range, in: text) {
+                matches.append(range)
             }
             searchLocation = range.location + max(1, range.length)
         }
+        return matches
     }
 
-    private static func isWholeWord(_ range: NSRange, in source: String) -> Bool {
+    static func isWholeWord(_ range: NSRange, in source: String) -> Bool {
         guard let matchRange = Range(range, in: source) else { return false }
         let startsAtBoundary = matchRange.lowerBound == source.startIndex
             || !isWordCharacter(source[source.index(before: matchRange.lowerBound)])
@@ -178,13 +189,20 @@ enum ContentSearchMatcher {
 
 struct ContentFindState: Equatable {
     var isPresented = false
-    var query = ""
-    var matchesCase = false
-    var matchesWholeWords = false
+    var query = "" {
+        didSet { if query != oldValue { resetSelection() } }
+    }
+    var matchesCase = false {
+        didSet { if matchesCase != oldValue { resetSelection() } }
+    }
+    var matchesWholeWords = false {
+        didSet { if matchesWholeWords != oldValue { resetSelection() } }
+    }
     var currentMatchIndex = 0
     var navigationRequestID = UUID()
     var focusRequestID = UUID()
     var contentFocusRequestID: UUID?
+    private var selectedSearchRange: NSRange?
 
     var options: ContentSearchOptions {
         ContentSearchOptions(
@@ -199,6 +217,33 @@ struct ContentFindState: Equatable {
         navigationRequestID = UUID()
     }
 
+    mutating func present(selection: NSRange?, in text: String) {
+        if let selection, selection.length > 0, let range = Range(selection, in: text) {
+            query = String(text[range])
+            if matchesWholeWords && !ContentSearchMatcher.isWholeWord(selection, in: text) {
+                matchesWholeWords = false
+            }
+            selectedSearchRange = selection
+            currentMatchIndex = documentMatchRanges(in: text).firstIndex(of: selection) ?? 0
+        }
+        present()
+    }
+
+    func documentMatchRanges(in text: String) -> [NSRange] {
+        let matches = ContentSearchMatcher.ranges(in: text, query: query, options: options)
+        guard let selection = selectedSearchRange, !matches.contains(selection),
+              let range = Range(selection, in: text), text[range] == query else {
+            return matches
+        }
+        // Prefer the user's selection if the forward scan found an overlapping
+        // occurrence first. Keep the result list ordered and nonoverlapping.
+        let before = matches.prefix { NSMaxRange($0) <= selection.location }
+        let after = ContentSearchMatcher.ranges(
+            in: text, query: query, options: options, startingAt: NSMaxRange(selection)
+        )
+        return Array(before) + [selection] + after
+    }
+
     mutating func dismiss() {
         let shouldRestoreContentFocus = isPresented
         isPresented = false
@@ -210,6 +255,7 @@ struct ContentFindState: Equatable {
 
     mutating func resetSelection() {
         currentMatchIndex = 0
+        selectedSearchRange = nil
         navigationRequestID = UUID()
     }
 
@@ -295,9 +341,6 @@ struct ContentFindBar: View {
         .frame(height: 38)
         .onAppear { queryIsFocused = true }
         .onChange(of: state.focusRequestID) { _, _ in queryIsFocused = true }
-        .onChange(of: state.query) { _, _ in state.resetSelection() }
-        .onChange(of: state.matchesCase) { _, _ in state.resetSelection() }
-        .onChange(of: state.matchesWholeWords) { _, _ in state.resetSelection() }
         .onExitCommand(perform: dismiss)
         .accessibilityIdentifier("RepoDesk.ContentFind")
     }
@@ -312,7 +355,7 @@ struct ContentFindBar: View {
 @MainActor
 struct ContentFindCommandListener: NSViewRepresentable {
     @Environment(\.isEnabled) private var isEnabled
-    let requestFind: () -> Void
+    let requestFind: (NSWindow) -> Void
     var navigateMatch: (Int) -> Void = { _ in }
 
     func makeNSView(context: Context) -> ContentFindCommandListenerView {
@@ -332,7 +375,7 @@ struct ContentFindCommandListener: NSViewRepresentable {
 
 @MainActor
 final class ContentFindCommandListenerView: NSView {
-    var requestFind: (() -> Void)?
+    var requestFind: ((NSWindow) -> Void)?
     var navigateMatch: ((Int) -> Void)?
     private weak var registeredWindow: NSWindow?
     var isListening = true {
@@ -385,7 +428,7 @@ final class ContentFindCommandListenerView: NSView {
     @objc private func findRequested(_ notification: Notification) {
         guard isListening, let requestedWindow = notification.object as? NSWindow,
               requestedWindow === window else { return }
-        requestFind?()
+        requestFind?(requestedWindow)
     }
 
     @objc private func findNavigationRequested(_ notification: Notification) {

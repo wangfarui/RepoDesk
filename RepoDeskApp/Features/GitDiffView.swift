@@ -571,7 +571,7 @@ struct GitDiffView: View {
         }
         .background(Color(nsColor: .textBackgroundColor))
         .background(ContentFindCommandListener(
-            requestFind: presentContentFind,
+            requestFind: { _ in presentContentFind() },
             navigateMatch: navigateContentFind
         ))
         .onChange(of: diff) { _, _ in
