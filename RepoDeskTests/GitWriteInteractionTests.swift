@@ -205,6 +205,7 @@ struct GitWriteInteractionTests {
         state.selectRepositoryContext(repository.id)
         state.selectSection(.history)
         state.historyBranchFilter = .all
+        state.repositorySnapshots[repository.id] = cleanSnapshot(branch: "main")
 
         await state.performGitRemoteOperation(.fetch)
 
@@ -315,6 +316,7 @@ struct GitWriteInteractionTests {
         )
         let gitOperator = RecordingGitRepositoryOperator()
         let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.selectRepositoryContext(repository.id)
         state.conflictFiles = [conflict]
         state.mergeSourceBranch = "feature"
 
@@ -325,7 +327,8 @@ struct GitWriteInteractionTests {
 
         #expect(didResolve)
         #expect(state.conflictFiles.isEmpty)
-        #expect(state.mergeSourceBranch == "feature")
+        #expect(state.mergeSourceBranch == nil)
+        #expect(await gitOperator.continueMergeCount() == 1)
         let resolvedFiles = await gitOperator.resolvedConflictFiles()
         #expect(resolvedFiles.count == 1)
         #expect(resolvedFiles.first?.path == conflict.path)
@@ -344,6 +347,7 @@ struct GitWriteInteractionTests {
         )
         let gitOperator = RecordingGitRepositoryOperator()
         let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.selectRepositoryContext(repository.id)
         state.conflictFiles = [conflict]
         state.mergeSourceBranch = "feature"
 
@@ -359,6 +363,7 @@ struct GitWriteInteractionTests {
         let repository = makeRepository()
         let gitOperator = RecordingGitRepositoryOperator()
         let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.selectRepositoryContext(repository.id)
         state.conflictFiles = [
             GitConflictFile(
                 path: "pom.xml",
@@ -382,6 +387,7 @@ struct GitWriteInteractionTests {
         let repository = makeRepository()
         let gitOperator = RecordingGitRepositoryOperator()
         let state = makeState(repository: repository, gitOperator: gitOperator)
+        state.selectRepositoryContext(repository.id)
         state.mergeSourceBranch = "feature"
 
         await state.continueMerge()
@@ -603,7 +609,7 @@ private actor ControlledCommitGitRepositoryOperator: GitRepositoryOperating {
     private var pushContinuation: CheckedContinuation<Void, Never>?
 
     func createCommit(repositoryURL: URL, message: String) async throws -> GitCreatedCommit {
-        await createCommit(repositoryURL: repositoryURL, message: message, changes: [])
+        try await createCommit(repositoryURL: repositoryURL, message: message, changes: [])
     }
 
     func createCommit(
@@ -624,6 +630,8 @@ private actor ControlledCommitGitRepositoryOperator: GitRepositoryOperating {
         pushStartWaiters = []
         await withCheckedContinuation { pushContinuation = $0 }
     }
+
+    func switchBranch(repositoryURL: URL, branch: GitBranch) async throws {}
 
     func waitUntilCommitStarts() async {
         guard !commitStarted else { return }

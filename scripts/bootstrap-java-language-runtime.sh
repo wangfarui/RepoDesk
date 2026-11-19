@@ -6,16 +6,31 @@ project_dir="${script_dir:h}"
 runtime_dir="${project_dir}/build/JavaLanguageRuntime"
 download_dir="${project_dir}/build/JavaLanguageDownloads"
 
-jdt_version="1.62.0-202609031551"
+# Xcode and local verification may bootstrap the same runtime concurrently.
+lock_dir="${project_dir}/build/.java-language-runtime-lock"
+mkdir -p "${project_dir}/build"
+attempt=0
+until mkdir "${lock_dir}" 2>/dev/null; do
+  (( attempt += 1 ))
+  if (( attempt >= 600 )); then
+    echo "Timed out waiting for Java runtime preparation; check ${lock_dir}" >&2
+    exit 1
+  fi
+  sleep 1
+done
+temporary_dir=""
+trap '[[ -z "${temporary_dir}" ]] || rm -rf "${temporary_dir}"; rmdir "${lock_dir}" 2>/dev/null || true' EXIT
+
+jdt_version="1.61.0-202609031315"
 jdt_archive="jdt-language-server-${jdt_version}.tar.gz"
-jdt_url="https://download.eclipse.org/jdtls/snapshots/${jdt_archive}"
-jdt_sha256="0c5248fc7ae788b09e076c37ea17a378576cc4d27756dc14e06cd23aecd6d753"
+jdt_url="https://download.eclipse.org/jdtls/milestones/1.61.0/${jdt_archive}"
+jdt_sha256="338e7e73d61836651ba2453919a0d34fa763eb4e7c03342092309bffb8934c64"
 jdt_license_url="https://raw.githubusercontent.com/eclipse-jdtls/eclipse.jdt.ls/126afcd347c5d69dc06718eb176cd0f3d2a5e698/LICENSE"
 jdt_license_sha256="209fe24bf55677bbf81c2b0481c1403201fab57b3b4c609971eba4ec8162b99c"
 
 temurin_version="21.0.8_9"
 temurin_tag="jdk-21.0.8%2B9"
-architecture="$(uname -m)"
+architecture="${REPODESK_BUILD_ARCH:-$(uname -m)}"
 case "${architecture}" in
   arm64)
     temurin_arch="aarch64"
@@ -74,7 +89,6 @@ download_and_verify "${jdt_license_url}" "${jdt_license_path}" "${jdt_license_sh
 download_and_verify "${temurin_url}" "${temurin_path}" "${temurin_sha256}"
 
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/repodesk-java-runtime.XXXXXX")"
-trap 'rm -rf "${temporary_dir}"' EXIT
 mkdir -p "${temporary_dir}/runtime/jdtls" "${temporary_dir}/runtime/jre"
 tar -xzf "${jdt_path}" -C "${temporary_dir}/runtime/jdtls"
 cp "${jdt_license_path}" "${temporary_dir}/runtime/jdtls/LICENSE"

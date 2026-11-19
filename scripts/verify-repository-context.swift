@@ -16,12 +16,12 @@ struct RepositoryContextVerification {
     @MainActor
     static func main() throws {
         let member = RegisteredRepository(
-            displayName: "online.base.member.service",
+            displayName: "example.services.member.service",
             relativePath: "member",
             isPinned: false
         )
         let center = RegisteredRepository(
-            displayName: "online.base.saasbusinesscenter.service",
+            displayName: "example.services.sample-platform.service",
             relativePath: "center",
             isPinned: false
         )

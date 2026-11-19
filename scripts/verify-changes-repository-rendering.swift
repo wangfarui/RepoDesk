@@ -9,12 +9,12 @@ struct ChangesRepositoryRenderingVerification {
         let workspaceURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("RepoDeskChangesRendering", isDirectory: true)
         let member = RegisteredRepository(
-            displayName: "online.base.member.service",
+            displayName: "example.services.member.service",
             relativePath: "member",
             isPinned: false
         )
         let apiJar = RegisteredRepository(
-            displayName: "online.base.apijar.service",
+            displayName: "example.services.apijar.service",
             relativePath: "apijar",
             isPinned: false
         )

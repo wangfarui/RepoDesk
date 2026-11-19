@@ -3271,12 +3271,7 @@ final class AppState {
     }
 
     private var javaMavenLocalRepositoryURL: URL? {
-        let configuredPath = mavenSettings.localRepository
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let path = configuredPath.isEmpty
-            ? "/usr/local/maven/repository"
-            : NSString(string: configuredPath).expandingTildeInPath
-        return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        MavenLocalRepositoryResolver.resolve(settings: mavenSettings)
     }
 
     private func currentJavaNavigationLocation() -> JavaNavigationHistoryEntry? {
@@ -3466,6 +3461,7 @@ final class AppState {
         let repositories = self.repositories
         let javaHome = mavenSettings.javaHome.trimmingCharacters(in: .whitespacesAndNewlines)
         let settingsFile = mavenSettings.userSettingsFile.trimmingCharacters(in: .whitespacesAndNewlines)
+        let localRepositoryURL = javaMavenLocalRepositoryURL
         if let repository = selectedRepository, let repositoryURL = repositoryURL(for: repository) {
             Task {
                 await JavaWorkspaceNavigationFallback.prepareMethodCallers(
@@ -3481,7 +3477,8 @@ final class AppState {
                 projectJavaHome: javaHome.isEmpty ? nil : NSString(string: javaHome).expandingTildeInPath,
                 mavenUserSettingsFile: settingsFile.isEmpty
                     ? nil
-                    : NSString(string: settingsFile).expandingTildeInPath
+                    : NSString(string: settingsFile).expandingTildeInPath,
+                mavenLocalRepositoryURL: localRepositoryURL
             )
         }
     }
@@ -5978,13 +5975,13 @@ final class AppState {
 
 extension AppState {
     static let preview = AppState(
-        workspace: WorkspaceSummary(name: "pangmaoyun", path: "/Users/you/workspaces/pangmaoyun"),
+        workspace: WorkspaceSummary(name: "example-workspace", path: "/Users/you/workspaces/example-workspace"),
         repositories: [
-            RegisteredRepository(displayName: "inventorycore", relativePath: "inventorycore", isPinned: true),
-            RegisteredRepository(displayName: "saasbusinesscenter", relativePath: "services/saasbusinesscenter", isPinned: false),
+            RegisteredRepository(displayName: "sample-service", relativePath: "sample-service", isPinned: true),
+            RegisteredRepository(displayName: "sample-platform", relativePath: "services/sample-platform", isPinned: false),
             RegisteredRepository(displayName: "platform-common", relativePath: "platform/common", isPinned: false)
         ],
-        selectedRepositoryID: "inventorycore",
+        selectedRepositoryID: "sample-service",
         workspaceStore: PreviewWorkspaceStore(),
         workspacePicker: PreviewWorkspacePicker(),
         repositoryStore: PreviewRepositoryStore(),

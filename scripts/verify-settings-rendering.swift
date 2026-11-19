@@ -16,7 +16,7 @@ enum VerifySettingsRendering {
         }
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let workspaceURL = URL(
-            fileURLWithPath: FileManager.default.currentDirectoryPath,
+            fileURLWithPath: "/Users/you/workspaces/example-workspace",
             isDirectory: true
         ).appendingPathComponent(
             "examples/超长工作区路径/agent-generated-repositories/backend-platform-and-tooling",

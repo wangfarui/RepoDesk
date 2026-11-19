@@ -253,7 +253,9 @@ struct MavenModuleTests {
             processEnvironment: [:]
         )
 
-        #expect(command.arguments == ["mvn", "-f", "/work/sample/pom.xml", "clean"])
+        let localRepository = MavenLocalRepositoryResolver.resolve(settings: .empty, environment: [:])
+        #expect(command.arguments == ["mvn", "-Dmaven.repo.local=\(localRepository.path)",
+                                     "-f", "/work/sample/pom.xml", "clean"])
     }
 
     @Test func deployAlwaysRequiresConfirmation() {
@@ -561,6 +563,7 @@ struct MavenSettingsStoreTests {
 
     @Test func appStateLoadsSavesAndRunsMavenWithArrayArguments() async throws {
         let workspaceURL = URL(fileURLWithPath: "/work/sample", isDirectory: true)
+        let repository = RegisteredRepository(displayName: "sample", relativePath: ".", isPinned: false)
         let storedSettings = MavenSettings(
             mavenHome: "/opt/maven",
             userSettingsFile: "/work/settings.xml",
@@ -573,11 +576,14 @@ struct MavenSettingsStoreTests {
         let taskRunner = MavenTaskRunnerDouble()
         let state = AppState(
             workspace: WorkspaceSummary(url: workspaceURL),
-            taskRunner: taskRunner,
+            repositories: [repository],
+            selectedRepositoryID: repository.id,
+            mavenRunnerFactory: { taskRunner },
             mavenSettingsStore: settingsStore,
             mavenRunHistoryStore: historyStore,
             restoresWorkspaceOnLaunch: false
         )
+        state.selectRepositoryContext(repository.id)
         #expect(state.mavenSettings == storedSettings)
 
         let updatedSettings = MavenSettings(
@@ -607,7 +613,7 @@ struct MavenSettingsStoreTests {
         )
         state.runMaven(MavenRunRequest(module: module, goal: .package, command: command))
         for _ in 0..<100 where state.mavenExecution.terminationStatus == nil {
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(10))
         }
 
         let captured = await taskRunner.capturedTask()
@@ -623,7 +629,10 @@ struct MavenSettingsStoreTests {
         #expect(recordedRun.goal == .package)
         #expect(recordedRun.arguments == command.arguments)
         #expect(recordedRun.log == nil)
-        #expect(state.recentMavenRuns == historyStore.runs)
+        var sessionRun = try #require(state.recentMavenRuns.first)
+        #expect(sessionRun.log?.contains("Maven output") == true)
+        sessionRun.log = nil
+        #expect(sessionRun == recordedRun)
     }
 
     @Test func appStateSurfacesMavenSettingsPersistenceFailure() {

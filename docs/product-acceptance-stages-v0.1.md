@@ -19,7 +19,7 @@
 
 本文件同时是后续新会话的主要交接入口。用户在其他会话中说“按验收文档继续”“开始下一阶段”或类似指令时，主 Agent 不得要求用户重新描述产品需求，应先完成以下启动动作：
 
-1. 进入项目目录 `/Users/wangfarui/workspaces/wfr/RepoDesk`。
+1. 进入项目目录 `/path/to/RepoDesk`。
 2. 完整阅读本文件，再完整阅读 `product-spec-v0.1.md`、`product-spec-v0.1-amendment.md` 和 `architecture.md`。
 3. 查看本文件的“阶段总览”“当前执行快照”和“阶段执行记录”，确认第一个尚未通过的阶段。
 4. 检查 `git status` 和实际文件，保留现有未提交修改；不得把工作区当作全新项目重建。
@@ -86,7 +86,7 @@
 - 已修复批量文件变化导致主线程无响应的问题：普通 FSEvents 保留精确文件路径，相关 `.git` 元数据才映射到 Repository 根目录；Repository 采用单向子路径匹配，Workspace 根文件不会误刷新全部嵌套仓库；目录刷新规划不再执行“事件 × 已加载目录”交叉匹配。
 - Repository Snapshot 请求按仓库去重，Git 子命令具有 10 秒超时并在取消时终止进程；文件事件在任何页面都会刷新实际受影响的仓库，使侧栏改动数持续保持最新。
 - 后台诊断日志位于 `~/Library/Application Support/RepoDesk/Logs/RepoDesk.log`，Workspace 菜单可直接打开；记录监控启动、大事件批次、处理阶段、耗时和监控错误，并保留一份轮转日志。
-- 最近一次真实 `pangmaoyun` 启动验证在约 1 秒内自动加载 23 个 Repository，稳定后进程为 `0.0% CPU / 0.3% MEM`；1 万文件事件、500 个已加载目录的规划验证约 0.183 秒。
+- 最近一次真实 `example-workspace` 启动验证在约 1 秒内自动加载 23 个 Repository，稳定后进程为 `0.0% CPU / 0.3% MEM`；1 万文件事件、500 个已加载目录的规划验证约 0.183 秒。
 - `INT-01 Settings` 已提供通用、Files、Diff、Maven 四个集中页签，可通过 `Command+,` 或主窗口齿轮打开；应用级偏好即时生效并持久化，Maven 配置继续按 Workspace 保存。
 - `INT-02` 已补齐 Workspace 导航、页面、文件/Markdown、Changes、History 和 Maven 选择恢复；增加 `Command+1...4` 页面切换、`Command+R` 刷新，以及 Workspace/Repository 失效后的直接恢复入口。
 - Settings 已完成整版样式优化：固定侧栏、页头、分组设置行与版本信息在 760x600、840x660 和 980x720 的浅色/深色渲染中无重叠，长中英文路径可压缩显示。
@@ -177,7 +177,7 @@ open build/RepoDesk.app
 
 ### 4.1 阶段目标
 
-用户能够打开 `pangmaoyun` 这类大型工作目录，稳定浏览整个 Workspace，在多个子仓库之外独立使用文件树；Codex 或其他程序修改文件后，文件树和当前文档能及时、可靠地同步；普通文本文件可以安全编辑和保存。
+用户能够打开 `example-workspace` 这类大型工作目录，稳定浏览整个 Workspace，在多个子仓库之外独立使用文件树；Codex 或其他程序修改文件后，文件树和当前文档能及时、可靠地同步；普通文本文件可以安全编辑和保存。
 
 ### 4.2 实施范围
 
@@ -198,7 +198,7 @@ open build/RepoDesk.app
 
 ### 4.3 阶段验收场景
 
-1. 打开 `pangmaoyun`，关闭并重新打开应用后自动恢复该 Workspace。
+1. 打开 `example-workspace`，关闭并重新打开应用后自动恢复该 Workspace。
 2. 展开多个层级目录，确认大型目录不会在打开时一次性全量扫描，也不会明显阻塞界面。
 3. 使用双击 Shift 按文件名打开任意类型文件，或使用 `Command+Shift+F` 搜索文件内容并跳转到对应行，路径和内容正确。
 4. 编辑普通文本文件并使用 `Cmd+S` 保存；重新加载后内容、编码和脚本权限保持正确。
@@ -316,7 +316,7 @@ open build/RepoDesk.app
 
 ### 7.3 最终端到端验收场景
 
-1. 启动 RepoDesk 并打开 `pangmaoyun`。
+1. 启动 RepoDesk 并打开 `example-workspace`。
 2. 登记或恢复至少三个子仓库，在 Overview 确认各仓库状态。
 3. 在 Changes 中按 Repository、Changes/Unversioned Files 和 Directory/Module 查看 Agent 产生的工作区改动。
 4. 外部再次修改文件，确认文件树、编辑器和 Diff 正确更新。
@@ -389,11 +389,11 @@ open build/RepoDesk.app
 | 2026-08-08 | 第二阶段 Git Review | 待验收 -> 验收修正中 | 用户要求减少中间栅栏，将五个主导航放到顶部；Changes 增加全部/单 Repository 范围并显著区分 Directory/Module，补齐 Java/Maven 常用文件图标；History 的 Branch/User 改为可输入搜索；Changes/History 统一改为按文件懒加载的结构化 Unified/Side-by-side Diff，隐藏原始 Git header，并支持折叠未改动片段和 Jump To Source；除五个主导航和专业术语外界面尽量中文化 | 修正中 |
 | 2026-08-08 | 第二阶段 Git Review | 验收修正中 -> 待验收 | 完成顶部主导航和两列窗口结构；Changes 的 Repository 范围及 Directory/Module 分组可记忆，Module 使用 Maven 优先识别和模块相对包路径；History 增加 Branch/User 搜索弹层、Commit 文件列表和首文件自动选择；共享单文件 Diff 接口覆盖工作区及 Commit，支持 Unified/Side-by-side、未改动片段展开、Binary 状态和 Jump To Source。严格并发、测试解析、真实 FSEvents、真实 Git、应用构建全部通过，并使用隔离双仓库完成 Directory、Module、Side-by-side 和 History 原生截图检查 | 待用户复验 |
 | 2026-08-10 | 第二阶段 Git Review / 第三阶段 Maven | 待验收 -> 验收修正中 | 用户确认按 Workspace/Repository 上下文重新组织模块：Overview 仅 Workspace；Changes/Files 随上下文限定范围；History 仅 Repository 并改为 IDEA Git Log 上下布局；Tasks 改为 Maven；侧栏支持多 Workspace 切换 | 修正中 |
-| 2026-08-10 | 第二阶段 Git Review / 第三阶段 Maven | 验收修正中 -> 待验收 | 完成上下文导航与窗口状态恢复、独立侧栏滚动区、Workspace/Repository Changes 与 Files 范围、IDEA 风格 History，以及 Maven 配置、多模块扫描、Lifecycle 运行/停止/deploy 确认。Swift 6 严格并发、测试解析、真实 FSEvents/Git/Maven 验证和本地构建通过；使用真实 pangmaoyun 工作区完成六类原生截图检查并恢复原偏好 | 待用户复验 |
+| 2026-08-10 | 第二阶段 Git Review / 第三阶段 Maven | 验收修正中 -> 待验收 | 完成上下文导航与窗口状态恢复、独立侧栏滚动区、Workspace/Repository Changes 与 Files 范围、IDEA 风格 History，以及 Maven 配置、多模块扫描、Lifecycle 运行/停止/deploy 确认。Swift 6 严格并发、测试解析、真实 FSEvents/Git/Maven 验证和本地构建通过；使用真实 example-workspace 工作区完成六类原生截图检查并恢复原偏好 | 待用户复验 |
 | 2026-08-10 | 第二阶段 Git Review / 第三阶段 Maven | 待验收 -> 验收修正中 | 用户反馈 History 切换 Commit 时闪烁并重置分栏、空 Commit 改变宽度；其他 Agent 批量修改工作区时应用无响应；Workspace Maven 缺少路径与版本校验 | 修正中 |
 | 2026-08-10 | 第二阶段 Git Review / 第三阶段 Maven | 验收修正中 -> 待验收 | History 改为内容原子替换和持久化 NSSplitView；Maven Home 异步执行 `mvn -version` 并展示版本/错误；定位无响应根因为主线程文件事件笛卡尔匹配，新增目录级事件压缩和线性规划算法，压力验证由 500 事件约 0.59 秒降至约 0.02 秒，1 万事件约 0.2 秒；新增可从 Workspace 菜单打开的轮转诊断日志 | 待用户复验 |
 | 2026-08-10 | 第二阶段 Git Review | 待验收 -> 验收修正中 | 用户反馈新增 Workspace 后仓库扫描可能长期停留在“正在等待 Git 状态”，并且优化后侧栏不再自动显示全部仓库改动数；已有仓库后台刷新时还会用加载状态替换数字和 Diff，产生明显闪烁 | 修正中 |
-| 2026-08-10 | 第二阶段 Git Review | 验收修正中 -> 待验收 | 将全部仓库缺失 Snapshot 加载提升到 Root，任意页面自动后台加载；Repository 刷新限制为最多 4 并发并按仓库去重；普通文件事件使用精确路径和单向仓库匹配，任意页面刷新实际受影响仓库；缓存刷新不显示加载态，相同 Snapshot 不重写，失败保留旧列表，Diff 静默原子更新。真实 `pangmaoyun` 启动约 1 秒加载 23 个仓库，稳定后 0.0% CPU，并完成无转圈截图验证 | 待用户复验 |
+| 2026-08-10 | 第二阶段 Git Review | 验收修正中 -> 待验收 | 将全部仓库缺失 Snapshot 加载提升到 Root，任意页面自动后台加载；Repository 刷新限制为最多 4 并发并按仓库去重；普通文件事件使用精确路径和单向仓库匹配，任意页面刷新实际受影响仓库；缓存刷新不显示加载态，相同 Snapshot 不重写，失败保留旧列表，Diff 静默原子更新。真实 `example-workspace` 启动约 1 秒加载 23 个仓库，稳定后 0.0% CPU，并完成无转圈截图验证 | 待用户复验 |
 | 2026-08-10 | 第二阶段 Git Review | 待验收 -> 已通过 | 用户在同步文档与后续任务后明确要求“开始下一阶段的开发实施工作”，按阶段门禁视为第二阶段通过；同时补充 Git Snapshot 250ms/1s 有限退避重试、取消与上下文失效保护及 `repository-refresh` 诊断日志 | 已通过 |
 | 2026-08-10 | 第三阶段 Maven | 实施中 -> 待验收 | 完成 JDK/JAVA_HOME 与 Maven 路径校验、Profiles/`-am`/附加参数、最终命令预览、deploy 同命令确认、独立进程组停止、最近运行/重跑/日志策略、配置保存错误、POM/Wrapper 自动同步和敏感环境过滤。并行完成刷新判定、历史 Store 和 UI，主 Agent 统一接入 AppState；严格并发、测试解析、真实 FSEvents/Git/Maven/进程组和 App 构建全部通过，窗口级截图检查完成 | 待用户验收 |
 | 2026-08-11 | 第三阶段 Maven | 待验收 -> 验收修正中 | 用户要求 Maven 实时输出在查看最新位置时自动跟随，向上滚动后暂停，并提供快速回到底部入口 | 修正中 |
@@ -428,7 +428,7 @@ open build/RepoDesk.app
 验收结果：已通过
 用户确认：ok，继续下一阶段实施
 主要问题与处理：单个 Text 无法呈现块级语义；已替换为标题、段落、列表、任务项、引用、代码块、分隔线和基础表格的块级原生渲染，并完成同文件截图验证。
-对应应用构建：/Users/wangfarui/workspaces/wfr/RepoDesk/build/RepoDesk.app
+对应应用构建：/path/to/RepoDesk/build/RepoDesk.app
 ```
 
 ```text
@@ -437,7 +437,7 @@ open build/RepoDesk.app
 验收结果：已通过
 用户确认：Git Review 修正复验通过；近期开发的 Git 功能均为正式需求且已经验收，正式纳入 v0.1。
 主要问题与处理：Changes 使用 Changes/Unversioned Files 与 IDEA Commit 语义，Files/Changes/History 长行支持水平滚动；Repository Changes 支持选中文件 Commit、Commit And Push 和 Push 重试；Repository 支持 Fetch/Pull/Push、Branch Checkout/Compare/Merge/Push/Rename/Delete、远程 tracking Branch、冲突解决和双侧 Blame。后台刷新继续只读，Workspace 全仓库 Changes 不能 Commit，Reset/Rebase/force Push/自动 Git 写入不在 v0.1 范围。
-对应应用构建：/Users/wangfarui/workspaces/wfr/RepoDesk/build/RepoDesk.app
+对应应用构建：/path/to/RepoDesk/build/RepoDesk.app
 ```
 
 ```text
@@ -446,7 +446,7 @@ open build/RepoDesk.app
 验收结果：已通过
 用户确认：Maven 第三阶段验收通过，近期代码功能均已验收。
 主要问题与处理：Workspace Maven 已覆盖 Maven/JDK/settings/local repository 校验、Profiles、-am、附加参数和日志策略；Repository Maven 提供模块树、Lifecycle、最终命令、进程组停止、最近运行重跑和 POM 自动同步。配置保存、路径、Wrapper、缺失 POM、模块变化、非零退出和无日志记录均有稳定状态。
-对应应用构建：/Users/wangfarui/workspaces/wfr/RepoDesk/build/RepoDesk.app
+对应应用构建：/path/to/RepoDesk/build/RepoDesk.app
 截图：build/maven-stage3-workspace-window.png、build/maven-stage3-repository-window.png
 ```
 
@@ -456,7 +456,7 @@ open build/RepoDesk.app
 验收结果：已通过
 用户确认：整体验收通过，创建本地 Git 仓库标记 0.1.0 版本开发完成。
 主要问题与处理：完成 Settings、状态恢复、性能门槛、替代 QA、版本与 App 图标收口；最终图标采用 1C 方案，并使用 Apple 标准 ICNS 生成链路修复系统通用图标回退。
-对应应用构建：/Users/wangfarui/workspaces/wfr/RepoDesk/build/RepoDesk.app
+对应应用构建：/path/to/RepoDesk/build/RepoDesk.app
 ```
 
 ## 11. 接下来需求任务

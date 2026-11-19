@@ -12,7 +12,8 @@ protocol JavaLanguageProviding: Sendable {
         workspaceURL: URL?,
         repositories: [RegisteredRepository],
         projectJavaHome: String?,
-        mavenUserSettingsFile: String?
+        mavenUserSettingsFile: String?,
+        mavenLocalRepositoryURL: URL?
     ) async
     func prioritize(repositoryID: RegisteredRepository.ID) async
     func navigationTargets(
@@ -63,6 +64,7 @@ actor JavaLanguageEngine: JavaLanguageProviding {
     private var repositoryGitRevisions: [RegisteredRepository.ID: String] = [:]
     private var projectJavaHome: String?
     private var mavenUserSettingsFile: String?
+    private var mavenLocalRepositoryURL: URL?
     private var isBackgroundIndexingPaused = false
     private var backgroundStartNotBefore = ContinuousClock.now
 
@@ -105,7 +107,8 @@ actor JavaLanguageEngine: JavaLanguageProviding {
         workspaceURL: URL?,
         repositories: [RegisteredRepository],
         projectJavaHome: String?,
-        mavenUserSettingsFile: String?
+        mavenUserSettingsFile: String?,
+        mavenLocalRepositoryURL: URL? = nil
     ) async {
         await stopAllSessions(requeueReady: false)
         descriptors = [:]
@@ -114,6 +117,7 @@ actor JavaLanguageEngine: JavaLanguageProviding {
         foregroundRepositoryID = nil
         self.projectJavaHome = projectJavaHome
         self.mavenUserSettingsFile = mavenUserSettingsFile
+        self.mavenLocalRepositoryURL = mavenLocalRepositoryURL
         guard let workspaceURL else {
             publishSnapshot()
             return
@@ -414,7 +418,8 @@ actor JavaLanguageEngine: JavaLanguageProviding {
                     dataDirectoryURL: dataDirectoryURL,
                     settings: settings,
                     projectJavaHome: projectJavaHome,
-                    mavenUserSettingsFile: mavenUserSettingsFile
+                    mavenUserSettingsFile: mavenUserSettingsFile,
+                    mavenLocalRepositoryURL: mavenLocalRepositoryURL
                 )
             )
             try Task.checkCancellation()

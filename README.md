@@ -2,6 +2,29 @@
 
 RepoDesk is a native macOS workspace desk for reviewing Agent-produced repository changes, editing workspace files, performing explicit Git operations, and running Maven lifecycle goals. It includes background Java indexing and source navigation through a managed language server, but is not a full IDE or debugger.
 
+RepoDesk 是一个原生 macOS 多仓库工作台：集中查看代码变更、Diff/Blame/历史，编辑文件，处理 Git 分支和冲突，运行 Maven，并提供 Java/MyBatis 导航。项目采用 [MIT](LICENSE) 许可证；随包组件保留各自的[第三方许可](Support/ThirdParty/NOTICES.md)。
+
+## 安装与首次使用
+
+- 系统目标为 macOS 14+。Apple Silicon 和 Intel 需要分别构建，应用包内含与 CPU 架构匹配的 Java 运行时。
+- 当前仓库提供源码构建流程。只有发布者实际提供了下载包时，才从仓库的 Releases 下载；`adhoc` 文件是开发测试包，`notarized` 文件才经过 Apple 公证。
+- 解压后把 `RepoDesk.app` 放入 Applications。首次打开选择自己的工作区目录，再发现或添加其中的 Git 仓库。
+- Git 功能需要可用的 `/usr/bin/git`；首次使用前安装 Apple Command Line Tools，配置自己的 Git 身份及远程认证。
+- Maven 页面可设置 Maven Home、项目 JDK、settings 文件和本地仓库。也支持项目的可执行 `mvnw`。从 Finder 启动时不保证继承终端的 PATH，使用 Homebrew 等安装的 Maven 时建议明确设置 Maven Home。
+- Java 语言服务和 CFR 随应用打包，不要求为了代码导航额外安装 JDK；执行项目 Maven 构建所需的 JDK 仍需按项目配置。首次构建会联网下载固定版本的运行时并校验 SHA-256。
+
+已有用户更新时保留 Bundle ID、偏好设置键、工作区记录及 Maven 配置，无需重新设置。语言服务正式版本使用独立索引缓存；首次打开 Java 项目可能重新索引，原缓存不会被覆盖。
+
+本机数据存于当前用户的 Preferences、`~/Library/Application Support/RepoDesk` 和 `~/Library/Caches/RepoDesk`；这些数据不属于源码包。诊断日志和可选 Maven 历史日志可能包含项目路径或构建输出，分享前请检查。
+
+配置界面示例（使用虚构工作区渲染，不包含真实项目数据）：
+
+![Maven settings with sample workspace data](docs/screenshots/maven-settings.png)
+
+## 学习与参与开发
+
+先读 [架构与模块边界](docs/architecture.md)，再看 [产品范围](docs/product-spec-v0.1-amendment.md) 和 [贡献说明](CONTRIBUTING.md)。构建与验证见下文；公开源码、打包、签名和公证步骤见 [发布指南](docs/publishing.md)。CI 产物是开发测试包，不会自动发布到 GitHub Releases。
+
 RepoDesk v0.1 connects workspace and nested-repository management, automatic multi-repository Git status, structured diff/history review with per-side Blame, selectable Commit and Commit And Push, repository Fetch/Pull/Push, Branch operations and merge-conflict resolution, editable workspace files, and an IDEA-style Maven module/lifecycle view with environment validation, final-command preview, process-group stopping, POM synchronization, streamed output, and recent-run replay. Workspace and Repository contexts expose different top-level modules. The staged implementation, replacement verification, and final user acceptance are complete.
 
 Maven commands share a FIFO queue within each Git repository; different repositories can run concurrently. Triggering a command while another runs adds it to the queue, using the parameters captured when submitted. Duplicate running or queued commands show their status instead of creating another entry. Recent runs show a spinner for the active command, queue positions and individual remove buttons for waiting commands, and results and logs after completion. Failure or Stop clears that repository's waiting commands. Queues are session-only and are stopped when the workspace closes or changes; completed history follows the configured retention and log persistence settings.

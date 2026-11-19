@@ -3,6 +3,15 @@ import Testing
 @testable import RepoDesk
 
 struct GitRepositoryIntegrationTests {
+    @Test func blameNormalizesExternalContentsAuthorForUncommittedLines() {
+        let porcelain = String(repeating: "0", count: 40)
+            + " 1 1 1\nauthor External file (--contents)\n\tnew line\n"
+        let lines = GitBlameParser.parse(Data(porcelain.utf8))
+        #expect(lines.count == 1)
+        #expect(lines.first?.isUncommitted == true)
+        #expect(lines.first?.author == "未提交")
+    }
+
     @Test func snapshotReadsRealTemporaryRepository() async throws {
         let fixture = try await GitRepositoryFixture()
         defer { fixture.remove() }

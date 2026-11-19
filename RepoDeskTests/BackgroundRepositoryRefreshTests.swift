@@ -437,8 +437,13 @@ private actor FlakySnapshotReader: GitRepositoryReading {
         target: GitDiffTarget,
         ignoringWhitespace: Bool
     ) async throws -> GitFileDiff {
-        GitFileDiff(
-            path: target.path,
+        let path: String
+        switch target {
+        case .change(let selection): path = selection.path
+        case .commit(_, let file), .revisionRange(_, _, let file, _): path = file.path
+        }
+        return GitFileDiff(
+            path: path,
             originalPath: nil,
             oldLabel: "HEAD",
             newLabel: "Working Tree",

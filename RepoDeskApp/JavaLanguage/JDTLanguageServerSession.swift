@@ -72,7 +72,11 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
             at: configuration.dataDirectoryURL,
             withIntermediateDirectories: true
         )
-        try Self.ensureMavenGlobalSettings(in: configuration.dataDirectoryURL)
+        let localRepositoryURL = configuration.mavenLocalRepositoryURL
+            ?? MavenLocalRepositoryResolver.resolve(settings: MavenSettings(
+                userSettingsFile: configuration.mavenUserSettingsFile ?? ""
+            ))
+        try Self.ensureMavenGlobalSettings(in: configuration.dataDirectoryURL, repositoryURL: localRepositoryURL)
         let runtime = try JavaLanguageRuntime.resolve()
         let writableConfigurationURL = try Self.prepareWritableConfiguration(
             sourceURL: runtime.configurationURL,
@@ -90,7 +94,7 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
             "-Declipse.product=org.eclipse.jdt.ls.core.product",
             "-Dlog.level=WARNING",
             "-Djava.import.generatesMetadataFilesAtProjectRoot=false",
-            "-Dmaven.repo.local=/usr/local/maven/repository",
+            "-Dmaven.repo.local=\(localRepositoryURL.path)",
             "-Xms128m",
             "-Xmx\(configuration.settings.maximumHeapMegabytes)m",
             "-XX:ActiveProcessorCount=\(configuration.settings.processorCountPerJVM)",
@@ -1343,13 +1347,17 @@ actor JDTLanguageServerSession: JavaLanguageServerSession {
         return destinationURL
     }
 
-    private static func ensureMavenGlobalSettings(in dataDirectoryURL: URL) throws {
+    private static func ensureMavenGlobalSettings(in dataDirectoryURL: URL, repositoryURL: URL) throws {
+        let repositoryPath = repositoryURL.path
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
         let settings = """
         <?xml version="1.0" encoding="UTF-8"?>
         <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                   xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
-          <localRepository>/usr/local/maven/repository</localRepository>
+          <localRepository>\(repositoryPath)</localRepository>
         </settings>
         """
         let url = mavenGlobalSettingsURL(in: dataDirectoryURL)

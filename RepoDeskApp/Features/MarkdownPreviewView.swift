@@ -184,7 +184,9 @@ struct MarkdownPreviewAttributedDocument {
         let clampedOffset = min(max(0, offset), (text as NSString).length)
         if let mapping = sourceLineMappings.first(where: {
             clampedOffset >= $0.textRange.location
-                && clampedOffset <= NSMaxRange($0.textRange)
+                && (clampedOffset < NSMaxRange($0.textRange)
+                    || (clampedOffset == (text as NSString).length
+                        && clampedOffset == NSMaxRange($0.textRange)))
         }) {
             let relativeOffset = max(0, clampedOffset - mapping.textRange.location)
             let renderedPrefix = (text as NSString).substring(

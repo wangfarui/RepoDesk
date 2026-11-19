@@ -62,13 +62,13 @@ struct JavaLanguageTests {
 
     @Test func javaNavigationFailureMessageExplainsFailedIndex() {
         let message = AppState.javaNavigationFailureMessage(
-            repositoryName: "online.base.item.service",
+            repositoryName: "example.services.item.service",
             phase: .failed,
             detail: "Java language runtime is not installed in RepoDesk.app.",
             action: .contextual
         )
 
-        #expect(message.contains("online.base.item.service"))
+        #expect(message.contains("example.services.item.service"))
         #expect(message.contains("Java 索引失败"))
         #expect(message.contains("Java language runtime is not installed in RepoDesk.app."))
         #expect(message.contains("重建索引"))
@@ -275,7 +275,7 @@ struct JavaLanguageTests {
         let combined = LSPMessageFramer.frame(first) + LSPMessageFramer.frame(second)
         var framer = LSPMessageFramer()
 
-        let split = combined.count / 2
+        let split = LSPMessageFramer.frame(first).count - 1
         #expect(try framer.append(combined.prefix(split)).isEmpty)
         let messages = try framer.append(combined.suffix(from: split))
 
@@ -455,8 +455,8 @@ struct JavaLanguageTests {
         try? Data("interface InventoryManagerClientService {}".utf8).write(to: moduleSourceURL)
         try? Data("""
         <project>
-          <groupId>com.internet.saasbusinessmanager</groupId>
-          <artifactId>saasbusinessmanager</artifactId>
+          <groupId>com.example.samplemanager</groupId>
+          <artifactId>samplemanager</artifactId>
           <version>${revision}</version>
           <packaging>pom</packaging>
           <modules><module>inventorymanager-client</module></modules>
@@ -467,8 +467,8 @@ struct JavaLanguageTests {
         try? Data("""
         <project>
           <parent>
-            <groupId>com.internet.saasbusinessmanager</groupId>
-            <artifactId>saasbusinessmanager</artifactId>
+            <groupId>com.example.samplemanager</groupId>
+            <artifactId>samplemanager</artifactId>
             <version>${revision}</version>
           </parent>
           <artifactId>inventorymanager-client</artifactId>

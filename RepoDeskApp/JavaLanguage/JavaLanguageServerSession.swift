@@ -14,6 +14,7 @@ struct JavaLanguageServerConfiguration: Equatable, Sendable {
     let settings: JavaIndexSettings
     let projectJavaHome: String?
     let mavenUserSettingsFile: String?
+    var mavenLocalRepositoryURL: URL? = nil
 }
 
 protocol JavaLanguageServerSession: Sendable {

@@ -49,7 +49,7 @@ struct WorkspaceFileSearchTests {
         let results = await FileSystemWorkspaceSearch().search(in: rootURL, query: "Al.java", limit: 2)
 
         #expect(results.count == 2)
-        #expect(Set(results.map(\.name)) == Set(["Algebra.java", "Alpha.java"]))
+        #expect(results.map(\.name) == ["Alpha.java", "Alpine.java"])
     }
 
     @Test func skipsHiddenFilesAndIgnoredDirectories() async throws {

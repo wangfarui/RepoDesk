@@ -15,7 +15,7 @@ RepoDesk 是一个面向 Agent 开发流程的本地仓库工作台。它用一�
 ### 1.1 产品目标
 
 - 一个窗口完成文件浏览、Git 检查、历史查看和任务执行。
-- 适配 `pangmaoyun` 这类包含多个子仓库的大型目录。
+- 适配 `example-workspace` 这类包含多个子仓库的大型目录。
 - 自动感知 Codex 或其他外部程序产生的文件变化。
 - 允许不同工作区、不同仓库使用不同的 Maven 参数和环境。
 - 原生、快速、无账号、无遥测、数据完全保留在本地。
@@ -35,7 +35,7 @@ RepoDesk 是一个面向 Agent 开发流程的本地仓库工作台。它用一�
 用户通过系统目录选择器打开的大目录，例如：
 
 ```text
-/Users/wangfarui/workspaces/zhaogang/pangmaoyun
+/Users/you/workspaces/example-workspace
 ```
 
 工作区负责文件浏览、仓库登记、仓库发现、工作区任务和最近状态。工作区本身可以不是 Git 仓库。
@@ -89,12 +89,12 @@ Window
 
 ## 4. 主要用户流程
 
-### 4.1 打开 pangmaoyun 并检查 Agent 改动
+### 4.1 打开 example-workspace 并检查 Agent 改动
 
-1. 用户打开 `pangmaoyun` 工作区。
+1. 用户打开 `example-workspace` 工作区。
 2. 应用恢复上次登记的子仓库。
 3. Overview 显示每个仓库的分支、改动数量和上次提交。
-4. 用户选择 `inventorycore`。
+4. 用户选择 `sample-service`。
 5. 应用切换当前仓库并加载 Git 状态。
 6. 用户进入 Changes，逐个查看未暂存和已暂存 Diff。
 7. 用户将文件标记为已查看。
@@ -210,12 +210,12 @@ Window
     {
       "id": "inventory-deploy",
       "name": "Inventory Deploy",
-      "executable": "/usr/local/maven/apache-maven-3.8.6/bin/mvn",
+      "executable": "/opt/apache-maven/bin/mvn",
       "arguments": [
         "-s",
-        "/usr/local/maven/apache-maven-3.8.6/conf/settings-zhaogang.xml",
+        "/opt/apache-maven/conf/settings-example.xml",
         "-pl",
-        "inventorycore-client,inventorycore-biz",
+        "sample-client,sample-service",
         "-am",
         "clean",
         "deploy"
@@ -331,7 +331,7 @@ RepoDeskApp
 
 v0.1 完成时，应当能够连续完成以下流程：
 
-1. 打开 `pangmaoyun`。
+1. 打开 `example-workspace`。
 2. 登记至少三个子 Git 仓库。
 3. 在仓库间切换并看到正确分支和改动。
 4. 查看 Codex 产生的所有未暂存与已暂存 Diff。

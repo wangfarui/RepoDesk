@@ -17,10 +17,17 @@ enum VerifyGitPushDiffReal {
     static func main() async throws {
         _ = NSApplication.shared
 
-        let workspaceURL = URL(fileURLWithPath: "/Users/wangfarui/workspaces/zhaogang/pangmaoyun")
+        let environment = ProcessInfo.processInfo.environment
+        guard let workspacePath = environment["REPODESK_VERIFY_WORKSPACE"],
+              let repositoryPath = environment["REPODESK_VERIFY_REPOSITORY"],
+              let branch = environment["REPODESK_VERIFY_BRANCH"],
+              let path = environment["REPODESK_VERIFY_DIFF_PATH"] else {
+            throw VerificationError(message: "Set REPODESK_VERIFY_WORKSPACE, REPODESK_VERIFY_REPOSITORY, REPODESK_VERIFY_BRANCH and REPODESK_VERIFY_DIFF_PATH to opt into a real-repository check.")
+        }
+        let workspaceURL = URL(fileURLWithPath: workspacePath)
         let repository = RegisteredRepository(
-            displayName: "online.base.saasinvoice.service",
-            relativePath: "online.base.saasinvoice.service",
+            displayName: URL(fileURLWithPath: repositoryPath).lastPathComponent,
+            relativePath: repositoryPath,
             isPinned: false
         )
         let state = AppState(
@@ -31,12 +38,11 @@ enum VerifyGitPushDiffReal {
         )
         state.selectRepositoryContext(repository.id)
 
-        let preparation = try await state.pushPreparation(targetRemoteBranch: "dev_260826_ytd")
+        let preparation = try await state.pushPreparation(targetRemoteBranch: branch)
         guard let firstCommit = preparation.commits.first else {
             throw VerificationError(message: "真实仓库没有可用于 Push Diff 验证的 Commit。")
         }
         let range = try await state.pushCommitRange([firstCommit])
-        let path = "invoice-api/src/main/java/com/internet/invoicemanager/result/invoice/PurchaseUnInvoiceVO.java"
         guard let file = range.files.first(where: { $0.path == path }) else {
             throw VerificationError(message: "Push 文件列表中没有目标 Java 文件。")
         }

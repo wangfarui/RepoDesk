@@ -18,7 +18,7 @@ private actor SemanticTokenProvider: JavaLanguageProviding {
         workspaceURL: URL?,
         repositories: [RegisteredRepository],
         projectJavaHome: String?,
-        mavenUserSettingsFile: String?
+        mavenUserSettingsFile: String?, mavenLocalRepositoryURL: URL?
     ) async {}
     func prioritize(repositoryID: RegisteredRepository.ID) async {}
     func navigationTargets(

@@ -12,8 +12,8 @@ enum VerifyGitRemoteOperationRendering {
     static func main() throws {
         let context = GitRemoteOperationContext(
             kind: .pull,
-            repositoryID: "inventorycore-biz",
-            repositoryName: "inventorycore-biz",
+            repositoryID: "sample-service-biz",
+            repositoryName: "sample-service-biz",
             branch: "feature/remote-operation-status",
             startedAt: Date(timeIntervalSinceNow: -8)
         )

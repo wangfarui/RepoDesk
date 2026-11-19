@@ -245,7 +245,7 @@ private struct PushRenderingReader: GitRepositoryReading {
     }
 
     func snapshot(repositoryURL: URL) async throws -> GitRepositorySnapshot {
-        GitRepositorySnapshot(branch: "dev_260826_ytd", isDetachedHEAD: false, aheadCount: 2, behindCount: 0, changes: [], lastCommit: commits.first)
+        GitRepositorySnapshot(branch: "feature/example", isDetachedHEAD: false, aheadCount: 2, behindCount: 0, changes: [], lastCommit: commits.first)
     }
 
     func fileDiff(repositoryURL: URL, target: GitDiffTarget, ignoringWhitespace: Bool) async throws -> GitFileDiff {
@@ -281,10 +281,10 @@ private struct PushRenderingReader: GitRepositoryReading {
 
     func pushPreparation(repositoryURL: URL, targetRemoteBranch: String?) async throws -> GitPushPreparation {
         GitPushPreparation(
-            localBranch: "dev_260826_ytd",
+            localBranch: "feature/example",
             remote: "origin",
-            targetRemoteBranch: targetRemoteBranch ?? "dev_260826_ytd",
-            remoteBranches: ["dev_260826_ytd", "main", "release/2026.08"],
+            targetRemoteBranch: targetRemoteBranch ?? "feature/example",
+            remoteBranches: ["feature/example", "main", "release/2026.08"],
             targetExists: targetRemoteBranch != "feature/new-remote",
             commits: commits,
             blockingMessage: nil

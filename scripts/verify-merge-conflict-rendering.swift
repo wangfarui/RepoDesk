@@ -13,12 +13,12 @@ enum VerifyMergeConflictRendering {
         _ = NSApplication.shared
         GitMergeAppearance.registerFonts(in: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Support/Resources/MergeFonts"))
         let repository = RegisteredRepository(
-            displayName: "online.base.item.service",
+            displayName: "example.services.item.service",
             relativePath: ".",
             isPinned: false
         )
         let state = AppState(
-            workspace: WorkspaceSummary(name: "pangmaoyun", path: "/tmp"),
+            workspace: WorkspaceSummary(name: "example-workspace", path: "/tmp"),
             repositories: [repository],
             selectedRepositoryID: repository.id,
             restoresWorkspaceOnLaunch: false
@@ -361,26 +361,26 @@ enum VerifyMergeConflictRendering {
     <project>
       <parent>
         <artifactId>itemcenter</artifactId>
-        <groupId>online.base.item.service</groupId>
+        <groupId>example.services.item.service</groupId>
         <version>5.1.3-SNAPSHOT</version>
       </parent>
       <modelVersion>4.0.0</modelVersion>
 
       <dependencies>
         <dependency>
-          <groupId>com.internet.util</groupId>
+          <groupId>com.example.util</groupId>
           <artifactId>common-util</artifactId>
         </dependency>
         <dependency>
-          <groupId>com.internet.logging</groupId>
+          <groupId>com.example.logging</groupId>
           <artifactId>logging-api</artifactId>
         </dependency>
         <dependency>
-          <groupId>com.internet.tenant</groupId>
+          <groupId>com.example.tenant</groupId>
           <artifactId>tenant-client</artifactId>
         </dependency>
         <dependency>
-          <groupId>com.internet.workflow</groupId>
+          <groupId>com.example.workflow</groupId>
           <artifactId>workflow-client</artifactId>
         </dependency>
       </dependencies>
@@ -391,18 +391,18 @@ enum VerifyMergeConflictRendering {
     <project>
       <parent>
         <artifactId>itemcenter</artifactId>
-        <groupId>online.base.item.service</groupId>
+        <groupId>example.services.item.service</groupId>
         <version>uat-SNAPSHOT</version>
       </parent>
       <modelVersion>4.0.0</modelVersion>
 
       <dependencies>
         <dependency>
-          <groupId>com.internet.util</groupId>
+          <groupId>com.example.util</groupId>
           <artifactId>common-util</artifactId>
         </dependency>
         <dependency>
-          <groupId>com.internet.logging</groupId>
+          <groupId>com.example.logging</groupId>
           <artifactId>logging-api</artifactId>
         </dependency>
         <dependency>
@@ -417,7 +417,7 @@ enum VerifyMergeConflictRendering {
     <project>
       <parent>
         <artifactId>itemcenter</artifactId>
-        <groupId>online.base.item.service</groupId>
+        <groupId>example.services.item.service</groupId>
     <<<<<<< HEAD
         <version>5.1.3-SNAPSHOT</version>
     =======
@@ -428,20 +428,20 @@ enum VerifyMergeConflictRendering {
 
       <dependencies>
         <dependency>
-          <groupId>com.internet.util</groupId>
+          <groupId>com.example.util</groupId>
           <artifactId>common-util</artifactId>
         </dependency>
         <dependency>
-          <groupId>com.internet.logging</groupId>
+          <groupId>com.example.logging</groupId>
           <artifactId>logging-api</artifactId>
         </dependency>
     <<<<<<< HEAD
         <dependency>
-          <groupId>com.internet.tenant</groupId>
+          <groupId>com.example.tenant</groupId>
           <artifactId>tenant-client</artifactId>
         </dependency>
         <dependency>
-          <groupId>com.internet.workflow</groupId>
+          <groupId>com.example.workflow</groupId>
           <artifactId>workflow-client</artifactId>
         </dependency>
     =======

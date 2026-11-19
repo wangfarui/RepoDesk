@@ -7,7 +7,7 @@ struct AppStateTests {
     @Test func selectedRepositoryUsesRepositoryIdentifier() {
         let state = AppState.preview
 
-        #expect(state.selectedRepository?.name == "inventorycore")
+        #expect(state.selectedRepository?.name == "sample-service")
         state.selectedRepositoryID = "platform/common"
         #expect(state.selectedRepository?.name == "platform-common")
     }
@@ -642,6 +642,7 @@ struct AppStateTests {
             documentLoader: StaticDocumentLoader(),
             restoresWorkspaceOnLaunch: false
         )
+        state.setMaximumOpenFileTabs(3)
 
         for url in urls {
             state.selectFile(url)
@@ -1290,6 +1291,10 @@ private actor FlakyWorkspaceBrowser: WorkspaceFileBrowsing {
 
 private actor DirectoryChainBrowser: WorkspaceFileBrowsing {
     let entriesByDirectory: [URL: [WorkspaceFileEntry]]
+
+    init(entriesByDirectory: [URL: [WorkspaceFileEntry]]) {
+        self.entriesByDirectory = entriesByDirectory
+    }
 
     func children(of directoryURL: URL) async throws -> [WorkspaceFileEntry] {
         entriesByDirectory[directoryURL.standardizedFileURL] ?? []

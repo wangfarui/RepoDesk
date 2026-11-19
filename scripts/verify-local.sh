@@ -59,6 +59,15 @@ swiftc \
 swiftc \
   -parse-as-library \
   -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete -warnings-as-errors \
+  -I "${project_dir}/build" -L "${project_dir}/build" -lRepoDesk \
+  "${project_dir}/scripts/verify-maven-repository.swift" \
+  -o "${project_dir}/build/verify-maven-repository"
+DYLD_LIBRARY_PATH="${project_dir}/build" "${project_dir}/build/verify-maven-repository"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
   -I "${project_dir}/build" -L "${project_dir}/build" -lRepoDesk \
@@ -958,6 +967,7 @@ swiftc \
   "${project_dir}/RepoDeskApp/Maven/MavenProjectRefreshPlanner.swift" \
   "${project_dir}/RepoDeskApp/Process/CommandRunner.swift" \
   "${project_dir}/RepoDeskApp/Maven/MavenCommandBuilder.swift" \
+  "${project_dir}/RepoDeskApp/Maven/MavenLocalRepositoryResolver.swift" \
   "${project_dir}/RepoDeskApp/Maven/MavenProjectScanner.swift" \
   "${project_dir}/scripts/verify-maven.swift" \
   -framework CoreServices \
@@ -1074,5 +1084,6 @@ app_icon="${app_bundle}/Contents/Resources/RepoDesk.icns"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "${app_info}")" == "RepoDesk.icns" ]]
 [[ -s "${app_icon}" ]]
 codesign --verify --deep --strict "${app_bundle}"
+"${script_dir}/verify-app-bundle.sh" "${app_bundle}"
 
 echo "Local verification passed (including QA integration replacement checks)"

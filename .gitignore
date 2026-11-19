@@ -8,3 +8,13 @@ xcuserdata/
 RepoDesk.xcodeproj/
 
 .DS_Store
+
+# Agent/editor local state and credentials
+.codex/
+.env
+.env.*
+*.p12
+*.p8
+*.mobileprovision
+__pycache__/
+*.pyc

@@ -12,7 +12,7 @@ enum VerifyCommitExecutionRendering {
     static func main() throws {
         let context = GitCommitExecutionContext(
             repositoryID: ".",
-            repositoryName: "online.base.member.service",
+            repositoryName: "example.services.member.service",
             branch: "master",
             fileCount: 3,
             shouldPush: true,

@@ -1,7 +1,7 @@
 import Foundation
 
 struct JavaLanguageCacheStore: @unchecked Sendable {
-    private static let cacheSchemaVersion = "jdtls-1.62.0-v1"
+    private static let cacheSchemaVersion = "jdtls-1.61.0-release-v1"
     private static let defaultScopeIdentifier = "repository-boundaries-v1"
     private static let scopeMarkerName = ".repodesk-repository-scope"
     private let fileManager: FileManager

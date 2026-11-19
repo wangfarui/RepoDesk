@@ -1,0 +1,46 @@
+name: macOS build and tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Audit public working tree
+        run: python3 scripts/audit-publication.py
+      - name: Install XcodeGen
+        run: command -v xcodegen || brew install xcodegen
+      - name: Generate project
+        run: xcodegen generate
+      - name: Run unit tests with Xcode
+        run: >-
+          xcodebuild -project RepoDesk.xcodeproj -scheme RepoDesk
+          -destination 'platform=macOS' -derivedDataPath build/XcodeCI
+          -resultBundlePath build/UnitTests.xcresult
+          -parallel-testing-enabled NO -only-testing:RepoDeskTests
+          CODE_SIGNING_ALLOWED=NO test
+      - name: Build app with deployment target and verify resources
+        run: |
+          ./scripts/build-local.sh
+          ./scripts/verify-app-bundle.sh
+          ./scripts/package-release.sh --local
+      - uses: actions/upload-artifact@v6
+        with:
+          name: RepoDesk-${{ matrix.runner }}-adhoc
+          path: |
+            build/releases/*.zip
+            build/releases/*.sha256
+          if-no-files-found: error

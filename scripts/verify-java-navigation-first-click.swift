@@ -11,7 +11,7 @@ private actor ColdNavigationProvider: JavaLanguageProviding {
         self.targets = targets
     }
     func configure(_ settings: JavaIndexSettings) async {}
-    func updateWorkspace(workspaceURL: URL?, repositories: [RegisteredRepository], projectJavaHome: String?, mavenUserSettingsFile: String?) async {}
+    func updateWorkspace(workspaceURL: URL?, repositories: [RegisteredRepository], projectJavaHome: String?, mavenUserSettingsFile: String?, mavenLocalRepositoryURL: URL?) async {}
     func prioritize(repositoryID: RegisteredRepository.ID) async {}
     func navigationTargets(repositoryID: RegisteredRepository.ID, request: JavaNavigationRequest) async -> [JavaNavigationTarget] {
         requests += 1

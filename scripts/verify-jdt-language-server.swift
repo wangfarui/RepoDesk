@@ -324,10 +324,18 @@ enum VerifyJDTLanguageServer {
                     dataDirectoryURL: dataRoot,
                     settings: .default,
                     projectJavaHome: nil,
-                    mavenUserSettingsFile: nil
+                    mavenUserSettingsFile: nil,
+                    mavenLocalRepositoryURL: dataRoot.appendingPathComponent("maven & artifacts")
                 )
             )
             try await session.waitUntilReady(timeout: .seconds(120))
+            let generatedSettings = try String(
+                contentsOf: dataRoot.appendingPathComponent(".repodesk-maven-global-settings.xml"),
+                encoding: .utf8
+            )
+            guard generatedSettings.contains("maven &amp; artifacts") else {
+                throw JDTVerificationError(description: "The configured Maven repository was not XML-escaped")
+            }
             try verifyNoProjectMetadata(in: root)
 
             // Query declarations before opening or navigating from any caller.

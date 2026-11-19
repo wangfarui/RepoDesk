@@ -252,18 +252,19 @@ enum VerifyMergeConflictResolution {
             "Automatic merge changes shifted the ancestor slices."
         )
 
-        let fixtureURL = URL(fileURLWithPath: "build/merge-searcher-repro")
-        if FileManager.default.fileExists(atPath: fixtureURL.appendingPathComponent("base.xml").path) {
+        if let fixturePath = ProcessInfo.processInfo.environment["REPODESK_VERIFY_MERGE_FIXTURE"] {
+            let fixtureURL = URL(fileURLWithPath: fixturePath, isDirectory: true)
             let realBase = try String(contentsOf: fixtureURL.appendingPathComponent("base.xml"), encoding: .utf8)
             let realResult = try String(contentsOf: fixtureURL.appendingPathComponent("result.xml"), encoding: .utf8)
+            let expectedBases = try JSONDecoder().decode(
+                [String].self,
+                from: Data(contentsOf: fixtureURL.appendingPathComponent("expected-bases.json"))
+            )
             var realDocument = GitConflictResolutionDocument(text: realResult, base: realBase)
-            try require(realDocument.blocks.count == 2, "Searcher repro did not contain two conflicts.")
+            try require(realDocument.blocks.count == expectedBases.count, "Custom merge fixture conflict count changed.")
             try require(
-                realDocument.blocks.map(\.base) == [
-                    "        <revision>6.5.9-SNAPSHOT</revision>\n",
-                    "        <saasbusinesscenter.version>9.6.1-SNAPSHOT</saasbusinesscenter.version>\n"
-                ],
-                "Searcher conflicts did not isolate the actual ancestor versions."
+                realDocument.blocks.map(\.base) == expectedBases,
+                "Custom merge fixture did not isolate the expected ancestor versions."
             )
             for block in realDocument.blocks { realDocument.resolve(block.id, with: .theirs) }
             try require(realDocument.isResolved, "Searcher conflicts could not be resolved.")

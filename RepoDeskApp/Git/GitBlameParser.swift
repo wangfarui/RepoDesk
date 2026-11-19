@@ -43,7 +43,7 @@ enum GitBlameParser {
                     GitBlameLine(
                         lineNumber: finalLine,
                         commitHash: hash,
-                        author: author.isEmpty ? "未提交" : author,
+                        author: author.isEmpty || hash.allSatisfy({ $0 == "0" }) ? "未提交" : author,
                         authoredAt: authoredAt,
                         authorEmail: authorEmail,
                         message: message

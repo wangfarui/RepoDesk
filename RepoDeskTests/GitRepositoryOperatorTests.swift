@@ -285,7 +285,7 @@ struct GitRepositoryOperatorTests {
         )
 
         let requests = await runner.recordedRequests()
-        #expect(requests.map(\.arguments) == [["switch", "release/next"], ["push"]])
+        #expect(requests.map(\.arguments) == [["switch", "release/next"], ["push", "--porcelain"]])
         #expect(requests.allSatisfy { $0.environment?["GIT_TERMINAL_PROMPT"] == "0" })
     }
 

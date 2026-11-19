@@ -210,8 +210,8 @@ enum VerifyJavaLanguage {
         try Data("interface InventoryManagerClientService {}".utf8).write(to: moduleSourceURL)
         try Data("""
         <project>
-          <groupId>com.internet.saasbusinessmanager</groupId>
-          <artifactId>saasbusinessmanager</artifactId>
+          <groupId>com.example.samplemanager</groupId>
+          <artifactId>samplemanager</artifactId>
           <version>${revision}</version>
           <packaging>pom</packaging>
           <modules><module>inventorymanager-client</module></modules>
@@ -221,8 +221,8 @@ enum VerifyJavaLanguage {
         try Data("""
         <project>
           <parent>
-            <groupId>com.internet.saasbusinessmanager</groupId>
-            <artifactId>saasbusinessmanager</artifactId>
+            <groupId>com.example.samplemanager</groupId>
+            <artifactId>samplemanager</artifactId>
             <version>${revision}</version>
           </parent>
           <artifactId>inventorymanager-client</artifactId>
@@ -744,9 +744,11 @@ enum VerifyJavaLanguage {
             workspaceURL: root,
             repositories: repositories,
             projectJavaHome: nil,
-            mavenUserSettingsFile: nil
+            mavenUserSettingsFile: nil,
+            mavenLocalRepositoryURL: root.appendingPathComponent("custom-repository")
         )
         await engine.prioritize(repositoryID: repositories[0].id)
+        // Verify the repository setting crosses the engine/session boundary unchanged.
         try await waitUntil(timeout: .seconds(2)) {
             await registry.configurations().contains {
                 $0.repository.repositoryID == repositories[0].id
@@ -757,6 +759,10 @@ enum VerifyJavaLanguage {
         }) else {
             throw JavaVerificationError(description: "Root Java repository did not start")
         }
+        try require(
+            configuration.mavenLocalRepositoryURL == root.appendingPathComponent("custom-repository"),
+            "Java engine did not preserve the configured Maven repository"
+        )
         try require(
             configuration.repository.nestedRepositoryURLs == [nestedRepository.standardizedFileURL],
             "Java engine did not pass the nested Git repository boundary to JDT"

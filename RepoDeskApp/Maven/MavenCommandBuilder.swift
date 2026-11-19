@@ -32,10 +32,10 @@ enum MavenCommandBuilder {
             arguments.append(contentsOf: ["-s", userSettingsFile])
         }
 
-        let localRepository = expandedPath(settings.localRepository)
-        if !localRepository.isEmpty {
-            arguments.append("-Dmaven.repo.local=\(localRepository)")
-        }
+        let localRepository = MavenLocalRepositoryResolver.resolve(
+            settings: settings, environment: processEnvironment
+        )
+        arguments.append("-Dmaven.repo.local=\(localRepository.path)")
 
         let profiles = normalizedProfiles(settings.activeProfiles)
         if !profiles.isEmpty {

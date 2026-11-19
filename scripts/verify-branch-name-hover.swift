@@ -14,7 +14,7 @@ enum VerifyBranchNameHover {
         window.orderFront(nil)
         defer { window.close() }
 
-        for (index, name) in ["dev_261122_intransit", "origin/dev_261029_process", "origin/release_20261029", "origin/" + String(repeating: "long_branch_name_", count: 30)].enumerated() {
+        for (index, name) in ["feature/in-transit-improvements", "origin/feature/workflow", "origin/release/v0.1", "origin/" + String(repeating: "long_branch_name_", count: 30)].enumerated() {
             let view = BranchNameHoverHintView(text: name)
             view.frame = NSRect(x: 20, y: 20, width: 130, height: 24)
             window.contentView?.addSubview(view)

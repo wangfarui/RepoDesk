@@ -75,7 +75,7 @@ struct MarkdownPreviewSelectionVerification {
 
             | Name | Value |
             | :--- | ---: |
-            | item | `online.base.item.service` |
+            | item | `example.services.item.service` |
             """),
             fontSize: RepoDeskFontSize.default
         )
@@ -83,7 +83,7 @@ struct MarkdownPreviewSelectionVerification {
               htmlDocument.html.contains("text-align:left"),
               htmlDocument.html.contains("text-align:right"),
               htmlDocument.html.contains("data-source-start=\"3\""),
-              htmlDocument.text.contains("online.base.item.service") else {
+              htmlDocument.text.contains("example.services.item.service") else {
             throw MarkdownPreviewSelectionVerificationError.renderedMarkdownWasNotExposed
         }
         try verifyHTMLSearchOffsets()

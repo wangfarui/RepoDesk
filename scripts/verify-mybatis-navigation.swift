@@ -14,7 +14,7 @@ private actor MapperLanguageProvider: JavaLanguageProviding {
     func configure(_ settings: JavaIndexSettings) async {}
     func updateWorkspace(
         workspaceURL: URL?, repositories: [RegisteredRepository],
-        projectJavaHome: String?, mavenUserSettingsFile: String?
+        projectJavaHome: String?, mavenUserSettingsFile: String?, mavenLocalRepositoryURL: URL?
     ) async {}
     func prioritize(repositoryID: RegisteredRepository.ID) async {}
     func navigationTargets(
