@@ -186,6 +186,38 @@ enum VerifyJavaContextualMethodCallers {
         try require(changedTargets.count == 1 && changedTargets[0].fileURL == callerURL.standardizedFileURL,
                     "Invalidated caller index missed a new method name or leaked a nested repository: \(changedTargets)")
 
+        // Patch new/deleted files without rebuilding the repository. Exact
+        // notifications must observe the same boundaries as the original scan.
+        let movedCaller = sourceRoot.appendingPathComponent("MovedCaller.java")
+        try FileManager.default.moveItem(at: callerURL, to: movedCaller)
+        let ignoredCaller = workspace.appendingPathComponent("target/Generated.java")
+        try FileManager.default.createDirectory(at: ignoredCaller.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(caller.replacingOccurrences(of: "searchPriceVersions", with: "queryVersions").utf8).write(to: ignoredCaller)
+        await JavaWorkspaceNavigationFallback.invalidate(
+            workspaceURL: workspace, changedFileURLs: [callerURL, movedCaller, ignoredCaller, nested.appendingPathComponent("Caller.java")]
+        )
+        let movedTargets = await JavaWorkspaceNavigationFallback.targets(
+            for: request(action: .contextual, fileURL: daoURL, text: changedDao, symbol: "queryVersions()"),
+            workspaceURL: workspace, repositories: repositories
+        )
+        try require(movedTargets.count == 1 && movedTargets[0].fileURL == movedCaller,
+                    "Incremental caller update missed a rename or indexed excluded files: \(movedTargets)")
+
+        // Two saves arriving while the first update is pending must both land.
+        let extraCaller = sourceRoot.appendingPathComponent("ExtraCaller.java")
+        let extraText = caller.replacingOccurrences(of: "searchPriceVersions", with: "queryVersions")
+            .replacingOccurrences(of: "queryVersions();", with: "queryVersions \t\r\n ();")
+        try Data(extraText.utf8).write(to: extraCaller)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: workspace, changedFileURLs: [extraCaller])
+        try FileManager.default.removeItem(at: movedCaller)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: workspace, changedFileURLs: [movedCaller])
+        let latestTargets = await JavaWorkspaceNavigationFallback.targets(
+            for: request(action: .contextual, fileURL: daoURL, text: changedDao, symbol: "queryVersions()"),
+            workspaceURL: workspace, repositories: repositories
+        )
+        try require(latestTargets.count == 1 && latestTargets[0].fileURL == extraCaller,
+                    "Successive file changes lost an incremental update: \(latestTargets)")
+
         print("Contextual Java method caller navigation passed")
     }
 }

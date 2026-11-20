@@ -394,6 +394,7 @@ enum VerifyJDTLanguageServer {
                 "Enum usages were not marked as enum navigation targets"
             )
 
+            let declarationStart = ContinuousClock.now
             let declaration = try await targets(
                 session: session,
                 action: .declaration,
@@ -402,6 +403,7 @@ enum VerifyJDTLanguageServer {
                 symbol: "Greeter greeter"
             )
             try require(declaration.contains { $0.fileURL.lastPathComponent == "Greeter.java" }, "Command+B declaration failed")
+            print("JDT definition lookup: \(declarationStart.duration(to: .now))")
 
             let typeImplementations = try await targets(
                 session: session,
@@ -415,6 +417,7 @@ enum VerifyJDTLanguageServer {
                 "Interface implementation navigation failed"
             )
 
+            let implementationStart = ContinuousClock.now
             let methodImplementations = try await targets(
                 session: session,
                 action: .implementation,
@@ -423,7 +426,9 @@ enum VerifyJDTLanguageServer {
                 symbol: "greet"
             )
             try require(methodImplementations.count >= 2, "Method implementation navigation failed")
+            print("JDT method implementations: \(implementationStart.duration(to: .now))")
 
+            let incomingStart = ContinuousClock.now
             let incoming = try await targets(
                 session: session,
                 action: .incomingCalls,
@@ -439,6 +444,7 @@ enum VerifyJDTLanguageServer {
                 incoming.contains { $0.name.hasPrefix("callTwice") },
                 "Multiple incoming caller was not found: \(incoming.map(\.name))"
             )
+            print("JDT incoming callers: \(incomingStart.duration(to: .now))")
 
             let classReferences = try await targets(
                 session: session,

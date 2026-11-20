@@ -1,11 +1,15 @@
 import Foundation
 
 enum JavaWorkspaceNavigationFallback {
+    private static let syntaxCache = JavaNavigationSyntaxCache()
     private static let indexCache = JavaWorkspaceNavigationIndexCache()
     private static let callerIndexCache = JavaMethodCallerIndexCache()
 
     static func invalidate(workspaceURL: URL, changedFileURLs: [URL]? = nil) async {
-        await indexCache.invalidate(workspaceURL: workspaceURL)
+        await Task.detached(priority: .utility) {
+            MyBatisMapperNavigationResolver.invalidate(workspaceURL: workspaceURL, changedFileURLs: changedFileURLs)
+        }.value
+        await indexCache.invalidate(workspaceURL: workspaceURL, changedFileURLs: changedFileURLs)
         await callerIndexCache.invalidate(workspaceURL: workspaceURL, changedFileURLs: changedFileURLs)
     }
 
@@ -17,7 +21,7 @@ enum JavaWorkspaceNavigationFallback {
         guard let workspaceURL,
               let repositoryURL = owningRepository(fileURL: fileURL, workspaceURL: workspaceURL,
                                                     repositories: repositories) else { return }
-        _ = await callerIndexCache.filesByMethodName(workspaceURL: workspaceURL, repositoryURL: repositoryURL)
+        await callerIndexCache.prepare(workspaceURL: workspaceURL, repositoryURL: repositoryURL)
     }
 
     static func isMethodDeclaration(_ request: JavaNavigationRequest) -> Bool {
@@ -40,9 +44,9 @@ enum JavaWorkspaceNavigationFallback {
                                                  repositories: repositories) {
             // Incoming calls have the same repository scope as the Java server.
             // Definition fallback below can still resolve other repositories.
-            let files = await callerIndexCache.filesByMethodName(
-                workspaceURL: normalizedWorkspaceURL, repositoryURL: repositoryURL
-            )[symbol] ?? []
+            let files = await callerIndexCache.files(
+                named: symbol, workspaceURL: normalizedWorkspaceURL, repositoryURL: repositoryURL
+            )
             return await Task.detached(priority: .userInitiated) {
                 findIncomingCallTargets(named: symbol, request: request,
                                         sourceFiles: Array(Set(files + [request.fileURL.standardizedFileURL])))
@@ -125,7 +129,7 @@ enum JavaWorkspaceNavigationFallback {
         let targetPackage = packageName(in: targetCode)
         // Without semantic bindings, same-named overloads cannot be distinguished
         // reliably. Keep the fallback conservative; JDT handles overloads.
-        let declarations = JavaSyntaxHighlighter.highlights(in: request.documentText).filter {
+        let declarations = syntaxCache.highlights(in: request.documentText).filter {
             $0.style == .methodDeclaration
                 && (request.documentText as NSString).substring(with: $0.range) == symbol
         }
@@ -142,7 +146,7 @@ enum JavaWorkspaceNavigationFallback {
                 continue
             }
             guard text.contains(symbol) else { continue }
-            let spans = JavaSyntaxHighlighter.highlights(in: text)
+            let spans = syntaxCache.highlights(in: text)
             let code = codeMaskingLiterals(in: text, spans: spans)
             let methodDeclarations = spans.filter { $0.style == .methodDeclaration }
                 .sorted { $0.range.location < $1.range.location }
@@ -204,7 +208,7 @@ enum JavaWorkspaceNavigationFallback {
         at position: JavaSourcePosition
     ) -> NSRange? {
         let offset = utf16Offset(for: position, in: text)
-        return JavaSyntaxHighlighter.highlights(in: text).first {
+        return syntaxCache.highlights(in: text).first {
             guard $0.style == .methodDeclaration else { return false }
             return NSLocationInRange(offset, $0.range) || offset == NSMaxRange($0.range)
         }?.range
@@ -259,7 +263,7 @@ enum JavaWorkspaceNavigationFallback {
         spans: [JavaSyntaxHighlightSpan]? = nil
     ) -> String {
         let code = NSMutableString(string: text)
-        for span in spans ?? JavaSyntaxHighlighter.highlights(in: text)
+        for span in spans ?? syntaxCache.highlights(in: text)
             where span.style == .comment || span.style == .string {
             code.replaceCharacters(in: span.range, with: String(repeating: " ", count: span.range.length))
         }
@@ -330,24 +334,8 @@ enum JavaWorkspaceNavigationFallback {
 
     fileprivate static func sourceFilesByTypeUnderRoots(_ roots: [URL]) -> [String: [URL]] {
         var filesByType: [String: [URL]] = [:]
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
         for root in roots {
-            guard let enumerator = FileManager.default.enumerator(
-                at: root,
-                includingPropertiesForKeys: keys,
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-            for case let url as URL in enumerator {
-                let name = url.lastPathComponent
-                let values = try? url.resourceValues(forKeys: Set(keys))
-                if ["target", "build", "out", "node_modules"].contains(name)
-                    || values?.isSymbolicLink == true
-                    || (values?.isDirectory == true
-                        && FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path)) {
-                    enumerator.skipDescendants()
-                    continue
-                }
-                guard url.pathExtension == "java" else { continue }
+            for url in JavaNavigationFileScope.files(under: root, extension: "java") {
                 filesByType[url.deletingPathExtension().lastPathComponent, default: []].append(url)
             }
         }
@@ -425,37 +413,101 @@ private actor JavaMethodCallerIndexCache {
         let repositoryPath: String
     }
 
+    private struct Index: Sendable {
+        var methodsByFile: [String: Set<String>] = [:]
+        var filesByMethodName: [String: Set<String>] = [:]
+
+        mutating func update(_ files: [URL], repositoryURL: URL, validatesScope: Bool = true) {
+            for fileURL in files {
+                guard !Task.isCancelled else { return }
+                let path = fileURL.path
+                if let oldNames = methodsByFile.removeValue(forKey: path) {
+                    for name in oldNames {
+                        filesByMethodName[name]?.remove(path)
+                        if filesByMethodName[name]?.isEmpty == true { filesByMethodName.removeValue(forKey: name) }
+                    }
+                }
+                guard !validatesScope || JavaNavigationFileScope.contains(fileURL, under: repositoryURL),
+                      let data = try? Data(contentsOf: fileURL) else { continue }
+                let names = methodNameCandidates(in: data)
+                methodsByFile[path] = names
+                // Use paths in the reverse index: hashing Foundation URLs for
+                // every method is much more expensive than hashing a String.
+                for name in names { filesByMethodName[name, default: []].insert(path) }
+            }
+        }
+
+        /// This is only a candidate filter; the syntax/binding checks above
+        /// still determine actual callers. Scan UTF-8 around '(' without
+        /// allocating NSString ranges/matches for every token in every file.
+        private func methodNameCandidates(in data: Data) -> Set<String> {
+            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Set<String> in
+                guard let address = raw.baseAddress else { return [] }
+                let bytes = address.assumingMemoryBound(to: UInt8.self)
+                var names: Set<String> = []
+                var cursor = 0
+                func isIdentifier(_ byte: UInt8) -> Bool {
+                    (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+                        || (byte >= 48 && byte <= 57) || byte == 95 || byte == 36
+                }
+                while cursor < raw.count,
+                      let open = memchr(address.advanced(by: cursor), 40, raw.count - cursor) {
+                    let position = address.distance(to: open)
+                    cursor = position + 1
+                    var end = position
+                    while end > 0 {
+                        let byte = bytes[end - 1]
+                        if byte == 32 || (byte >= 9 && byte <= 13) { end -= 1; continue }
+                        guard byte >= 128 else { break }
+                        var scalarStart = end - 1
+                        while scalarStart > 0 && bytes[scalarStart] & 0xC0 == 0x80 { scalarStart -= 1 }
+                        let scalarText = String(decoding: UnsafeBufferPointer(
+                            start: bytes.advanced(by: scalarStart), count: end - scalarStart
+                        ), as: UTF8.self)
+                        guard let scalar = scalarText.unicodeScalars.first,
+                              CharacterSet.whitespacesAndNewlines.contains(scalar) else { break }
+                        end = scalarStart
+                    }
+                    var start = end
+                    while start > 0 && isIdentifier(bytes[start - 1]) { start -= 1 }
+                    if start < end {
+                        names.insert(String(decoding: UnsafeBufferPointer(
+                            start: bytes.advanced(by: start), count: end - start
+                        ), as: UTF8.self))
+                    }
+                }
+                return names
+            }
+        }
+    }
+
     private struct Entry {
         let generation: UUID
-        let task: Task<[String: [URL]], Never>
+        let task: Task<Index, Never>
     }
 
     private var entries: [Key: Entry] = [:]
 
-    func filesByMethodName(workspaceURL: URL, repositoryURL: URL) async -> [String: [URL]] {
+    func prepare(workspaceURL: URL, repositoryURL: URL) async {
+        _ = await index(workspaceURL: workspaceURL, repositoryURL: repositoryURL)
+    }
+
+    func files(named symbol: String, workspaceURL: URL, repositoryURL: URL) async -> [URL] {
+        let index = await index(workspaceURL: workspaceURL, repositoryURL: repositoryURL)
+        return (index.filesByMethodName[symbol] ?? []).map { URL(fileURLWithPath: $0) }
+    }
+
+    private func index(workspaceURL: URL, repositoryURL: URL) async -> Index {
         let key = Key(workspacePath: workspaceURL.standardizedFileURL.path,
                       repositoryPath: repositoryURL.standardizedFileURL.path)
         let entry: Entry
         if let cached = entries[key] {
             entry = cached
         } else {
-            // Store the task before awaiting it so prewarming and the first click
-            // share one scan rather than launching duplicate repository reads.
             let task = Task.detached(priority: .utility) {
-                let files = JavaWorkspaceNavigationFallback.sourceFilesByTypeUnderRoots([repositoryURL])
-                    .values.flatMap { $0 }
-                guard let expression = try? NSRegularExpression(
-                    pattern: #"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\("#
-                ) else { return [String: [URL]]() }
-                var index: [String: [URL]] = [:]
-                for fileURL in files {
-                    guard !Task.isCancelled else { return [:] }
-                    guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { continue }
-                    let source = text as NSString
-                    let names = Set(expression.matches(in: text, range: NSRange(location: 0, length: source.length))
-                        .map { source.substring(with: $0.range(at: 1)) })
-                    for name in names { index[name, default: []].append(fileURL.standardizedFileURL) }
-                }
+                let files = JavaNavigationFileScope.files(under: repositoryURL, extension: "java")
+                var index = Index()
+                index.update(files, repositoryURL: repositoryURL, validatesScope: false)
                 return index
             }
             entry = Entry(generation: UUID(), task: task)
@@ -463,30 +515,41 @@ private actor JavaMethodCallerIndexCache {
         }
         let result = await entry.task.value
         guard entries[key]?.generation == entry.generation else {
-            // File changes during a scan must not repopulate the cache with its
-            // stale result or let a waiting navigation use that result.
-            return await filesByMethodName(workspaceURL: workspaceURL, repositoryURL: repositoryURL)
+            return await index(workspaceURL: workspaceURL, repositoryURL: repositoryURL)
         }
         return result
     }
 
     func invalidate(workspaceURL: URL, changedFileURLs: [URL]?) {
         let path = workspaceURL.standardizedFileURL.path
-        let relevantURLs = changedFileURLs?.filter {
+        let relevantURLs = changedFileURLs?.map(\.standardizedFileURL).filter {
             $0.pathExtension.lowercased() == "java" || $0.pathExtension.isEmpty
                 || $0.path.contains("/.git/") || $0.lastPathComponent == "pom.xml"
+                || (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
         }
-        let keys = entries.keys.filter { key in
-            guard key.workspacePath == path else { return false }
-            guard let relevantURLs else { return true }
-            return relevantURLs.contains {
-                let changedPath = $0.standardizedFileURL.path
-                return changedPath == key.repositoryPath || changedPath.hasPrefix(key.repositoryPath + "/")
-                    || key.repositoryPath.hasPrefix(changedPath + "/")
+        for key in Array(entries.keys) where key.workspacePath == path {
+            let changes = relevantURLs?.filter {
+                $0.path == key.repositoryPath || $0.path.hasPrefix(key.repositoryPath + "/")
+                    || key.repositoryPath.hasPrefix($0.path + "/")
             }
-        }
-        for key in keys {
-            entries.removeValue(forKey: key)?.task.cancel()
+            if let changes, changes.isEmpty { continue }
+            guard let entry = entries[key] else { continue }
+            guard let changes, changes.allSatisfy({ $0.pathExtension.lowercased() == "java"
+                && $0.path.hasPrefix(key.repositoryPath + "/")
+                && (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory != true
+            }) else {
+                entries.removeValue(forKey: key)?.task.cancel()
+                continue
+            }
+            // Keep the previous build alive: an edit during prewarming must
+            // patch that snapshot instead of cancelling and restarting it.
+            let repositoryURL = URL(fileURLWithPath: key.repositoryPath)
+            let task = Task.detached(priority: .utility) {
+                var index = await entry.task.value
+                index.update(changes, repositoryURL: repositoryURL)
+                return index
+            }
+            entries[key] = Entry(generation: UUID(), task: task)
         }
     }
 }
@@ -498,6 +561,7 @@ private actor JavaWorkspaceNavigationIndexCache {
     }
 
     private var entries: [CacheKey: [String: [URL]]] = [:]
+    private var generation = UUID()
 
     func sourceFilesByType(
         workspaceURL: URL,
@@ -518,14 +582,25 @@ private actor JavaWorkspaceNavigationIndexCache {
                 ? workspaceURL
                 : workspaceURL.appendingPathComponent(repository.relativePath, isDirectory: true)
         }
+        let generation = self.generation
         let index = await Task.detached(priority: .utility) {
             JavaWorkspaceNavigationFallback.sourceFilesByTypeUnderRoots(roots)
         }.value
+        guard self.generation == generation else {
+            return await sourceFilesByType(workspaceURL: workspaceURL, repositories: repositories)
+        }
         entries = [key: index]
         return index
     }
 
-    func invalidate(workspaceURL: URL) {
+    func invalidate(workspaceURL: URL, changedFileURLs: [URL]?) {
+        // XML/text-only events do not change the Java type-to-path map.
+        if let changedFileURLs, changedFileURLs.allSatisfy({
+            $0.pathExtension.lowercased() != "java" && !$0.pathExtension.isEmpty
+                && !$0.path.contains("/.git/") && $0.lastPathComponent != "pom.xml"
+                && (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory != true
+        }) { return }
+        generation = UUID()
         let path = workspaceURL.standardizedFileURL.path
         entries = entries.filter { $0.key.workspacePath != path }
     }

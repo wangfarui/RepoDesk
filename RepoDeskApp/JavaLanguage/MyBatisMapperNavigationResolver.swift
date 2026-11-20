@@ -1,7 +1,9 @@
 import Foundation
 
 enum MyBatisMapperNavigationResolver {
-    private struct MapperIdentity {
+    private static let cache = MapperIndexCache()
+
+    private struct MapperIdentity: Hashable {
         let namespace: String
         let methodName: String
     }
@@ -38,38 +40,95 @@ enum MyBatisMapperNavigationResolver {
             return []
         }
 
-        let xmlFiles = xmlFilesUnderRoot(repositoryRoot)
+        return cache.targets(identity: identity, repositoryRoot: repositoryRoot)
+    }
+
+    static func invalidate(workspaceURL: URL, changedFileURLs: [URL]? = nil) {
+        cache.invalidate(workspaceURL: workspaceURL, changedFileURLs: changedFileURLs)
+    }
+
+    private static func targets(identity: MapperIdentity, sources: [URL: String]) -> [JavaNavigationTarget] {
         var results: [JavaNavigationTarget] = []
-        for fileURL in xmlFiles {
-            guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { continue }
-            let statements = matchingStatements(
-                in: text,
-                namespace: identity.namespace,
-                methodName: identity.methodName
-            )
+        for (fileURL, text) in sources {
+            let statements = matchingStatements(in: text, namespace: identity.namespace, methodName: identity.methodName)
             for statement in statements {
-                let statementRange = sourceRange(in: text, utf16Range: statement.openingTagRange)
-                let selectionRange = sourceRange(in: text, utf16Range: statement.idValueRange)
                 results.append(JavaNavigationTarget(
-                    fileURL: fileURL.standardizedFileURL,
-                    range: statementRange,
-                    selectionRange: selectionRange,
-                    name: identity.methodName,
-                    detail: "MyBatis <\(statement.tagName)>",
-                    containerName: identity.namespace,
-                    kind: .method
+                    fileURL: fileURL,
+                    range: sourceRange(in: text, utf16Range: statement.openingTagRange),
+                    selectionRange: sourceRange(in: text, utf16Range: statement.idValueRange),
+                    name: identity.methodName, detail: "MyBatis <\(statement.tagName)>",
+                    containerName: identity.namespace, kind: .method
                 ))
             }
         }
-
         return results.sorted {
-            if $0.fileURL.path != $1.fileURL.path {
-                return $0.fileURL.path < $1.fileURL.path
-            }
-            if $0.range.start.line != $1.range.start.line {
-                return $0.range.start.line < $1.range.start.line
-            }
+            if $0.fileURL.path != $1.fileURL.path { return $0.fileURL.path < $1.fileURL.path }
+            if $0.range.start.line != $1.range.start.line { return $0.range.start.line < $1.range.start.line }
             return $0.range.start.character < $1.range.start.character
+        }
+    }
+
+    /// Queries run on the navigation utility task. Serializing the small cache
+    /// keeps a file event from publishing results based on an older XML snapshot.
+    /// The lock protects every access to entries and eviction order.
+    private final class MapperIndexCache: @unchecked Sendable {
+        private struct Entry {
+            var sources: [URL: String]
+            var results: [MapperIdentity: [JavaNavigationTarget]] = [:]
+        }
+        private let lock = NSLock()
+        private var entries: [URL: Entry] = [:]
+        private var order: [URL] = []
+
+        func targets(identity: MapperIdentity, repositoryRoot: URL) -> [JavaNavigationTarget] {
+            lock.withLock {
+                if entries[repositoryRoot] == nil {
+                    if order.count == 4 { entries.removeValue(forKey: order.removeFirst()) }
+                    var sources: [URL: String] = [:]
+                    for file in JavaNavigationFileScope.files(under: repositoryRoot, extension: "xml") {
+                        if let text = try? String(contentsOf: file, encoding: .utf8) { sources[file] = text }
+                    }
+                    entries[repositoryRoot] = Entry(sources: sources)
+                    order.append(repositoryRoot)
+                }
+                if let result = entries[repositoryRoot]?.results[identity] { return result }
+                let result = MyBatisMapperNavigationResolver.targets(
+                    identity: identity, sources: entries[repositoryRoot]?.sources ?? [:]
+                )
+                if !Task.isCancelled { entries[repositoryRoot]?.results[identity] = result }
+                return result
+            }
+        }
+
+        func invalidate(workspaceURL: URL, changedFileURLs: [URL]?) {
+            lock.withLock {
+                let changes = changedFileURLs?.map(\.standardizedFileURL)
+                for root in Array(entries.keys) where isSameOrDescendant(root, of: workspaceURL.standardizedFileURL) {
+                    let relevant = changes?.filter {
+                        (isSameOrDescendant($0, of: root) || isSameOrDescendant(root, of: $0))
+                            && ($0.pathExtension.lowercased() == "xml" || $0.pathExtension.isEmpty
+                                || $0.path.contains("/.git/") || $0.lastPathComponent == "pom.xml"
+                                || (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true)
+                    }
+                    if let relevant, relevant.isEmpty { continue }
+                    guard let relevant, relevant.allSatisfy({
+                        $0.pathExtension.lowercased() == "xml" && isSameOrDescendant($0, of: root)
+                            && (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory != true
+                    }) else {
+                        entries.removeValue(forKey: root)
+                        order.removeAll { $0 == root }
+                        continue
+                    }
+                    for file in relevant {
+                        entries[root]?.sources.removeValue(forKey: file)
+                        if JavaNavigationFileScope.contains(file, under: root),
+                           let text = try? String(contentsOf: file, encoding: .utf8) {
+                            entries[root]?.sources[file] = text
+                        }
+                    }
+                    entries[root]?.results.removeAll(keepingCapacity: true)
+                }
+            }
         }
     }
 
@@ -172,34 +231,6 @@ enum MyBatisMapperNavigationResolver {
             )
         }
         return nil
-    }
-
-    private static func xmlFilesUnderRoot(_ root: URL) -> [URL] {
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles],
-            errorHandler: { _, _ in true }
-        ) else { return [] }
-
-        var files: [URL] = []
-        for case let url as URL in enumerator {
-            let name = url.lastPathComponent
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            if values?.isSymbolicLink == true
-                || [".git", "target", "build", "out", "node_modules"].contains(name)
-                || (values?.isDirectory == true && FileManager.default.fileExists(atPath: url.appendingPathComponent(".git").path)) {
-                enumerator.skipDescendants()
-                continue
-            }
-            guard url.pathExtension.caseInsensitiveCompare("xml") == .orderedSame,
-                  values?.isDirectory != true else {
-                continue
-            }
-            files.append(url.standardizedFileURL)
-        }
-        return files.sorted { $0.path < $1.path }
     }
 
     private static func masking(_ ranges: [NSRange], in text: String) -> String {

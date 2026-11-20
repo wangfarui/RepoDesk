@@ -420,6 +420,18 @@ swiftc \
   -Xcc "-fmodules-cache-path=${module_cache}" \
   -strict-concurrency=complete \
   -warnings-as-errors \
+  -I "${project_dir}/build" -L "${project_dir}/build" -lRepoDesk \
+  "${project_dir}/scripts/verify-java-navigation-performance.swift" \
+  -o "${project_dir}/build/verify-java-navigation-performance"
+
+DYLD_LIBRARY_PATH="${repodesk_library_path}" \
+  "${project_dir}/build/verify-java-navigation-performance"
+
+swiftc \
+  -parse-as-library \
+  -Xcc "-fmodules-cache-path=${module_cache}" \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
   -I "${project_dir}/build" \
   -L "${project_dir}/build" \
   -lRepoDesk \

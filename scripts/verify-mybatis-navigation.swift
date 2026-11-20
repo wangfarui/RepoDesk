@@ -123,7 +123,28 @@ enum VerifyMyBatisNavigation {
         let nested = root.appendingPathComponent("nested", isDirectory: true)
         try FileManager.default.createDirectory(at: nested.appendingPathComponent(".git"), withIntermediateDirectories: true)
         try write(xml, to: nested.appendingPathComponent("Duplicate.xml"))
+        MyBatisMapperNavigationResolver.invalidate(workspaceURL: root)
         try require(targets("query").count == 1, "Build outputs or nested repositories leaked into Mapper navigation")
+
+        // File events must refresh cached positive and negative results, even
+        // when names are arbitrary and the new file is in another module.
+        let addedXML = root.appendingPathComponent("other-module/resources/Added.xml")
+        try write("<mapper namespace='example.inventory.GoodsMapper'><select id='missing'/></mapper>", to: addedXML)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: root, changedFileURLs: [addedXML])
+        try require(targets("missing").count == 1, "Cached missing SQL ignored a newly added XML file")
+        try write("<mapper namespace='other.GoodsMapper'><select id='missing'/></mapper>", to: addedXML)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: root, changedFileURLs: [addedXML])
+        try require(targets("missing").isEmpty, "Namespace edit retained a stale SQL target")
+        try FileManager.default.removeItem(at: addedXML)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: root, changedFileURLs: [addedXML])
+        try require(targets("missing").isEmpty, "Deleted XML retained a cached target")
+
+        let renamedXML = xmlURL.deletingLastPathComponent().appendingPathComponent("Renamed.xml")
+        try FileManager.default.moveItem(at: xmlURL, to: renamedXML)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: root, changedFileURLs: [xmlURL, renamedXML])
+        try require(targets("query").first?.fileURL == renamedXML, "XML rename did not update its target path")
+        try FileManager.default.moveItem(at: renamedXML, to: xmlURL)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: root, changedFileURLs: [renamedXML, xmlURL])
 
         let classText = java.replacingOccurrences(of: "interface GoodsMapper", with: "class GoodsMapper")
         let classRequest = JavaNavigationRequest(
@@ -171,6 +192,7 @@ enum VerifyMyBatisNavigation {
 
         let duplicateURL = root.appendingPathComponent("src/main/resources/Second.xml")
         try write(xml, to: duplicateURL)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: root, changedFileURLs: [duplicateURL])
         state.selectFile(javaURL)
         state.performJavaNavigation(
             action: .implementation, fileURL: javaURL,
@@ -180,6 +202,7 @@ enum VerifyMyBatisNavigation {
         try require(state.javaNavigationResultPresentation?.targets.count == 2, "Multiple SQL matches must offer a choice")
         state.javaNavigationResultPresentation = nil
         try FileManager.default.removeItem(at: duplicateURL)
+        await JavaWorkspaceNavigationFallback.invalidate(workspaceURL: root, changedFileURLs: [duplicateURL])
 
         let missing = request("missing")
         state.performJavaNavigation(
