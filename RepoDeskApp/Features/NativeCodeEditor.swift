@@ -760,6 +760,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         textView.isEditable = isEditable
         let source = text
         let textChanged = context.coordinator.synchronizedText != source
+        let sourceChanged = textChanged || contentIdentityChanged
         if contentIdentityChanged || (textChanged && isEditable) {
             textView.breakUndoCoalescing()
             textView.undoManager?.removeAllActions()
@@ -790,14 +791,14 @@ struct NativeCodeEditor: NSViewRepresentable {
             context.coordinator.lastAppliedSemanticTokens = semanticTokens
             context.coordinator.invalidateContentSearch()
             context.coordinator.resetExternalNavigation()
-            if textChanged || contentIdentityChanged {
+            if sourceChanged {
                 context.coordinator.configureImportFolding(enabled: foldsJavaImports, expanded: importsExpanded, sourceChanged: true)
                 context.coordinator.refreshLineNumbers()
             }
             textView.setSelectedRange(
                 NSRange(
                     location: min(selection.location, textView.textStorage?.length ?? 0),
-                    length: 0
+                    length: sourceChanged ? 0 : selection.length
                 )
             )
             if shouldFollowTail {
@@ -946,6 +947,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             guard configuredFontSize != fontSize else { return }
             configuredFontSize = fontSize
             textView.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            lineNumberRuler?.refresh(text: textView.string, index: lineIndex)
         }
 
         func refreshLineNumbers() {

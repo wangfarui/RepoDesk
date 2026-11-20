@@ -64,6 +64,8 @@ Use “按 Commit Hash 筛选…” above the commit list to filter by a short o
 
 Open files use a fixed single-row tab bar with horizontal scrolling and an “所有打开的文件” menu. Selecting a file from search, navigation or that menu scrolls its tab into view. Closing tabs keeps the editor at the same vertical position. Files retains its editor, caret and selection when visiting another section; the inactive editor releases keyboard focus and Find commands.
 
+In Files, `Command++` (also `Command+=`) and `Command+-` adjust the current tab's text size by one point, from 10 to 40. `Command+0` restores the configured default. Source and Markdown preview share the tab's temporary size; switching tabs retains it, while closing the tab or restarting the app resets it. These shortcuts leave global font preferences and file contents unchanged.
+
 The file tree lazily renders visible rows, including expanded directory descendants, and reuses filename width measurements for horizontal scrolling. Filename and content searches include source repositories ending in `.service`, while still skipping generated directories and known application bundles. Content search publishes partial results, cancels obsolete scans and preserves the previous results with an updating indicator until the new query produces results. Previous-query results cannot be opened while marked as stale.
 
 Re-entering unchanged History reuses its loaded data. Explicit refresh, repository HEAD changes, workspace events and foreground consistency checks invalidate it. The default commit list can load while branch and author metadata are read; named branch/author and “Select Me” filters still resolve their metadata before loading commits.

@@ -81,6 +81,9 @@ struct FilesView: View {
                 .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .background(FileFontSizeCommandListener(isEnabled: isSectionActive) { action in
+            appState.adjustSelectedFileFontSize(action)
+        })
         .toolbar {
             ToolbarItemGroup {
                 if isSectionActive, appState.selectedFileURL?.pathExtension.lowercased() == "md" {
@@ -464,7 +467,7 @@ struct FilesView: View {
                         text: appState.documentText,
                         fileURL: fileURL,
                         projectRootURL: appState.visibleWorkspaceRootURL,
-                        fontSize: appState.fileContentFontSize,
+                        fontSize: appState.selectedFileContentFontSize,
                         sourceLine: appState.selectedFileVisibleLine,
                         navigationRequest: appState.selectedSourceNavigationRequest,
                         headerActions: documentHeaderActions,
@@ -495,7 +498,7 @@ struct FilesView: View {
                             appState.rememberSelectedFileVisibleLine(line)
                         },
                         onNavigationHandled: { appState.clearSelectedSourceNavigationRequest($0) },
-                        fontSize: appState.fileContentFontSize,
+                        fontSize: appState.selectedFileContentFontSize,
                         semanticTokens: appState.javaSemanticTokens,
                         javaNavigationLoadingPresentation: appState.javaNavigationLoadingPresentation,
                         javaNavigationPresentation: appState.javaNavigationResultPresentation,

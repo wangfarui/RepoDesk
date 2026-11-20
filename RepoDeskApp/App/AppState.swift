@@ -58,6 +58,8 @@ struct OpenFileTab: Equatable, Identifiable, Sendable {
     var isLoading: Bool
     var visibleLine: Int
     var importsExpanded = false
+    // Deliberately excluded from PersistedFileTab: closing a tab resets its zoom.
+    var temporaryFontSize: Double?
 
     var id: URL { url }
 }
@@ -2811,6 +2813,28 @@ final class AppState {
         guard fileContentFontSize != fontSize else { return }
         fileContentFontSize = fontSize
         persistAppPreferences()
+    }
+
+    var selectedFileContentFontSize: Double {
+        openFileTabs.first { $0.url == selectedFileURL }?.temporaryFontSize ?? fileContentFontSize
+    }
+
+    @discardableResult
+    func adjustSelectedFileFontSize(_ action: FileFontSizeAction) -> Bool {
+        guard selectedSection == .files, !isLoadingDocument,
+              case .text = loadedDocument,
+              let index = openFileTabs.firstIndex(where: { $0.url == selectedFileURL }) else {
+            return false
+        }
+        switch action {
+        case .increase:
+            openFileTabs[index].temporaryFontSize = min(40, selectedFileContentFontSize + 1)
+        case .decrease:
+            openFileTabs[index].temporaryFontSize = max(10, selectedFileContentFontSize - 1)
+        case .reset:
+            openFileTabs[index].temporaryFontSize = nil
+        }
+        return true
     }
 
     func setMaximumOpenFileTabs(_ count: Int) {

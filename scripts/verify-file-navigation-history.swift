@@ -1,8 +1,21 @@
 import Foundation
+import AppKit
+import SwiftUI
 @testable import RepoDesk
 
 private struct FileNavigationVerificationError: Error, CustomStringConvertible {
     let description: String
+}
+
+// Headless verification windows have windowNumber == 0, so keyEvent(...) loses
+// their identity. Supply that association explicitly when exercising the handler.
+private final class FontSizeKeyEvent: NSEvent {
+    var targetWindow: NSWindow?
+    var key: String?
+    var flags: NSEvent.ModifierFlags = []
+    override var window: NSWindow? { targetWindow }
+    override var charactersIgnoringModifiers: String? { key }
+    override var modifierFlags: NSEvent.ModifierFlags { flags }
 }
 
 private actor NavigationJavaLanguageProvider: JavaLanguageProviding {
@@ -48,7 +61,7 @@ private final class NavigationWindowStateStore: WindowStateStoring {
 @main
 @MainActor
 enum VerifyFileNavigationHistory {
-    static func main() throws {
+    static func main() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("RepoDeskFileNavigation-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -65,6 +78,7 @@ enum VerifyFileNavigationHistory {
         try verifyClosedFileReopens(root: root, files: files)
         try verifyDeletedFileIsSkipped(root: root, files: files)
         try verifyMouseButtons()
+        try await verifyTemporaryFontSizes(root: root, files: files)
         print("File navigation history verification passed")
     }
 
@@ -166,6 +180,108 @@ enum VerifyFileNavigationHistory {
             RepoDeskApplicationDelegate.fileNavigationAction(forMouseButton: 2) == nil,
             "Middle mouse button must remain untouched"
         )
+    }
+
+    private static func verifyTemporaryFontSizes(root: URL, files: [URL]) async throws {
+        _ = NSApplication.shared
+        let state = makeState(root: root)
+        state.selectFile(files[0])
+        try await waitUntil { !state.isLoadingDocument }
+        let baseline = state.fileContentFontSize
+        let originalText = state.documentText
+        let host = NSHostingView(rootView: FilesView(appState: state))
+        host.frame = NSRect(x: 0, y: 0, width: 1000, height: 650)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        try await waitUntil { descendant(NSTextView.self, in: host) != nil }
+        guard let listener = descendant(FileFontSizeCommandView.self, in: host),
+              let editor = descendant(NSTextView.self, in: host) else {
+            throw FileNavigationVerificationError(description: "Missing Files font shortcut listener/editor")
+        }
+        window.makeFirstResponder(editor)
+        editor.setSelectedRange(NSRange(location: 0, length: 2))
+        func event(_ key: String, _ modifiers: NSEvent.ModifierFlags = .command,
+                   in target: NSWindow? = nil) -> NSEvent {
+            let event = FontSizeKeyEvent()
+            event.targetWindow = target ?? window
+            event.key = key
+            event.flags = modifiers
+            return event
+        }
+        try require(listener.handle(event("=")) == nil, "Command = was not consumed")
+        try await waitUntil { editor.font?.pointSize == baseline + 1 }
+        try require(editor.selectedRange() == NSRange(location: 0, length: 2), "Zoom changed selection")
+        try require(state.documentText == originalText && !state.hasUnsavedDocumentChanges,
+                    "Zoom modified file contents")
+        try require(listener.handle(event("+", [.command, .shift])) == nil,
+                    "Command Shift + was not consumed")
+        try require(state.selectedFileContentFontSize == baseline + 2, "Zoom did not advance by one")
+        try require(listener.handle(event("-")) == nil && state.selectedFileContentFontSize == baseline + 1,
+                    "Command - did not decrease by one")
+        try require(listener.handle(event("=", [.command, .option])) != nil, "Modified shortcut was captured")
+        let otherWindow = NSWindow(contentRect: .zero, styleMask: [.titled], backing: .buffered, defer: false)
+        otherWindow.isReleasedWhenClosed = false
+        try require(listener.handle(event("=", in: otherWindow)) != nil, "Another window changed Files font")
+        otherWindow.close()
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 150, height: 25))
+        host.addSubview(field)
+        window.makeFirstResponder(field)
+        try require(listener.handle(event("=")) != nil, "Text-field shortcut changed Files font")
+        field.removeFromSuperview()
+        window.makeFirstResponder(editor)
+
+        state.selectFile(files[2])
+        try await waitUntil { !state.isLoadingDocument }
+        try require(state.selectedFileContentFontSize == baseline, "Another file inherited zoom")
+        state.setMarkdownPreview(true)
+        try require(state.adjustSelectedFileFontSize(.increase), "Markdown preview could not zoom")
+        // Verify the preview document without requiring WebKit's GUI processes.
+        let preview = MarkdownPreviewHTMLDocument(
+            blocks: MarkdownPreviewParser.parseWithSourceLines(state.documentText),
+            fontSize: state.selectedFileContentFontSize
+        )
+        try require(preview.html.contains("font-size: \(baseline + 1)px"),
+                    "Markdown preview document did not receive the temporary font")
+        state.setMarkdownPreview(false)
+        try require(state.selectedFileContentFontSize == baseline + 1, "Preview/source switch lost zoom")
+        state.selectFile(files[0])
+        try require(state.selectedFileContentFontSize == baseline + 1, "Tab switch lost per-file zoom")
+        try require(listener.handle(event("0")) == nil, "Command 0 was not consumed")
+        try require(state.selectedFileContentFontSize == baseline, "Reset did not restore default")
+        for _ in 0..<60 { state.adjustSelectedFileFontSize(.increase) }
+        try require(state.selectedFileContentFontSize == 40, "Zoom exceeded upper limit")
+        try await waitUntil { descendant(NSTextView.self, in: host)?.font?.pointSize == 40 }
+        try require((descendant(NativeLineNumberRulerView.self, in: host)?.ruleThickness ?? 0) > 40,
+                    "Large font did not widen the line-number gutter")
+        for _ in 0..<60 { state.adjustSelectedFileFontSize(.decrease) }
+        try require(state.selectedFileContentFontSize == 10, "Zoom exceeded lower limit")
+        state.closeSelectedFileTab()
+        state.selectFile(files[0])
+        try await waitUntil { !state.isLoadingDocument }
+        try require(state.selectedFileContentFontSize == baseline, "Reopened tab retained temporary zoom")
+        try require(state.fileContentFontSize == baseline, "Temporary zoom changed preferences")
+        state.selectedSection = .history
+        try require(!state.adjustSelectedFileFontSize(.increase), "Zoom ran outside Files")
+        state.selectedSection = .files
+        state.loadedDocument = .binary(size: 1)
+        try require(!state.adjustSelectedFileFontSize(.increase), "Binary file accepted font zoom")
+        print("Files temporary font shortcuts, source rendering and Markdown document verification passed")
+    }
+
+    private static func descendant<T: NSView>(_ type: T.Type, in view: NSView) -> T? {
+        if let match = view as? T { return match }
+        return view.subviews.lazy.compactMap { descendant(type, in: $0) }.first
+    }
+
+    private static func waitUntil(_ condition: () -> Bool) async throws {
+        for _ in 0..<100 {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw FileNavigationVerificationError(description: "Files font verification timed out")
     }
 
     private static func makeState(root: URL) -> AppState {
