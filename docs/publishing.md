@@ -64,11 +64,9 @@ references and SHA-256 files to the release. Record which architecture and macOS
 versions were actually tested. Keep release version/build numbers synchronized
 between `Support/Info.plist` and `project.yml`.
 
-## CI
+## Local verification
 
-The workflow builds and runs unit tests on macOS 15 for Apple Silicon and Intel,
-then packages per-architecture development artifacts. It has read-only repository
-permissions and contains no signing secrets, release publishing or deployment.
-UI tests remain an interactive/local acceptance step. GitHub's macOS 14 runners
-are retired; verify macOS 14 support separately on actual hardware or a VM.
-Runner availability is documented in [GitHub runner images](https://github.com/actions/runner-images).
+Build, test and package locally using the commands above and the Xcode test
+commands in the README. No GitHub Actions workflow is configured. UI tests
+remain an interactive/local acceptance step. Verify macOS 14 support separately
+on actual hardware or a VM, and test Apple Silicon and Intel builds separately.

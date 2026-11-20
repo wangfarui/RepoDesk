@@ -23,7 +23,7 @@ RepoDesk 是一个原生 macOS 多仓库工作台：集中查看代码变更、D
 
 ## 学习与参与开发
 
-先读 [架构与模块边界](docs/architecture.md)，再看 [产品范围](docs/product-spec-v0.1-amendment.md) 和 [贡献说明](CONTRIBUTING.md)。构建与验证见下文；公开源码、打包、签名和公证步骤见 [发布指南](docs/publishing.md)。CI 产物是开发测试包，不会自动发布到 GitHub Releases。
+先读 [架构与模块边界](docs/architecture.md)，再看 [产品范围](docs/product-spec-v0.1-amendment.md) 和 [贡献说明](CONTRIBUTING.md)。构建与验证见下文；公开源码、打包、签名和公证步骤见 [发布指南](docs/publishing.md)。构建、测试与打包在本地执行。
 
 RepoDesk v0.1 connects workspace and nested-repository management, automatic multi-repository Git status, structured diff/history review with per-side Blame, selectable Commit and Commit And Push, repository Fetch/Pull/Push, Branch operations and merge-conflict resolution, editable workspace files, and an IDEA-style Maven module/lifecycle view with environment validation, final-command preview, process-group stopping, POM synchronization, streamed output, and recent-run replay. Workspace and Repository contexts expose different top-level modules. The staged implementation, replacement verification, and final user acceptance are complete.
 
